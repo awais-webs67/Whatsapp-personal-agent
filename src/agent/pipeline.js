@@ -7,6 +7,7 @@ import { decide, CLOSED } from './brain.js';
 const timers = new Map(); // chatId -> debounce timer
 const busy = new Set();   // chats currently being answered
 const again = new Set();  // chats that got a new message while busy
+const explained = new Set(); // "not answering because…" notes already logged
 
 const OPT_OUT = /^\s*(stop|unsubscribe|remove me)\s*[.!]*\s*$|\b(don'?t|do not|dont)\s+(message|msg|text|contact|disturb)\s+me\b|\b(msg|message|messages)\s+(mat|na)\s+(karo|bhejo|bhejna|krna|karna)\b|\bmat\s+bhej/i;
 
@@ -46,8 +47,13 @@ export function onCustomer(chatId) {
     log('info', 'agent', `${chat.name || chat.phone || chat.jid} asked not to be contacted — follow-ups stopped`);
   }
   const account = get('SELECT * FROM accounts WHERE id = ?', chat.account_id);
-  const [ok] = eligibility(chat, account);
-  if (!ok) return;
+  const [ok, why] = eligibility(chat, account);
+  if (!ok) {
+    // Say why, once per chat and reason, so a silent agent is never a mystery.
+    const key = `${chatId}:${why}`;
+    if (!explained.has(key)) { explained.add(key); log('info', 'agent', `Message from ${chat.name || chat.phone || chat.jid} stored, not answered: ${why}`); }
+    return;
+  }
   if (busy.has(chatId)) return void again.add(chatId);
   const h = getSettings().human;
   clearTimeout(timers.get(chatId));
@@ -127,6 +133,7 @@ async function answer(chatId) {
 
     await humanSend(chat, decision.messages, 'ai', now() - started);
     scheduleNextFollowup(chatId, decision.followupHours);
+    log('info', 'agent', `Replied to ${chat.name || chat.phone || chat.jid} via ${decision.provider} (${(decision.latencyMs / 1000).toFixed(1)}s)`);
     if (decision.handoff) log('warn', 'agent', `${chat.name || chat.phone || chat.jid} needs you: ${decision.handoffReason || 'agent asked for help'}`);
     emit('chat', { chatId });
   } catch (e) {

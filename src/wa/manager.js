@@ -34,7 +34,7 @@ function setStatus(id, patch) {
     if (row && !row.connected_at) update('accounts', id, { connected_at: now() }, ['connected_at']);
     next.since = now();
     // First link: give the history sync a moment so old contacts are not mistaken for new leads.
-    next.settleUntil = row && !row.connected_at && get('SELECT type FROM accounts WHERE id = ?', id)?.type === 'qr' ? now() + 30_000 : 0;
+    next.settleUntil = row && !row.connected_at && get('SELECT type FROM accounts WHERE id = ?', id)?.type === 'qr' ? now() + 10_000 : 0;
     log('info', 'whatsapp', `${row?.name || id} connected${next.me ? ` as +${next.me}` : ''}`);
   }
   if (patch.error && patch.error !== prev.error) log('warn', 'whatsapp', `Account ${id}: ${patch.error}`);
@@ -45,6 +45,9 @@ function hooksFor(account) {
   return {
     onStatus: (s) => setStatus(account.id, s),
     onMessages: (msgs, { live }) => ingest(account.id, msgs, live),
+    onNotice: (level, msg) => log(level, 'whatsapp', `${account.name}: ${msg}`),
+    // WhatsApp asks for a re-send when the other phone could not decrypt one of our messages.
+    getMessage: (waId) => get('SELECT m.text FROM messages m JOIN chats c ON c.id = m.chat_id WHERE c.account_id = ? AND m.wa_id = ? AND m.from_me = 1', account.id, waId)?.text || null,
     onContacts: (contacts) => {
       for (const c of contacts) {
         run('UPDATE chats SET name = COALESCE(name, ?), phone = COALESCE(phone, ?) WHERE account_id = ? AND jid = ?', c.name, c.phone, account.id, c.jid);

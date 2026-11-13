@@ -67,6 +67,7 @@ export class QrConnector {
     this.retries = 0;
     this.lastKeys = new Map(); // jid -> last inbound message key (for read receipts)
     this.pairPhone = null;
+    this.undecryptable = new Set();
   }
 
   async start({ pairPhone = null } = {}) {
@@ -87,6 +88,7 @@ export class QrConnector {
       syncFullHistory: true,        // pull existing chats so the agent can read past conversations
       markOnlineOnConnect: false,   // keep phone notifications working
       generateHighQualityLinkPreview: false,
+      getMessage: async (key) => { const text = this.hooks.getMessage?.(key.id); return text ? { conversation: text } : undefined; },
     });
     this.sock = sock;
     let pairingRequested = false;
@@ -132,6 +134,11 @@ export class QrConnector {
     const forward = (msgs, live) => {
       const out = [];
       for (const m of msgs) {
+        // Stub type 2 = WhatsApp delivered a message this session could not decrypt (it retries by itself).
+        if (live && m.messageStubType === 2 && !m.key?.fromMe && !this.undecryptable.has(m.key?.remoteJid)) {
+          this.undecryptable.add(m.key?.remoteJid);
+          this.hooks.onNotice?.('warn', `a message from ${m.pushName || m.key?.remoteJid} could not be decrypted yet (${m.messageStubParameters?.[0] || 'no session'}). WhatsApp retries automatically; if it keeps happening, unlink and link the number again.`);
+        }
         const n = toNeutral(m);
         if (!n) continue;
         if (!n.fromMe) this.lastKeys.set(n.jid, m.key);
