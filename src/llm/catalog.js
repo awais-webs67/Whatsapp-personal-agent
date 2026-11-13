@@ -1,0 +1,45 @@
+// Provider presets. Almost every vendor exposes an OpenAI-compatible /chat/completions
+// endpoint, so one client covers them; Claude uses the official Anthropic SDK.
+// `model` is only a starting suggestion — the dashboard's "Load models" button fetches
+// the live list from the provider, and both base URL and model stay editable.
+export const PRESETS = [
+  { id: 'anthropic', name: 'Claude (Anthropic)', kind: 'anthropic', baseUrl: '', model: 'claude-opus-5-5',
+    models: ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'], keyUrl: 'https://console.anthropic.com/settings/keys', free: false },
+  { id: 'openai', name: 'ChatGPT (OpenAI)', kind: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini',
+    keyUrl: 'https://platform.openai.com/api-keys', free: false },
+  { id: 'gemini', name: 'Gemini (Google)', kind: 'openai', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-2.5-flash',
+    keyUrl: 'https://aistudio.google.com/apikey', free: true },
+  { id: 'xai', name: 'Grok (xAI)', kind: 'openai', baseUrl: 'https://api.x.ai/v1', model: 'grok-3-mini',
+    keyUrl: 'https://console.x.ai', free: false },
+  { id: 'openrouter', name: 'OpenRouter', kind: 'openai', baseUrl: 'https://openrouter.ai/api/v1', model: 'meta-llama/llama-3.3-70b-instruct:free',
+    keyUrl: 'https://openrouter.ai/keys', free: true },
+  { id: 'deepseek', name: 'DeepSeek', kind: 'openai', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat',
+    keyUrl: 'https://platform.deepseek.com/api_keys', free: false },
+  { id: 'glm', name: 'GLM (Zhipu / Z.ai)', kind: 'openai', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4-flash',
+    keyUrl: 'https://open.bigmodel.cn/usercenter/apikeys', free: true },
+  { id: 'qwen', name: 'Qwen (Alibaba DashScope)', kind: 'openai', baseUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus',
+    keyUrl: 'https://bailian.console.alibabacloud.com', free: true },
+  { id: 'longcat', name: 'LongCat (Meituan)', kind: 'openai', baseUrl: 'https://api.longcat.chat/openai/v1', model: 'LongCat-Flash-Chat',
+    keyUrl: 'https://longcat.chat/platform', free: true },
+  { id: 'agentrouter', name: 'AgentRouter', kind: 'openai', baseUrl: 'https://agentrouter.org/v1', model: '',
+    keyUrl: 'https://agentrouter.org/console/token', free: true },
+  { id: 'groq', name: 'Groq', kind: 'openai', baseUrl: 'https://api.groq.com/openai/v1', model: 'llama-3.3-70b-versatile',
+    keyUrl: 'https://console.groq.com/keys', free: true },
+  { id: 'cerebras', name: 'Cerebras', kind: 'openai', baseUrl: 'https://api.cerebras.ai/v1', model: 'llama-3.3-70b',
+    keyUrl: 'https://cloud.cerebras.ai', free: true },
+  { id: 'mistral', name: 'Mistral', kind: 'openai', baseUrl: 'https://api.mistral.ai/v1', model: 'mistral-small-latest',
+    keyUrl: 'https://console.mistral.ai/api-keys', free: true },
+  { id: 'github', name: 'GitHub Models', kind: 'openai', baseUrl: 'https://models.github.ai/inference', model: 'openai/gpt-4o-mini',
+    keyUrl: 'https://github.com/settings/tokens', free: true },
+  { id: 'nvidia', name: 'NVIDIA NIM', kind: 'openai', baseUrl: 'https://integrate.api.nvidia.com/v1', model: 'meta/llama-3.3-70b-instruct',
+    keyUrl: 'https://build.nvidia.com', free: true },
+  { id: 'sambanova', name: 'SambaNova', kind: 'openai', baseUrl: 'https://api.sambanova.ai/v1', model: 'Meta-Llama-3.3-70B-Instruct',
+    keyUrl: 'https://cloud.sambanova.ai/apis', free: true },
+  { id: 'together', name: 'Together AI', kind: 'openai', baseUrl: 'https://api.together.xyz/v1', model: 'meta-llama/Llama-3.3-70B-Instruct-Turbo',
+    keyUrl: 'https://api.together.ai/settings/api-keys', free: false },
+  { id: 'ollama', name: 'Ollama (local)', kind: 'openai', baseUrl: 'http://localhost:11434/v1', model: 'llama3.2',
+    keyUrl: '', free: true, noKey: true },
+  { id: 'custom', name: 'Custom (OpenAI-compatible)', kind: 'openai', baseUrl: '', model: '', keyUrl: '', free: false },
+];
+
+export const preset = (id) => PRESETS.find((p) => p.id === id);
