@@ -4,6 +4,7 @@
 import { all, get, run, now, update } from '../db.js';
 import { getSettings, saveSettings, emit, log } from '../core.js';
 import { complete } from '../llm/router.js';
+import { toolCallToJson } from '../llm/client.js';
 import * as wa from '../wa/manager.js';
 import { STAGES, extractJson } from './brain.js';
 import { runCampaign, campaign } from './followups.js';
@@ -138,25 +139,25 @@ const TOOLS = {
 
 function systemPrompt() {
   const s = getSettings();
-  return `You are the operations assistant of ${s.business.name || 'a business'}'s WhatsApp agent. The business OWNER is talking to you (not a customer). Carry out what they ask using the tools, then report back briefly in the owner's language.
+  return `You are the operations assistant of ${s.business.name || 'a business'}'s WhatsApp agent. The business OWNER is talking to you (not a customer). Carry out what they ask using the actions below, then report back briefly in the owner's language.
 
 Today is ${new Date().toLocaleString('en-GB', { timeZone: s.followup.timezone, dateStyle: 'full', timeStyle: 'short' })}. Autopilot is ${s.autopilot ? 'on' : 'off'}.
 
-## Tools
+## Actions you can take
 ${Object.values(TOOLS).map((t) => `- ${t.doc}`).join('\n')}
 
 ## How to answer
-Reply with ONLY one JSON object each turn:
-- to use a tool: {"action": "tool_name", "args": {...}}
+Reply with ONLY one JSON object each turn, as plain text (no function-calling syntax):
+- to take an action: {"action": "stats", "args": {"days": 5}}
 - when finished or when you need something from the owner: {"reply": "your message to the owner"}
-You get the tool result back and can then use another tool or reply. Use at most ${MAX_STEPS} tools per request.
+You get the result back and can then take another action or reply. At most ${MAX_STEPS} actions per request.
 
 ## Rules
-- Before a batch that sends automatically ("send": true), call count_targets and tell the owner how many people it reaches, what the message is about and the interval, then wait for their yes. Skip the question only when the owner's message already said to send without asking, or is itself the yes to your earlier question.
-- Never promise the owner something a tool did not confirm. Report what the tool result says, including limits.
+- Before a batch that sends automatically ("send": true), take count_targets and tell the owner how many people it reaches, what the message is about and the interval, then wait for their yes. Skip the question only when the owner's message already said to send without asking, or is itself the yes to your earlier question.
+- Never promise the owner something an action result did not confirm. Report what the tool result says, including limits.
 - Batches skip people who bought or opted out unless the owner asks for a stage by name; people who asked not to be contacted are never messaged.
-- "Every N minutes" means interval_minutes N. Do not invent tools.
-- Talk to the owner in plain words. Never mention tool names, arguments or JSON in your reply; say what you did or what you need instead ("I could not open the site: …", not "use the remember tool").`;
+- "Every N minutes" means interval_minutes N. Only use the actions listed above.
+- Talk to the owner in plain words. Never mention action names, arguments or JSON in your reply; say what you did or what you need instead ("I could not open the site: …", not "use the remember tool").`;
 }
 
 /** Run one owner request through the tool loop. */
@@ -165,7 +166,7 @@ export async function runCommand(text, history = []) {
   const steps = [];
   for (let i = 0; i <= MAX_STEPS; i++) {
     const out = await complete({ system: systemPrompt(), messages, maxTokens: 1500 }, { purpose: 'command' });
-    const obj = extractJson(out.text);
+    const obj = extractJson(toolCallToJson(out.text));
     if (!obj || (!obj.action && obj.reply === undefined)) return { reply: out.text.trim(), steps };
     if (!obj.action) return { reply: String(obj.reply || 'Done.'), steps };
     const tool = TOOLS[obj.action];

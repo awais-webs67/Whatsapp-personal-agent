@@ -33,6 +33,7 @@ const server = http.createServer((req, res) => {
     if (key === 'limited') return send(429, { error: { message: 'Rate limit reached' } }, { 'retry-after': '120' });
     if (key === 'broke') return send(429, { error: { message: 'You exceeded your current quota, please check your plan and billing details' } });
     if (key === 'badkey') return send(401, { error: { message: 'Incorrect API key provided' } });
+    if (key === 'groqtool') return send(400, { error: { message: 'Tool choice is none, but model called a tool', type: 'invalid_request_error', code: 'tool_use_failed', failed_generation: '<function=stats>{"days": 5}</function>' } });
     if (req.url.endsWith('/models')) return send(200, { data: [{ id: 'whisper-large-v3' }, { id: 'llama-3.1-8b-instant' }, { id: 'llama-4-70b-versatile' }, { id: 'openai/gpt-oss-120b' }] });
     if (key === 'retired' && calls.at(-1).body?.model === 'llama-3.3-70b-versatile') return send(404, { error: { message: 'The model `llama-3.3-70b-versatile` does not exist or you do not have access to it.', type: 'invalid_request_error', code: 'model_not_found' } });
     send(200, { model: 'fake-1', choices: [{ message: { content: /operations assistant/.test(JSON.parse(body).messages[0].content) && cmdReplies.length ? cmdReplies.shift() : reply }, finish_reason: 'stop' }], usage: { prompt_tokens: 50, completion_tokens: 20 } },
@@ -311,4 +312,22 @@ test('token saver sends matching products in full and the rest as a short index'
   assert.match(out, /- Refunds within 3 days\n- Pay by Easypaisa/, 'short lists (rules) stay whole');
   assert.match(out, /We sell software\./);
   assert.equal(focus('- a\n- b', 'x'), '- a\n- b', 'short lists untouched');
+});
+
+test('Groq "model called a tool" errors are recovered into a normal command step', async () => {
+  const { toolCallToJson } = await import('../src/llm/client.js');
+  assert.deepEqual(JSON.parse(toolCallToJson('<function=stats>{"days": 5}</function>')), { action: 'stats', args: { days: 5 } });
+  assert.deepEqual(JSON.parse(toolCallToJson('{"name": "remember", "parameters": {"text": "x"}}')), { action: 'remember', args: { text: 'x' } });
+  assert.deepEqual(JSON.parse(toolCallToJson('[{"name": "stats", "arguments": "{\\"days\\": 2}"}]')), { action: 'stats', args: { days: 2 } });
+  assert.equal(toolCallToJson('{"reply": "done"}'), '{"reply": "done"}', 'our own format passes through');
+  assert.equal(toolCallToJson('{"messages": ["hi"], "stage": "new"}'), '{"messages": ["hi"], "stage": "new"}');
+
+  run('UPDATE providers SET enabled = 0');
+  const id = Number(run('INSERT INTO providers (preset, name, kind, base_url, api_key, model, priority, created_at) VALUES (?,?,?,?,?,?,?,?)', 'groq', 'Groq small', 'openai', baseUrl, encrypt('groqtool'), 'llama-3.1-8b-instant', -1, now()).lastInsertRowid);
+  const out = await complete({ messages: [{ role: 'user', content: 'aaj ka haal?' }] }, { purpose: 'command' });
+  assert.equal(out.providerName, 'Groq small');
+  assert.deepEqual(JSON.parse(out.text), { action: 'stats', args: { days: 5 } });
+  assert.equal(listProviders().map(publicProvider).find((p) => p.id === id).status, 'ready', 'not counted as a failure');
+  run('DELETE FROM providers WHERE id = ?', id);
+  run('UPDATE providers SET enabled = 1');
 });

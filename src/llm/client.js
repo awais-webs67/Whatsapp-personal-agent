@@ -81,10 +81,13 @@ async function fetchJson(url, init, timeoutMs) {
   if (!res.ok) {
     const b = Array.isArray(body) ? body[0] : body; // Gemini wraps errors in an array
     const msg = b?.error?.message || b?.message || (typeof b?.error === 'string' ? b.error : null) || String(raw).slice(0, 300) || res.statusText;
-    throw new LLMError(classify(res.status, body), `${res.status} ${msg}`, {
+    const err = new LLMError(classify(res.status, body), `${res.status} ${msg}`, {
       status: res.status,
       retryAfter: parseDuration(res.headers.get('retry-after')) ?? parseDuration(res.headers.get('x-ratelimit-reset-requests')),
     });
+    // Groq rejects output that looks like a tool call when no tools were sent, but includes what the model wrote.
+    if (typeof b?.error?.failed_generation === 'string') err.failedGeneration = b.error.failed_generation;
+    throw err;
   }
   if (typeof body !== 'object') throw new LLMError('bad_request', `Unexpected non-JSON response from ${new URL(url).host} — check the base URL`);
   return { body, headers: res.headers };
@@ -110,6 +113,9 @@ async function chatOpenAI(p, { system, messages, maxTokens, timeoutMs, fast }) {
     out = await post({ max_tokens: maxTokens, ...effort });
   } catch (e) {
     if (e.kind !== 'bad_request') throw e;
+    if (e.failedGeneration?.trim()) {
+      return { text: toolCallToJson(e.failedGeneration), model: p.model, usage: { in: 0, out: 0 }, limits: null };
+    }
     // Fall back for endpoints that reject an optional field (newer OpenAI models want max_completion_tokens).
     if (effort.reasoning_effort && /reasoning/i.test(e.message)) out = await post({ max_tokens: maxTokens });
     else if (/max_tokens|max_completion_tokens/i.test(e.message)) out = await post({ max_completion_tokens: maxTokens });
@@ -252,4 +258,29 @@ export function chooseModel(available, previous = '') {
     return shared * 3 + (rank === -1 ? 0 : GOOD.length - rank) - (/preview|exp|beta|alpha|test/i.test(m) ? 2 : 0);
   };
   return list.sort((a, b) => score(b) - score(a) || a.localeCompare(b))[0];
+}
+
+/**
+ * Small models sometimes answer in their native tool-call format instead of the JSON we asked for:
+ *   <function=stats>{"days": 5}</function>   or   {"name": "stats", "parameters": {"days": 5}}
+ * Turn those into {"action": ..., "args": ...}; anything else passes through unchanged.
+ */
+export function toolCallToJson(text) {
+  const t = String(text).trim();
+  const fn = t.match(/<function=([\w.-]+)>?\s*(\{[\s\S]*?\})?\s*(<\/function>)?/);
+  if (fn) {
+    let args = {};
+    try { args = fn[2] ? JSON.parse(fn[2]) : {}; } catch { /* keep empty */ }
+    return JSON.stringify({ action: fn[1], args });
+  }
+  try {
+    const o = JSON.parse(t.replace(/^```(?:json)?|```$/g, '').trim());
+    const call = Array.isArray(o) ? o[0] : o?.tool_calls?.[0]?.function || o;
+    if (call && typeof call.name === 'string' && !('action' in call) && !('messages' in call)) {
+      let args = call.arguments ?? call.parameters ?? call.args ?? {};
+      if (typeof args === 'string') { try { args = JSON.parse(args); } catch { args = {}; } }
+      return JSON.stringify({ action: call.name, args });
+    }
+  } catch { /* not JSON */ }
+  return t;
 }
