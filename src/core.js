@@ -22,18 +22,20 @@ export function log(level, scope, msg) {
 export const DEFAULT_SETTINGS = {
   autopilot: true,
   business: {
-    name: '', persona: '', about: '', catalog: '', faqs: '', policies: '',
+    name: '', persona: '',
+    goal: 'Answer questions about what we offer and help the customer buy, without pressure.',
+    learned: '', learnedAt: null, about: '', catalog: '', faqs: '', policies: '',
     tone: 'Short, warm, natural WhatsApp messages. No long paragraphs, no bullet lists.',
     language: 'Reply in the same language and script the customer uses (English, Urdu, Roman Urdu...).',
     purchaseSignal: 'Customer confirms the order or shares a payment proof.',
     examples: '',
   },
   human: {
-    debounceMin: 4, debounceMax: 9,     // seconds to wait for the customer to finish typing
-    readMin: 1, readMax: 4,             // seconds before the chat is marked read
-    typingCpsMin: 5, typingCpsMax: 9,   // simulated typing speed, characters per second
-    typingMaxSec: 14,
-    gapMin: 1, gapMax: 3,               // pause between consecutive bubbles
+    debounceMin: 2, debounceMax: 3.5,   // seconds to wait for the customer to finish typing
+    readMin: 0.5, readMax: 1.5,         // seconds before the chat is marked read
+    typingCpsMin: 14, typingCpsMax: 22, // simulated typing speed, characters per second
+    typingMaxSec: 6,
+    gapMin: 0.6, gapMax: 1.4,           // pause between consecutive bubbles
     maxRepliesPerHour: 120,             // per account safety cap
     handoffMinutes: 60,                 // AI stays quiet this long after you reply by hand
   },
@@ -46,7 +48,7 @@ export const DEFAULT_SETTINGS = {
     dailyCap: 40,                       // proactive messages per account per day
     gapMinSec: 60, gapMaxSec: 240,
   },
-  llm: { historyMessages: 30, maxTokens: 1024, timeoutSec: 45 },
+  llm: { historyMessages: 30, maxTokens: 1024, timeoutSec: 20 },
 };
 
 const merge = (base, over) => {
@@ -54,6 +56,13 @@ const merge = (base, over) => {
   const out = { ...base };
   for (const k of Object.keys(over || {})) out[k] = k in base ? merge(base[k], over[k]) : over[k];
   return out;
+};
+
+/** Pacing presets offered in Settings. */
+export const PACING = {
+  instant: { debounceMin: 1, debounceMax: 1.5, readMin: 0, readMax: 0.3, typingCpsMin: 40, typingCpsMax: 60, typingMaxSec: 2, gapMin: 0.3, gapMax: 0.6 },
+  fast: { debounceMin: 2, debounceMax: 3.5, readMin: 0.5, readMax: 1.5, typingCpsMin: 14, typingCpsMax: 22, typingMaxSec: 6, gapMin: 0.6, gapMax: 1.4 },
+  natural: { debounceMin: 4, debounceMax: 9, readMin: 1, readMax: 4, typingCpsMin: 5, typingCpsMax: 9, typingMaxSec: 14, gapMin: 1, gapMax: 3 },
 };
 
 export function getSettings() {
@@ -72,6 +81,15 @@ export const kvGet = (key, fallback = null) => {
 };
 export const kvSet = (key, value) =>
   run('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', key, JSON.stringify(value));
+
+/** Installs created with the first, slower defaults move to the fast pacing once. */
+export function migrateSettings() {
+  if (kvGet('settingsVersion', 1) >= 2) return;
+  const row = get('SELECT value FROM settings WHERE key = ?', 'app');
+  const stored = row ? parse(row.value) : null;
+  if (stored?.human?.debounceMin === 4 && stored.human.debounceMax === 9) kvSet('app', merge(stored, { human: PACING.fast, llm: { timeoutSec: 20 } }));
+  kvSet('settingsVersion', 2);
+}
 
 // ---------- secrets ----------
 // API keys and tokens are encrypted at rest with a key that never leaves this machine.

@@ -133,6 +133,9 @@ async function modelsOpenAI(p) {
 // Models that support the server-side refusal fallback.
 const FALLBACK_MODELS = new Set(['claude-fable-5-2', 'claude-fable-5-1', 'claude-opus-5-5', 'claude-opus-5', 'claude-sonnet-5-5']);
 
+// Models that accept output_config.effort. Short chat replies do well at low effort, and it is much faster.
+const EFFORT_MODELS = /^claude-(fable-5|opus-5|sonnet-5|haiku-5|opus-4-[5678]|sonnet-4-6)/;
+
 const anthropicClient = (p, timeoutMs) =>
   new Anthropic({ apiKey: p.apiKey, ...(p.baseUrl ? { baseURL: p.baseUrl } : {}), maxRetries: 0, timeout: timeoutMs });
 
@@ -149,7 +152,10 @@ function anthropicError(e) {
 async function chatAnthropic(p, { system, messages, maxTokens, timeoutMs }) {
   const client = anthropicClient(p, timeoutMs);
   // Thinking shares the max_tokens budget, so leave generous headroom above the reply itself.
-  const params = { model: p.model, max_tokens: Math.max(maxTokens, 16000), messages, ...(system ? { system } : {}) };
+  const params = {
+    model: p.model, max_tokens: Math.max(maxTokens, 16000), messages, ...(system ? { system } : {}),
+    ...(EFFORT_MODELS.test(p.model) ? { output_config: { effort: 'low' } } : {}),
+  };
   try {
     const call = FALLBACK_MODELS.has(p.model)
       ? client.beta.messages.create({ ...params, betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' })

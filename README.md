@@ -15,6 +15,9 @@ people who showed interest but never bought. You watch and steer everything from
   rejoins when its limit resets. Remaining quota is shown live where the provider reports it.
 - **Human pacing.** Waits for the customer to finish typing, marks read, shows "typing…" for a
   realistic time, splits long answers into bubbles, and caps replies per hour.
+- **Learns from your chats.** "Learn from my chats" reads conversations you answered yourself and
+  writes down what you offer, the prices you quote and how you sound. The result is editable.
+- **More than sales.** Set the agent's job to sales, support, bookings, a personal assistant, or your own.
 - **Reads old chats.** After a QR link, past conversations sync in. "Review past conversations"
   classifies each one and drafts a follow-up for interested people who did not buy.
 - **Follow-ups you control.** Drafts wait for approval by default. Sending is spaced out, capped

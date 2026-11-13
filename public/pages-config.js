@@ -93,6 +93,9 @@ export function knowledge() {
     el.append(h('div.stack', {},
       h('div.card', {}, h('header', {}, h('h2', {}, 'Who is talking')), h('div.pad.stack', {},
         h('div.grid2', {}, line('name', 'Business name', null, 'AivraSol'), line('persona', 'Agent name and role', 'How it introduces itself.', 'Sara from the sales team')),
+        h('label.f', {}, 'What the agent is for',
+          h('div.chips', {}, Object.entries(GOALS).map(([label, text]) => h('button.chip', { type: 'button', onclick: () => { f.goal.value = text; } }, label))),
+          (f.goal = h('textarea', { rows: 2, value: b.goal || '' })), h('small', {}, 'Pick a starting point or write your own. This decides what the agent tries to achieve in every chat.')),
         area('about', 'About the business', 'One short paragraph: what you do, who for, where.', 3))),
       h('div.card', {}, h('header', {}, h('h2', {}, 'What you sell')), h('div.pad.stack', {},
         area('catalog', 'Products, services and prices', 'One per line works best. Include price, what is included, delivery time.', 8, 'Business website (5 pages) — Rs 45,000 — delivered in 7 days\nOnline store — Rs 90,000 — 14 days — includes payment setup'),
@@ -102,9 +105,36 @@ export function knowledge() {
       h('div.card', {}, h('header', {}, h('h2', {}, 'How it should sound')), h('div.pad.stack', {},
         area('tone', 'Tone', null, 2), area('language', 'Language', null, 2),
         area('examples', 'A few real replies of yours', 'Paste 5 to 15 messages you actually sent customers. This is the strongest way to make it sound like you.', 7))),
+      learnCard(f, b),
       h('div.row', {}, save, h('a.btn', { href: '#/playground' }, 'Try it in Live test'))));
   });
   return el;
+}
+
+const GOALS = {
+  Sales: 'Answer questions about what we offer and help the customer buy, without pressure.',
+  Support: 'Help existing customers with questions and problems about their order or service. Solve what you can from the information here and hand over to the owner for anything else.',
+  Bookings: 'Help the person book an appointment: find out what they need, offer the available options listed here, and confirm the details.',
+  'Personal assistant': 'Reply on the owner\'s behalf: answer simple questions from the information here, take a message for anything else, and tell the person the owner will get back to them.',
+};
+
+/** Reads the owner's own past replies and writes down how they answer; the result stays editable. */
+function learnCard(f, b) {
+  f.learned = h('textarea', { rows: 10, placeholder: 'Nothing learned yet.', value: b.learned || '' });
+  const status = h('div');
+  const btn = h('button.btn.dark', { onclick: () => act(btn, async () => draw(await POST('/api/learn', {}))) }, b.learned ? 'Learn again' : 'Learn from my chats');
+  const draw = (l) => {
+    if (l.running) return set(status, h('div.stack', {}, h('div.bar', {}, h('i', { style: `width:${l.total ? (l.done / l.total) * 100 : 0}%` })), h('span.muted', {}, `Reading ${num(l.chats)} conversations…`)));
+    if (l.error) return set(status, h('div.note.bad', {}, l.error));
+    if (l.finishedAt) { GET('/api/settings').then((s) => { f.learned.value = s.business.learned || ''; }); return set(status, h('div.note', {}, `Learned from ${num(l.chats)} conversations. Review the text below: old chats can contain old prices.`)); }
+    set(status);
+  };
+  live.on('learning', draw);
+  GET('/api/learn').then((l) => l.running && draw(l));
+  return h('div.card', {}, h('header', {}, h('h2', {}, 'Learn from my chats'), btn), h('div.pad.stack', {},
+    h('p', {}, 'The agent reads conversations where you replied yourself and writes down what you offer, the prices you quote, how you answer common questions and how you sound. You can edit the result. Run it again whenever you have new chats.'),
+    status,
+    field('What it learned', f.learned, b.learnedAt ? `Last updated ${new Date(b.learnedAt).toLocaleString()}. Anything you write in the sections above wins over this.` : 'Needs a linked number with synced history.')));
 }
 
 // ============================== Settings ==============================
@@ -130,7 +160,8 @@ export function settings() {
     }, 'Settings saved') }, 'Save settings');
     const cur = h('input', { type: 'password', autocomplete: 'current-password' }), next = h('input', { type: 'password', autocomplete: 'new-password' });
     el.append(h('div.stack', {},
-      h('div.card', {}, h('header', {}, h('h2', {}, 'Reply pacing')), h('div.pad.stack', {},
+      h('div.card', {}, h('header', {}, h('h2', {}, 'Reply pacing'), h('div.row', {}, h('span.muted', {}, 'Preset'), [['instant', 'Instant'], ['fast', 'Fast'], ['natural', 'Natural']].map(([id, label]) =>
+        h('button.btn.sm', { title: { instant: 'Answers as soon as the model does', fast: 'A few seconds, still looks typed', natural: 'Slowest, most human-looking' }[id], onclick: (e) => act(e.target, async () => { const p = (await GET('/api/pacing'))[id]; for (const [g, k, i] of inputs) if (g === 'human' && k in p) i.value = p[k]; }, `${label} pacing filled in. Save to apply.`) }, label)))), h('div.pad.stack', {},
         h('div.grid3', {},
           pair('human', 'debounceMin', 'debounceMax', 'Wait for them to finish (sec)', 'Several quick messages get one answer.'),
           pair('human', 'readMin', 'readMax', 'Delay before “read” (sec)'),

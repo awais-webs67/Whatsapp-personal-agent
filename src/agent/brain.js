@@ -20,13 +20,14 @@ export function buildSystem(settings, chat, mode) {
   const b = settings.business;
   const who = b.persona?.trim() || 'a member of the sales team';
   const shop = b.name?.trim() || 'this business';
-  const out = [`You are ${who}, chatting with a customer on WhatsApp on behalf of ${shop}. The customer usually arrives from an ad and wants to know about what we sell.`];
+  const out = [`You are ${who}, chatting with a person on WhatsApp on behalf of ${shop}.\nYour job: ${b.goal?.trim() || 'Help the person with what they ask.'}`];
 
   out.push(section('About the business', b.about));
   out.push(section('Products, services and prices', b.catalog));
   out.push(section('Frequently asked questions', b.faqs));
   out.push(section('Policies (delivery, payment, returns)', b.policies));
   out.push(section('Example replies in our voice', b.examples));
+  out.push(section('Learned from the owner\'s own past chats (how they answer, what they quote; if this conflicts with a section above, the section above wins)', b.learned));
 
   out.push(`
 ## How to write
@@ -34,7 +35,7 @@ export function buildSystem(settings, chat, mode) {
 - ${b.language}
 - Write like a person texting: 1 to 3 short bubbles, plain text, no markdown, no headings, no lists. Ask at most one question at a time.
 - Read the whole conversation first. Never repeat something already answered, never re-greet mid-conversation.
-- Move the conversation one step toward a purchase, without pressure.
+- Move the conversation one step toward your job above, without pressure.
 
 ## Hard rules
 - Only state prices, stock, delivery times, discounts and policies that appear above. If the answer is not there, say you will confirm and set "handoff" to true. Never make something up.

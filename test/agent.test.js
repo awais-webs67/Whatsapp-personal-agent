@@ -177,3 +177,19 @@ test('campaign reviews old chats and drafts follow-ups for approval', async () =
   assert.equal(chat.stage, 'interested');
   assert.equal(get("SELECT status FROM followups WHERE chat_id = ? AND kind = 'campaign'", chat.id).status, 'pending');
 });
+
+test('learns the owner\'s offers and voice from chats they handled, and the agent is told about it', async () => {
+  const { learnFromChats, learning } = await import('../src/agent/learn.js');
+  const { buildSystem } = await import('../src/agent/brain.js');
+  const { getSettings } = await import('../src/core.js');
+  const m = (waId, fromMe, text) => ({ jid: '555@s.whatsapp.net', phone: '555', waId, fromMe, text, type: 'text', ts: now() - 5 * 86_400_000 });
+  deliver([m('l-1', false, 'logo ka kya rate hai?'), m('l-2', true, 'Logo design 5000 ka hai bhai, 2 din mein'), m('l-3', false, 'advance?'), m('l-4', true, '50% advance, baqi delivery par')], false);
+  reply = JSON.stringify({ offers: ['Logo design - Rs 5000 - 2 days'], faqs: [{ q: 'Advance?', a: '50% advance, rest on delivery' }], policies: [], style: 'Short Roman Urdu, says bhai', examples: ['Logo design 5000 ka hai bhai, 2 din mein'] });
+  await learnFromChats();
+  await until(() => !learning.running);
+  assert.equal(learning.error, null);
+  const learned = getSettings().business.learned;
+  assert.match(learned, /Logo design - Rs 5000/);
+  assert.match(calls.at(-1).body.messages.at(-1).content, /Me: Logo design 5000 ka hai bhai/);
+  assert.match(buildSystem(getSettings(), { stage: 'new' }, 'reply'), /Logo design - Rs 5000/);
+});

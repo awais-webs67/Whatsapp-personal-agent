@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { all, get, run, now, parse, update } from './db.js';
-import { bus, emit, log, getSettings, saveSettings, kvGet, kvSet, encrypt, SECRET } from './core.js';
+import { bus, emit, log, getSettings, saveSettings, kvGet, kvSet, encrypt, SECRET, PACING, migrateSettings } from './core.js';
 import { PRESETS, preset } from './llm/catalog.js';
 import { listModels, LLMError } from './llm/client.js';
 import { listProviders, publicProvider, callProvider, complete, hydrate, syncBalances, startRouterTicker } from './llm/router.js';
@@ -11,6 +11,7 @@ import * as wa from './wa/manager.js';
 import { STAGES, decide, buildSystem } from './agent/brain.js';
 import { startPipeline, onOwner, eligibility } from './agent/pipeline.js';
 import { startFollowups, runCampaign, campaign } from './agent/followups.js';
+import { learnFromChats, learning } from './agent/learn.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const app = express();
@@ -322,6 +323,9 @@ app.get('/api/playground/prompt', wrap(() => ({
 
 // ---------- settings ----------
 app.get('/api/settings', wrap(() => getSettings()));
+app.get('/api/pacing', wrap(() => PACING));
+app.get('/api/learn', wrap(() => learning));
+app.post('/api/learn', wrap((req) => learnFromChats({ accountId: req.body.accountId ? Number(req.body.accountId) : null, maxChats: Math.min(1000, Math.max(1, Number(req.body.maxChats) || 150)) })));
 app.put('/api/settings', wrap((req) => {
   const s = saveSettings(req.body || {});
   log('info', 'settings', 'Settings updated');
@@ -382,6 +386,7 @@ app.use((err, _req, res, _next) => {
 });
 
 export function start(port = Number(process.env.PORT) || 3000) {
+  migrateSettings();
   startPipeline();
   startFollowups();
   startRouterTicker();

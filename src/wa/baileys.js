@@ -82,7 +82,8 @@ export class QrConnector {
     const sock = makeWASocket({
       auth: state, logger,
       agent: proxyAgent(), fetchAgent: proxyAgent(),
-      browser: Browsers.macOS('Desktop'),
+      // WhatsApp rejects the "Desktop" client identity (closes with 428); a Chrome identity links fine.
+      browser: Browsers.windows('Chrome'),
       syncFullHistory: true,        // pull existing chats so the agent can read past conversations
       markOnlineOnConnect: false,   // keep phone notifications working
       generateHighQualityLinkPreview: false,

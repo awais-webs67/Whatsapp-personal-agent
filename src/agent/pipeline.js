@@ -100,16 +100,20 @@ async function answer(chatId) {
       return log('warn', 'agent', `Hourly cap of ${h.maxRepliesPerHour} replies reached on ${account.name}; ${chat.name || chat.jid} left for you`);
     }
 
+    // Start thinking immediately; the read receipt and typing indicator play out while the model works.
+    let seen = lastCustomerId(chatId);
+    let started = now();
+    let pending = decide(chatId, 'reply');
+    pending.catch(() => {});
     await sleep(rand(h.readMin, h.readMax) * 1000);
     await wa.markRead(chat);
-
-    let decision, seen, started;
-    for (let round = 0; round < 3; round++) {
+    await wa.typing(chat, true);
+    let decision = await pending;
+    for (let round = 0; round < 2 && lastCustomerId(chatId) !== seen; round++) {
+      // They wrote more while we were thinking: answer the whole thing instead.
       seen = lastCustomerId(chatId);
       started = now();
-      await wa.typing(chat, true);
       decision = await decide(chatId, 'reply');
-      if (lastCustomerId(chatId) === seen) break; // nothing new arrived while thinking
     }
 
     // The owner may have stepped in while the model was thinking.
