@@ -112,5 +112,5 @@ export const stagePill = (s) => h(`span.pill${s === 'purchased' ? '.ok' : s === 
 
 export const PROVIDER_STATUS = {
   ready: ['Ready', 'ok'], disabled: ['Off', ''], rate_limited: ['Rate limited', 'warn'], quota_exhausted: ['Quota used up', 'bad'],
-  invalid_key: ['Key rejected', 'bad'], provider_down: ['Provider down', 'warn'], unreachable: ['Unreachable', 'warn'], daily_limit: ['Daily cap hit', 'warn'], cooldown: ['Cooling down', 'warn'],
+  invalid_key: ['Key rejected', 'bad'], provider_down: ['Provider down', 'warn'], unreachable: ['Unreachable', 'warn'], daily_limit: ['Daily cap hit', 'warn'], cooldown: ['Cooling down', 'warn'], model_missing: ['Model not found', 'bad'],
 };

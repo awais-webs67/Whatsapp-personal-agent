@@ -251,7 +251,7 @@ export function models() {
       h('button.btn.primary', { onclick: (e) => act(e.target, async () => {
         const id = p ? (await PATCH(`/api/providers/${p.id}`, body()), p.id) : (await POST('/api/providers', body())).id;
         close();
-        try { const r = await POST(`/api/providers/${id}/test`); toast(`Connected. Answered in ${(r.latencyMs / 1000).toFixed(1)}s.`); } catch (err) { toast(`Saved, but the test call failed: ${err.message}`, true); }
+        try { const r = await POST(`/api/providers/${id}/test`); toast(`Connected. ${r.model} answered in ${(r.latencyMs / 1000).toFixed(1)}s.`); } catch (err) { toast(`Saved, but the test call failed: ${err.message}`, true); }
       }) }, p ? 'Save and test' : 'Add and test'),
     ]);
   }

@@ -3,7 +3,7 @@
 // benched (with a reason and a timer) and the next one takes over automatically.
 import { all, get, run, now, parse, update } from '../db.js';
 import { decrypt, mask, emit, log, dayKey, getSettings } from '../core.js';
-import { chat, fetchBalance, LLMError } from './client.js';
+import { chat, fetchBalance, listModels, chooseModel, LLMError } from './client.js';
 
 const MIN = 60_000;
 
@@ -21,6 +21,7 @@ export function usageToday(id) {
 export function blockedReason(row, state = parse(row.state), t = now()) {
   if (!row.enabled) return 'disabled';
   if (state.status === 'invalid_key') return 'invalid_key';
+  if (state.status === 'model_missing') return 'model_missing';
   if (state.cooldownUntil && state.cooldownUntil > t) return state.status || 'cooldown';
   if (row.daily_limit && usageToday(row.id).requests >= row.daily_limit) return 'daily_limit';
   return null;
@@ -66,6 +67,7 @@ export function cooldownFor(err) {
     case 'auth': return { status: 'invalid_key', ms: 0 };
     case 'server': return { status: 'provider_down', ms: hinted ?? 30_000 };
     case 'network': return { status: 'unreachable', ms: 30_000 };
+    case 'model_missing': return { status: 'model_missing', ms: 0 };
     default: return null; // bad_request / refusal / empty: this request's problem, not the provider's
   }
 }
@@ -91,8 +93,17 @@ export async function callProvider(row, req, { purpose = 'reply' } = {}) {
   // Live replies use the short timeout from Settings; background work (commands, learning, reviews) can take longer.
   const live = purpose === 'reply' || purpose === 'test';
   const timeoutMs = (live ? s.timeoutSec : Math.max(s.timeoutSec, 90)) * 1000;
+  const call = (r) => chat(hydrate(r), { maxTokens: s.maxTokens, timeoutMs, fast: purpose === 'reply', ...req });
   try {
-    const out = await chat(hydrate(row), { maxTokens: s.maxTokens, timeoutMs, fast: purpose === 'reply', ...req });
+    let out;
+    try {
+      out = await call(row);
+    } catch (e) {
+      const fixed = e instanceof LLMError && e.kind === 'model_missing' ? await replaceModel(row) : null;
+      if (!fixed) throw e;
+      row = fixed;
+      out = await call(row);
+    }
     recordSuccess(row.id, out);
     return { ...out, providerId: row.id, providerName: row.name };
   } catch (e) {
@@ -102,6 +113,17 @@ export async function callProvider(row, req, { purpose = 'reply' } = {}) {
   } finally {
     broadcast();
   }
+}
+
+/** The provider no longer has this model: ask it for its current list and switch to the closest one. */
+export async function replaceModel(row) {
+  let models;
+  try { models = await listModels(hydrate(row)); } catch { return null; }
+  const next = chooseModel(models, row.model);
+  if (!next || next === row.model) return null;
+  update('providers', row.id, { model: next }, ['model']);
+  log('warn', 'router', `${row.name}: model "${row.model}" is no longer available, switched to "${next}"`);
+  return get('SELECT * FROM providers WHERE id = ?', row.id);
 }
 
 /** Walk the chain until a provider answers. Returns the reply plus which hops were tried. */
@@ -125,9 +147,9 @@ export async function complete(req, { purpose = 'reply' } = {}) {
       log('warn', 'router', `${row.name} failed (${err.kind}): ${err.message}${next ? ` — switching to ${next.name}` : ''}`);
     }
   }
-  const why = { rate_limited: 'rate limited', quota_exhausted: 'quota used up', invalid_key: 'API key rejected', daily_limit: 'daily cap reached', provider_down: 'provider down', unreachable: 'not reachable from this server', cooldown: 'cooling down' };
+  const why = { rate_limited: 'rate limited', quota_exhausted: 'quota used up', invalid_key: 'API key rejected', daily_limit: 'daily cap reached', provider_down: 'provider down', unreachable: 'not reachable from this server', cooldown: 'cooling down', model_missing: 'model not found (pick another on the Models page)' };
   const detail = hops.map((h) => `${h.provider}: ${h.skipped ? why[h.skipped] || h.skipped : h.message || h.error}`).join('; ');
-  throw new LLMError('quota', `No model could answer. ${detail}${chain.filter((r) => r.enabled).length < 2 ? '. Add a second model (Groq is fast and has a free tier) so one can cover for the other.' : ''}`);
+  throw new LLMError('quota', `No model could answer. ${detail}${chain.filter((r) => r.enabled).length < 2 ? '. Add a second model from another provider so one can cover when the other fails.' : ''}`);
 }
 
 /** Refresh account balances where the vendor has an endpoint for it. */

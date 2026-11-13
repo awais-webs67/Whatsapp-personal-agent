@@ -9,6 +9,7 @@ import { bus, emit, log, getSettings, saveSettings, kvGet, kvSet, encrypt, SECRE
 import { PRESETS, preset } from './llm/catalog.js';
 import { listModels, probe, LLMError } from './llm/client.js';
 import { listProviders, publicProvider, callProvider, complete, hydrate, syncBalances, startRouterTicker } from './llm/router.js';
+import { chooseModel } from './llm/client.js';
 import * as wa from './wa/manager.js';
 import { STAGES, decide, buildSystem } from './agent/brain.js';
 import { startPipeline, onOwner, eligibility } from './agent/pipeline.js';
@@ -261,9 +262,14 @@ function providerInput(body, prev = null) {
 const broadcastProviders = () => emit('providers', listProviders().map(publicProvider));
 app.get('/api/presets', wrap(() => PRESETS));
 app.get('/api/providers', wrap(() => listProviders().map(publicProvider)));
-app.post('/api/providers', wrap((req) => {
+app.post('/api/providers', wrap(async (req) => {
   const p = providerInput(req.body);
   if (!p.api_key && !preset(p.preset)?.noKey) throw bad('API key is required');
+  // Suggested model IDs go stale; if the provider no longer lists this one, start with the closest that it does.
+  try {
+    const models = await listModels({ ...p, baseUrl: p.base_url, apiKey: String(req.body.apiKey || '').trim() });
+    if (models.length && !models.includes(p.model)) p.model = chooseModel(models, p.model) || p.model;
+  } catch { /* the test call right after saving reports key or network problems */ }
   const max = get('SELECT COALESCE(MAX(priority), -1) m FROM providers').m;
   const { lastInsertRowid } = run('INSERT INTO providers (preset, name, kind, base_url, api_key, model, daily_limit, priority, created_at) VALUES (?,?,?,?,?,?,?,?,?)',
     p.preset, p.name, p.kind, p.base_url, p.api_key || '', p.model, p.daily_limit, max + 1, now());
@@ -275,7 +281,7 @@ app.patch('/api/providers/:id', wrap((req) => {
   const row = need(get('SELECT * FROM providers WHERE id = ?', Number(req.params.id)), 'Model');
   const p = providerInput(req.body, row);
   // A new key or a manual reset clears a bad-key / cooldown state.
-  if (p.api_key || req.body.reset) p.state = JSON.stringify({ ...parse(row.state), status: 'ready', cooldownUntil: null, lastError: null });
+  if (p.api_key || req.body.reset || p.model !== row.model) p.state = JSON.stringify({ ...parse(row.state), status: 'ready', cooldownUntil: null, lastError: null });
   update('providers', row.id, p, ['name', 'base_url', 'model', 'daily_limit', 'enabled', 'api_key', 'state']);
   broadcastProviders();
   return { ok: true };

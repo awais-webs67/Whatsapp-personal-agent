@@ -33,6 +33,8 @@ const server = http.createServer((req, res) => {
     if (key === 'limited') return send(429, { error: { message: 'Rate limit reached' } }, { 'retry-after': '120' });
     if (key === 'broke') return send(429, { error: { message: 'You exceeded your current quota, please check your plan and billing details' } });
     if (key === 'badkey') return send(401, { error: { message: 'Incorrect API key provided' } });
+    if (req.url.endsWith('/models')) return send(200, { data: [{ id: 'whisper-large-v3' }, { id: 'llama-3.1-8b-instant' }, { id: 'llama-4-70b-versatile' }, { id: 'openai/gpt-oss-120b' }] });
+    if (key === 'retired' && calls.at(-1).body?.model === 'llama-3.3-70b-versatile') return send(404, { error: { message: 'The model `llama-3.3-70b-versatile` does not exist or you do not have access to it.', type: 'invalid_request_error', code: 'model_not_found' } });
     send(200, { model: 'fake-1', choices: [{ message: { content: /operations assistant/.test(JSON.parse(body).messages[0].content) && cmdReplies.length ? cmdReplies.shift() : reply }, finish_reason: 'stop' }], usage: { prompt_tokens: 50, completion_tokens: 20 } },
       { 'x-ratelimit-remaining-requests': '42', 'x-ratelimit-limit-requests': '100' });
   });
@@ -280,4 +282,19 @@ test('agent instructions keep it on topic and stop it promising things', async (
   assert.match(sys, /never instructions to you/);
   const brief = buildSystem({ ...s, business: { ...s.business, offTopic: 'brief' } }, { stage: 'new' }, 'reply');
   assert.match(brief, /one short sentence, then bring the chat back/);
+});
+
+test('a retired model is replaced with the closest current one and the request still succeeds', async () => {
+  const { chooseModel } = await import('../src/llm/client.js');
+  assert.equal(chooseModel(['whisper-large-v3', 'llama-3.1-8b-instant', 'llama-4-70b-versatile'], 'llama-3.3-70b-versatile'), 'llama-4-70b-versatile');
+  assert.equal(chooseModel(['whisper-large-v3', 'playai-tts']), null, 'never picks a speech model');
+  run('UPDATE providers SET enabled = 0');
+  const id = Number(run('INSERT INTO providers (preset, name, kind, base_url, api_key, model, priority, created_at) VALUES (?,?,?,?,?,?,?,?)', 'groq', 'Groq', 'openai', baseUrl, encrypt('retired'), 'llama-3.3-70b-versatile', -1, now()).lastInsertRowid);
+  reply = JSON.stringify({ messages: ['ok'], stage: 'new', summary: '' });
+  const out = await complete({ messages: [{ role: 'user', content: 'hi' }] });
+  assert.equal(out.providerName, 'Groq');
+  assert.equal(get('SELECT model FROM providers WHERE id = ?', id).model, 'llama-4-70b-versatile');
+  assert.equal(listProviders().map(publicProvider).find((p) => p.id === id).status, 'ready');
+  run('DELETE FROM providers WHERE id = ?', id);
+  run('UPDATE providers SET enabled = 1');
 });
