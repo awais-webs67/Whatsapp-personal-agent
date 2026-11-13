@@ -271,3 +271,5 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--o
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 .thread-head .back { display: none; }
 @media (max-width: 760px) { .thread-head .back { display: inline-flex; } }
+.grid2, .grid3 { align-items: start; }
+label.f { align-content: start; }
