@@ -163,10 +163,20 @@ export function numbers() {
 export function models() {
   let presets = [];
   const box = h('div.card');
+  const netBox = h('div');
+  async function checkNetwork() {
+    const rows = await POST('/api/providers/check');
+    if (!rows.length) return set(netBox, h('div.note', {}, 'Turn on at least one model first.'));
+    const bad = rows.filter((r) => !r.ok);
+    set(netBox, h(`div.note${bad.length ? '.bad' : ''}`, {},
+      h('b', {}, bad.length ? `This server cannot reach ${bad.length} of ${rows.length} providers. ` : 'This server can reach every provider. '),
+      rows.map((r) => h('div', { style: 'margin-top:4px' }, `${r.name}: `, r.ok ? `reachable in ${(r.ms / 1000).toFixed(1)}s${r.keyOk ? ', key accepted' : [400, 401, 403].includes(r.status) ? ', but the API key was rejected' : ''}` : r.error)),
+      bad.length ? h('div', { style: 'margin-top:6px' }, 'If every provider fails the same way, the problem is this computer\'s internet, firewall, VPN or antivirus, not the keys.') : null));
+  }
   const el = h('div.page', {},
     h('div.head', {}, h('div', {}, h('h1', {}, 'Models'), h('p', {}, 'The agent uses the first model that is ready. When one hits its rate limit, runs out of quota or goes down, the next one takes over within the same reply, and it comes back by itself when the limit resets.')),
-      h('button.btn.primary', { onclick: () => edit(null) }, 'Add a model')),
-    box);
+      h('div.row', {}, h('button.btn', { onclick: (e) => act(e.target, checkNetwork) }, 'Check connection'), h('button.btn.primary', { onclick: () => edit(null) }, 'Add a model'))),
+    h('div.stack', {}, netBox, box));
 
   const limitBar = (label, remaining, limit) => {
     if (remaining == null) return null;
@@ -176,7 +186,7 @@ export function models() {
 
   function draw() {
     const list = S.providers;
-    if (!list.length) return set(box, h('div.empty', {}, h('b', {}, 'No model connected'), 'Add at least one. Add a second from another provider and you get automatic failover.', h('div', {}, h('button.btn.primary', { onclick: () => edit(null) }, 'Add a model'))));
+    if (!list.length) return set(box, h('div.empty', {}, h('b', {}, 'No model connected'), 'Add at least one. Groq is the fastest and has a free tier. Add a second from another provider and you get automatic failover.', h('div', {}, h('button.btn.primary', { onclick: () => edit(null) }, 'Add a model'))));
     const active = list.find((p) => p.status === 'ready');
     const move = (i, d) => (e) => { const ids = list.map((p) => p.id); [ids[i], ids[i + d]] = [ids[i + d], ids[i]]; act(e.target, () => POST('/api/providers/reorder', { ids })); };
     set(box, ...list.map((p, i) => {
@@ -203,7 +213,7 @@ export function models() {
   }
 
   function edit(p) {
-    const st = { preset: p?.preset || 'gemini' };
+    const st = { preset: p?.preset || 'groq' };
     const cur = () => presets.find((x) => x.id === st.preset) || {};
     const name = h('input', { type: 'text' }), key = h('input', { type: 'password', autocomplete: 'off' }), url = h('input', { type: 'text' });
     const model = h('input', { type: 'text', list: 'model-list', autocomplete: 'off' });
@@ -214,7 +224,7 @@ export function models() {
     const urlField = field('Base URL', url, 'OpenAI-compatible endpoint. Change it only if your provider says so.');
     const fill = (fresh) => {
       const c = cur();
-      set(grid, ...presets.map((x) => h(`button${x.id === st.preset ? '.on' : ''}`, { type: 'button', onclick: () => { st.preset = x.id; fill(true); } }, x.name, h('small', {}, x.free ? 'Free tier available' : x.id === 'custom' ? 'Any compatible API' : 'Paid'))));
+      set(grid, ...presets.map((x) => h(`button${x.id === st.preset ? '.on' : ''}`, { type: 'button', onclick: () => { st.preset = x.id; fill(true); } }, x.name, h('small', {}, x.note || (x.free ? 'Free tier available' : x.id === 'custom' ? 'Any compatible API' : 'Paid')))));
       if (fresh) { name.value = c.name || ''; url.value = c.baseUrl || ''; model.value = c.model || ''; set(datalist, ...(c.models || []).map((m) => h('option', { value: m }))); }
       urlField.classList.toggle('hide', c.kind === 'anthropic');
       set(keyHint, p ? `Saved key ${p.keyHint || '(none)'}. Leave blank to keep it. ` : '', c.keyUrl ? h('a', { href: c.keyUrl, target: '_blank', rel: 'noopener' }, 'Get a key') : '', c.noKey ? 'No key needed for a local server.' : '');

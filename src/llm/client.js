@@ -1,6 +1,7 @@
 // One call shape for every provider: chat({ provider, system, messages }) -> { text, usage, limits }.
 // Failures are normalised into LLMError so the router can decide whether to fail over.
 import Anthropic from '@anthropic-ai/sdk';
+import { explainFetchError } from '../agent/website.js';
 
 export class LLMError extends Error {
   /** kind: rate_limit | quota | auth | server | network | bad_request | refusal | empty */
@@ -16,6 +17,7 @@ const QUOTA_RE = /insufficient[_ ](quota|balance|credit)|exceeded your current q
 
 function classify(status, body) {
   const text = typeof body === 'string' ? body : JSON.stringify(body ?? '');
+  if (status === 400 && /api[ _-]?key|API_KEY_INVALID/i.test(text)) return 'auth'; // Gemini reports a bad key as 400
   if (status === 401 || status === 403) return QUOTA_RE.test(text) ? 'quota' : 'auth';
   if (status === 402) return 'quota';
   if (status === 429) return QUOTA_RE.test(text) ? 'quota' : 'rate_limit';
@@ -69,13 +71,14 @@ async function fetchJson(url, init, timeoutMs) {
   try {
     res = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
   } catch (e) {
-    throw new LLMError('network', e.name === 'TimeoutError' ? `Timed out after ${Math.round(timeoutMs / 1000)}s` : `Network error: ${e.cause?.code || e.message}`);
+    throw new LLMError('network', e.name === 'TimeoutError' ? `No answer within ${Math.round(timeoutMs / 1000)}s (raise "Give up on a model after" in Settings, or use a faster model)` : explainFetchError(e, new URL(url).hostname));
   }
   const raw = await res.text();
   let body;
   try { body = JSON.parse(raw); } catch { body = raw; }
   if (!res.ok) {
-    const msg = body?.error?.message || body?.message || (typeof body?.error === 'string' ? body.error : null) || String(raw).slice(0, 300) || res.statusText;
+    const b = Array.isArray(body) ? body[0] : body; // Gemini wraps errors in an array
+    const msg = b?.error?.message || b?.message || (typeof b?.error === 'string' ? b.error : null) || String(raw).slice(0, 300) || res.statusText;
     throw new LLMError(classify(res.status, body), `${res.status} ${msg}`, {
       status: res.status,
       retryAfter: parseDuration(res.headers.get('retry-after')) ?? parseDuration(res.headers.get('x-ratelimit-reset-requests')),
@@ -86,7 +89,7 @@ async function fetchJson(url, init, timeoutMs) {
 }
 
 // ---------- OpenAI-compatible ----------
-async function chatOpenAI(p, { system, messages, maxTokens, timeoutMs }) {
+async function chatOpenAI(p, { system, messages, maxTokens, timeoutMs, fast }) {
   const payload = {
     model: p.model,
     messages: [...(system ? [{ role: 'system', content: system }] : []), ...messages],
@@ -98,12 +101,16 @@ async function chatOpenAI(p, { system, messages, maxTokens, timeoutMs }) {
       body: JSON.stringify({ ...payload, ...extra }),
     }, timeoutMs);
 
+  // Gemini 2.5+ "thinks" before answering by default; for chat replies that mostly adds delay.
+  const effort = fast && /generativelanguage\.googleapis\.com/.test(p.baseUrl || '') && /flash/i.test(p.model) ? { reasoning_effort: 'low' } : {};
   let out;
   try {
-    out = await post({ max_tokens: maxTokens });
+    out = await post({ max_tokens: maxTokens, ...effort });
   } catch (e) {
-    // Newer OpenAI reasoning models only accept max_completion_tokens.
-    if (e.kind === 'bad_request' && /max_tokens|max_completion_tokens/i.test(e.message)) out = await post({ max_completion_tokens: maxTokens });
+    if (e.kind !== 'bad_request') throw e;
+    // Fall back for endpoints that reject an optional field (newer OpenAI models want max_completion_tokens).
+    if (effort.reasoning_effort && /reasoning/i.test(e.message)) out = await post({ max_tokens: maxTokens });
+    else if (/max_tokens|max_completion_tokens/i.test(e.message)) out = await post({ max_completion_tokens: maxTokens });
     else throw e;
   }
   const { body, headers } = out;
@@ -141,7 +148,8 @@ const anthropicClient = (p, timeoutMs) =>
 
 function anthropicError(e) {
   if (e instanceof LLMError) return e;
-  if (e instanceof Anthropic.APIConnectionError) return new LLMError('network', `Network error: ${e.message}`);
+  if (e instanceof Anthropic.APIConnectionTimeoutError) return new LLMError('network', 'No answer in time (raise "Give up on a model after" in Settings, or use a faster model)');
+  if (e instanceof Anthropic.APIConnectionError) return new LLMError('network', explainFetchError(e.cause ? e : { cause: e }, 'api.anthropic.com'));
   if (e instanceof Anthropic.APIError) {
     const kind = classify(e.status ?? 0, e.message);
     return new LLMError(kind, `${e.status ?? ''} ${e.message}`.trim(), { status: e.status ?? 0, retryAfter: parseDuration(e.headers?.get?.('retry-after')) });
@@ -186,9 +194,9 @@ async function modelsAnthropic(p) {
 }
 
 // ---------- public ----------
-export async function chat(provider, { system = '', messages, maxTokens = 1024, timeoutMs = 45000 }) {
+export async function chat(provider, { system = '', messages, maxTokens = 1024, timeoutMs = 45000, fast = false }) {
   if (!provider.model) throw new LLMError('bad_request', 'No model selected for this provider');
-  const req = { system, messages: normalize(messages), maxTokens, timeoutMs };
+  const req = { system, messages: normalize(messages), maxTokens, timeoutMs, fast };
   if (!req.messages.length) throw new LLMError('bad_request', 'Nothing to send');
   const started = Date.now();
   const out = provider.kind === 'anthropic' ? await chatAnthropic(provider, req) : await chatOpenAI(provider, req);
@@ -211,4 +219,16 @@ export async function fetchBalance(provider) {
     return b ? { label: `${b.total_balance} ${b.currency} left`, remaining: Number(b.total_balance) } : null;
   }
   return null;
+}
+
+/** Can this server reach the provider at all? Any HTTP answer counts as reachable. */
+export async function probe(provider) {
+  const url = provider.kind === 'anthropic' ? `${(provider.baseUrl || 'https://api.anthropic.com').replace(/\/+$/, '')}/v1/models` : `${base(provider)}/models`;
+  const started = Date.now();
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(15000), headers: provider.kind === 'anthropic' ? { 'x-api-key': provider.apiKey || '', 'anthropic-version': '2023-06-01' } : authHeaders(provider) });
+    return { ok: true, status: res.status, ms: Date.now() - started, keyOk: res.status < 400, host: new URL(url).hostname };
+  } catch (e) {
+    return { ok: false, ms: Date.now() - started, host: new URL(url).hostname, error: e.name === 'TimeoutError' ? `${new URL(url).hostname} did not answer within 15s` : explainFetchError(e, new URL(url).hostname) };
+  }
 }

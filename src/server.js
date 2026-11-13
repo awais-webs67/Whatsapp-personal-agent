@@ -1,3 +1,5 @@
+import dns from 'node:dns';
+import net from 'node:net';
 import express from 'express';
 import crypto from 'node:crypto';
 import path from 'node:path';
@@ -5,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { all, get, run, now, parse, update } from './db.js';
 import { bus, emit, log, getSettings, saveSettings, kvGet, kvSet, encrypt, SECRET, PACING, migrateSettings } from './core.js';
 import { PRESETS, preset } from './llm/catalog.js';
-import { listModels, LLMError } from './llm/client.js';
+import { listModels, probe, LLMError } from './llm/client.js';
 import { listProviders, publicProvider, callProvider, complete, hydrate, syncBalances, startRouterTicker } from './llm/router.js';
 import * as wa from './wa/manager.js';
 import { STAGES, decide, buildSystem } from './agent/brain.js';
@@ -15,6 +17,11 @@ import { learnFromChats, learnFromWebsite, learnFromProfile, learning } from './
 import { handleCommand, startCommander } from './agent/commander.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+// On slow or IPv6-broken connections Node's fetch gives up after 250 ms per address and reports
+// only "fetch failed". Prefer IPv4 and give each connection attempt more time.
+dns.setDefaultResultOrder(process.env.DNS_ORDER || 'ipv4first');
+net.setDefaultAutoSelectFamilyAttemptTimeout?.(2500);
+
 export const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
@@ -288,9 +295,11 @@ app.post('/api/providers/models', wrap(async (req) => {
   const p = providerInput(req.body);
   return { models: await listModels({ ...p, baseUrl: p.base_url, apiKey: String(req.body.apiKey || '').trim() }) };
 }));
+/** Network check: can this server reach each enabled provider? (No model call, no tokens used.) */
+app.post('/api/providers/check', wrap(async () => Promise.all(listProviders().filter((r) => r.enabled).map(async (row) => ({ id: row.id, name: row.name, ...(await probe(hydrate(row))) })))));
 app.post('/api/providers/:id/test', wrap(async (req) => {
   const row = need(get('SELECT * FROM providers WHERE id = ?', Number(req.params.id)), 'Model');
-  const out = await callProvider(row, { messages: [{ role: 'user', content: 'Reply with exactly: OK' }] });
+  const out = await callProvider(row, { messages: [{ role: 'user', content: 'Reply with exactly: OK' }] }, { purpose: 'test' });
   return { ok: true, text: out.text.slice(0, 200), latencyMs: out.latencyMs, model: out.model };
 }));
 

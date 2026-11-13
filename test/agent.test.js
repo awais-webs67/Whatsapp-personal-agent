@@ -96,7 +96,7 @@ test('router fails over and benches providers with the right reason', async () =
 test('daily limit benches a provider', async () => {
   const id = listProviders().find((p) => p.name === 'Healthy').id;
   run('UPDATE providers SET daily_limit = 1 WHERE id = ?', id);
-  await assert.rejects(complete({ messages: [{ role: 'user', content: 'hi' }] }), /Every model in the chain is unavailable/);
+  await assert.rejects(complete({ messages: [{ role: 'user', content: 'hi' }] }), /No model could answer. .*Healthy: daily cap reached/);
   run('UPDATE providers SET daily_limit = NULL WHERE id = ?', id);
 });
 

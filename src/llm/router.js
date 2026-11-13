@@ -86,10 +86,13 @@ export function recordFailure(row, err) {
 }
 
 /** Call one specific provider (used by "Test" and the playground). Still records usage/state. */
-export async function callProvider(row, req) {
+export async function callProvider(row, req, { purpose = 'reply' } = {}) {
   const s = getSettings().llm;
+  // Live replies use the short timeout from Settings; background work (commands, learning, reviews) can take longer.
+  const live = purpose === 'reply' || purpose === 'test';
+  const timeoutMs = (live ? s.timeoutSec : Math.max(s.timeoutSec, 90)) * 1000;
   try {
-    const out = await chat(hydrate(row), { maxTokens: s.maxTokens, timeoutMs: s.timeoutSec * 1000, ...req });
+    const out = await chat(hydrate(row), { maxTokens: s.maxTokens, timeoutMs, fast: purpose === 'reply', ...req });
     recordSuccess(row.id, out);
     return { ...out, providerId: row.id, providerName: row.name };
   } catch (e) {
@@ -113,7 +116,7 @@ export async function complete(req, { purpose = 'reply' } = {}) {
       continue;
     }
     try {
-      const out = await callProvider(row, req);
+      const out = await callProvider(row, req, { purpose });
       if (hops.some((h) => h.error)) log('info', 'router', `${purpose}: served by ${row.name} after failover`);
       return { ...out, hops };
     } catch (err) {
@@ -122,8 +125,9 @@ export async function complete(req, { purpose = 'reply' } = {}) {
       log('warn', 'router', `${row.name} failed (${err.kind}): ${err.message}${next ? ` — switching to ${next.name}` : ''}`);
     }
   }
-  const detail = hops.map((h) => `${h.provider}: ${h.skipped || h.error}`).join(', ');
-  throw new LLMError('quota', `Every model in the chain is unavailable (${detail})`);
+  const why = { rate_limited: 'rate limited', quota_exhausted: 'quota used up', invalid_key: 'API key rejected', daily_limit: 'daily cap reached', provider_down: 'provider down', unreachable: 'not reachable from this server', cooldown: 'cooling down' };
+  const detail = hops.map((h) => `${h.provider}: ${h.skipped ? why[h.skipped] || h.skipped : h.message || h.error}`).join('; ');
+  throw new LLMError('quota', `No model could answer. ${detail}${chain.filter((r) => r.enabled).length < 2 ? '. Add a second model (Groq is fast and has a free tier) so one can cover for the other.' : ''}`);
 }
 
 /** Refresh account balances where the vendor has an endpoint for it. */

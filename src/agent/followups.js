@@ -126,7 +126,7 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
       } catch (e) {
         campaign.failed++;
         campaign.error = e.message;
-        if (/Every model in the chain|No AI model/.test(e.message)) { campaign.cancel = true; log('error', 'campaign', `Stopped: ${e.message}`); }
+        if (/No model could answer|No AI model/.test(e.message)) { campaign.cancel = true; log('error', 'campaign', `Stopped: ${e.message}`); }
       }
       campaign.done++;
       emit('campaign', campaign);
