@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import pino from 'pino';
 import QRCode from 'qrcode';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 import {
   makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers, getContentType,
   isJidGroup, isJidBroadcast, isJidStatusBroadcast, isJidNewsletter, jidNormalizedUser,
@@ -11,6 +12,9 @@ import {
 import { DATA_DIR } from '../db.js';
 
 const logger = pino({ level: 'silent' });
+// Optional outbound proxy for the WhatsApp connection (must allow WebSocket upgrades).
+const PROXY = process.env.WA_PROXY || '';
+const proxyAgent = () => (PROXY ? new HttpsProxyAgent(PROXY) : undefined);
 const WRAPPERS = ['ephemeralMessage', 'viewOnceMessage', 'viewOnceMessageV2', 'documentWithCaptionMessage', 'editedMessage'];
 const LABELS = { imageMessage: 'image', videoMessage: 'video', audioMessage: 'voice note', documentMessage: 'document', stickerMessage: 'sticker', locationMessage: 'location', contactMessage: 'contact' };
 
@@ -77,6 +81,7 @@ export class QrConnector {
     this.hooks.onStatus({ state: 'connecting' });
     const sock = makeWASocket({
       auth: state, logger,
+      agent: proxyAgent(), fetchAgent: proxyAgent(),
       browser: Browsers.macOS('Desktop'),
       syncFullHistory: true,        // pull existing chats so the agent can read past conversations
       markOnlineOnConnect: false,   // keep phone notifications working

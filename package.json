@@ -4,7 +4,9 @@
   "description": "AivraSol WhatsApp sales agent: multi-number, multi-model, human-paced, with follow-ups",
   "type": "module",
   "private": true,
-  "engines": { "node": ">=22.13" },
+  "engines": {
+    "node": ">=22.13"
+  },
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning src/server.js",
     "dev": "node --disable-warning=ExperimentalWarning --watch src/server.js",
@@ -14,6 +16,7 @@
     "@anthropic-ai/sdk": "^1.8.0",
     "baileys": "^7.0.0-rc14",
     "express": "^5.3.0",
+    "https-proxy-agent": "^9.1.0",
     "pino": "^10.3.1",
     "qrcode": "^1.5.4"
   }
