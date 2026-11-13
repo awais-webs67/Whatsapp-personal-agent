@@ -25,6 +25,7 @@ export const DEFAULT_SETTINGS = {
   business: {
     name: '', persona: '',
     goal: 'Answer questions about what we offer and help the customer buy, without pressure.',
+    offTopic: 'redirect',               // redirect | brief: how to handle unrelated questions
     learned: '', learnedAt: null,        // distilled from the owner's own chats
     learnedWeb: '',                      // distilled from the website / WhatsApp business profile
     memory: '',                          // things the owner told the agent to remember

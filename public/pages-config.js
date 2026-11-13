@@ -1,4 +1,4 @@
-import { h, set, GET, POST, PUT, act, toast, modal, field, toggle, clock, num, stagePill } from './ui.js';
+import { h, set, GET, POST, PUT, act, toast, modal, field, toggle, select, clock, num, stagePill } from './ui.js';
 import { S, live } from './state.js';
 import { logRow } from './pages-main.js';
 
@@ -96,6 +96,8 @@ export function knowledge() {
         h('label.f', {}, 'What the agent is for',
           h('div.chips', {}, Object.entries(GOALS).map(([label, text]) => h('button.chip', { type: 'button', onclick: () => { f.goal.value = text; } }, label))),
           (f.goal = h('textarea', { rows: 2, value: b.goal || '' })), h('small', {}, 'Pick a starting point or write your own. This decides what the agent tries to achieve in every chat.')),
+        h('label.f', {}, 'When someone asks something unrelated', (f.offTopic = select([['redirect', 'Politely decline and steer back (recommended)'], ['brief', 'Answer quick harmless questions in one line, then steer back']], b.offTopic || 'redirect', null)),
+          h('small', {}, 'Either way it never agrees to discounts, deals or promises that are not written on this page.')),
         area('about', 'About the business', 'One short paragraph: what you do, who for, where.', 3))),
       h('div.card', {}, h('header', {}, h('h2', {}, 'What you sell')), h('div.pad.stack', {},
         area('catalog', 'Products, services and prices', 'One per line works best. Include price, what is included, delivery time.', 8, 'Business website (5 pages) — Rs 45,000 — delivered in 7 days\nOnline store — Rs 90,000 — 14 days — includes payment setup'),
@@ -125,7 +127,15 @@ function learnCard(f, b) {
   f.memory = h('textarea', { rows: 4, placeholder: '- Eid offer: 20% off until 30 June', value: b.memory || '' });
   const url = h('input', { type: 'text', inputmode: 'url', placeholder: 'https://yourshop.com' });
   const refill = async (msg) => { const s = await GET('/api/settings'); f.learnedWeb.value = s.business.learnedWeb || ''; toast(msg); };
-  const webBtn = h('button.btn', { onclick: () => act(webBtn, async () => { const r = await POST('/api/learn/website', { url: url.value }); await refill(`Read ${r.pages} pages. Check the text below.`); }) }, 'Read website');
+  const webNote = h('div.muted', { style: 'font-size:12.5px' });
+  const webBtn = h('button.btn', { onclick: () => act(webBtn, async () => {
+    try {
+      const r = await POST('/api/learn/website', { url: url.value });
+      set(webNote, `${r.site}: ${r.products} products and ${r.pages} other pages read.${r.warning ? ` ${r.warning}` : ''}`);
+      await refill(`Read ${r.products} products from ${r.site}. Check the text below.`);
+    } catch (e) { set(webNote, h('span', { style: 'color:var(--danger)' }, e.message)); throw e; }
+  }) }, 'Read website');
+  live.on('weblearn', (w) => w.running && w.total && set(webNote, `Reading product pages: ${w.done} of ${w.total}…`));
   const profBtn = h('button.btn', { title: 'Uses the business profile and catalogue of your connected WhatsApp Business number', onclick: () => act(profBtn, async () => { await POST('/api/learn/profile'); await refill('Profile read. Check the text below.'); }) }, 'Read WhatsApp profile');
   const status = h('div');
   const btn = h('button.btn.dark', { onclick: () => act(btn, async () => draw(await POST('/api/learn', {}))) }, b.learned ? 'Learn again' : 'Learn from my chats');
@@ -141,8 +151,9 @@ function learnCard(f, b) {
     h('p', {}, 'Three ways to teach it without typing everything: your own past chats, your website, and your WhatsApp Business profile. Each one fills a text box you can edit. Old chats and pages can hold old prices, so skim the result.'),
     status,
     field('From your chats', f.learned, b.learnedAt ? `Last updated ${new Date(b.learnedAt).toLocaleString()}. Anything you write in the sections above wins over this.` : 'Needs a linked number with synced history.'),
-    h('div.row.wrap', { style: 'align-items:flex-end' }, h('div.grow', { style: 'min-width:220px' }, field('Website to read', url, 'Reads this page and a few product, pricing and about pages on the same site.')),
+    h('div.row.wrap', { style: 'align-items:flex-end' }, h('div.grow', { style: 'min-width:220px' }, field('Website to read', url, 'Reads every product (name, price, description) the site publishes, plus its about, FAQ and policy pages. Your shop or home page link is enough.')),
       h('div', { style: 'padding-bottom:22px' }, h('div.row', {}, webBtn, profBtn))),
+    webNote,
     field('From your website and WhatsApp profile', f.learnedWeb),
     field('Standing instructions', f.memory, 'Things you told the agent to remember, e.g. a running offer. One per line. You can also add these by command: “remember that…”.')));
 }

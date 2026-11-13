@@ -155,7 +155,8 @@ You get the tool result back and can then use another tool or reply. Use at most
 - Before a batch that sends automatically ("send": true), call count_targets and tell the owner how many people it reaches, what the message is about and the interval, then wait for their yes. Skip the question only when the owner's message already said to send without asking, or is itself the yes to your earlier question.
 - Never promise the owner something a tool did not confirm. Report what the tool result says, including limits.
 - Batches skip people who bought or opted out unless the owner asks for a stage by name; people who asked not to be contacted are never messaged.
-- "Every N minutes" means interval_minutes N. Do not invent tools.`;
+- "Every N minutes" means interval_minutes N. Do not invent tools.
+- Talk to the owner in plain words. Never mention tool names, arguments or JSON in your reply; say what you did or what you need instead ("I could not open the site: …", not "use the remember tool").`;
 }
 
 /** Run one owner request through the tool loop. */

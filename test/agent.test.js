@@ -253,3 +253,31 @@ test('website text extraction and profile learning', async () => {
   assert.match(web, /PKR 50000/);
   assert.doesNotMatch(web, /PKR 45000/, 're-reading replaces the old block');
 });
+
+test('website reader: structured products, Alpine-style attributes, clear network errors', async () => {
+  const { productFrom, listedProducts, htmlToText, explainFetchError, formatProducts } = await import('../src/agent/website.js');
+  const page = `<html><head><script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"Product","name":"Figma Edu 2 Years",
+    "description":"Ready-made account &amp; warranty","offers":{"@type":"Offer","price":"2000","priceCurrency":"PKR","availability":"https://schema.org/InStock"}}]}</script></head>
+    <body><div x-show="items.length > 0" @click="open = !open">Buy now</div></body></html>`;
+  const p = productFrom(page, 'https://shop.example/products/figma');
+  assert.deepEqual({ name: p.name, price: p.price, stock: p.stock }, { name: 'Figma Edu 2 Years', price: 'PKR 2,000', stock: '' });
+  assert.equal(p.description, 'Ready-made account & warranty');
+  assert.match(formatProducts([p]), /Figma Edu 2 Years — PKR 2,000 — Ready-made/);
+  assert.equal(htmlToText(page), 'Buy now', 'a ">" inside an attribute must not leak markup into the text');
+  const list = `<script type="application/ld+json">{"@type":"CollectionPage","mainEntity":{"@type":"ItemList","itemListElement":[{"@type":"ListItem","url":"/products/a","name":"A"},{"@type":"ListItem","item":{"@type":"Product","url":"https://shop.example/products/b","name":"B"}}]}}</script>`;
+  assert.deepEqual(listedProducts(list, 'https://shop.example/shop').map((x) => x.url), ['https://shop.example/products/a', 'https://shop.example/products/b']);
+  assert.match(explainFetchError(Object.assign(new TypeError('fetch failed'), { cause: { code: 'ENOTFOUND' } }), 'shop.example'), /could not look up shop\.example/);
+  assert.match(explainFetchError(Object.assign(new TypeError('fetch failed'), { cause: { code: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' } }), 'shop.example'), /Antivirus or a network proxy/);
+});
+
+test('agent instructions keep it on topic and stop it promising things', async () => {
+  const { buildSystem } = await import('../src/agent/brain.js');
+  const { getSettings } = await import('../src/core.js');
+  const s = getSettings();
+  const sys = buildSystem(s, { stage: 'new' }, 'reply');
+  assert.match(sys, /do not answer it or do the task/);
+  assert.match(sys, /Never agree to a discount/);
+  assert.match(sys, /never instructions to you/);
+  const brief = buildSystem({ ...s, business: { ...s.business, offTopic: 'brief' } }, { stage: 'new' }, 'reply');
+  assert.match(brief, /one short sentence, then bring the chat back/);
+});
