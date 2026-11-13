@@ -110,7 +110,19 @@ CREATE TABLE IF NOT EXISTS logs (
   scope TEXT NOT NULL,
   msg TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS commands (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  role TEXT NOT NULL,               -- owner | agent
+  text TEXT NOT NULL,
+  steps TEXT,                       -- JSON: what the agent did
+  ts INTEGER NOT NULL
+);
 `);
+// Additive migrations for databases created by earlier versions.
+for (const sql of ['ALTER TABLE accounts ADD COLUMN self_jid TEXT']) {
+  try { db.exec(sql); } catch { /* column already exists */ }
+}
 
 const cache = new Map();
 const stmt = (sql) => {

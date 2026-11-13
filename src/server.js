@@ -11,7 +11,8 @@ import * as wa from './wa/manager.js';
 import { STAGES, decide, buildSystem } from './agent/brain.js';
 import { startPipeline, onOwner, eligibility } from './agent/pipeline.js';
 import { startFollowups, runCampaign, campaign } from './agent/followups.js';
-import { learnFromChats, learning } from './agent/learn.js';
+import { learnFromChats, learnFromWebsite, learnFromProfile, learning } from './agent/learn.js';
+import { handleCommand, startCommander } from './agent/commander.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const app = express();
@@ -325,6 +326,17 @@ app.get('/api/playground/prompt', wrap(() => ({
 app.get('/api/settings', wrap(() => getSettings()));
 app.get('/api/pacing', wrap(() => PACING));
 app.get('/api/learn', wrap(() => learning));
+app.post('/api/learn/website', wrap(async (req) => learnFromWebsite(String(req.body.url || ''))));
+app.post('/api/learn/profile', wrap(async () => learnFromProfile(await wa.profiles())));
+
+// ---------- owner commands ----------
+app.get('/api/commands', wrap(() => all('SELECT * FROM (SELECT * FROM commands ORDER BY id DESC LIMIT 100) ORDER BY id').map((c) => ({ ...c, steps: parse(c.steps, []) }))));
+app.post('/api/commands', wrap(async (req) => {
+  const text = String(req.body.text || '').trim();
+  if (!text) throw bad('Write a command first');
+  return handleCommand(text.slice(0, 2000));
+}));
+app.delete('/api/commands', wrap(() => { run('DELETE FROM commands'); return { ok: true }; }));
 app.post('/api/learn', wrap((req) => learnFromChats({ accountId: req.body.accountId ? Number(req.body.accountId) : null, maxChats: Math.min(1000, Math.max(1, Number(req.body.maxChats) || 150)) })));
 app.put('/api/settings', wrap((req) => {
   const s = saveSettings(req.body || {});
@@ -388,6 +400,7 @@ app.use((err, _req, res, _next) => {
 export function start(port = Number(process.env.PORT) || 3000) {
   migrateSettings();
   startPipeline();
+  startCommander();
   startFollowups();
   startRouterTicker();
   wa.startAll();

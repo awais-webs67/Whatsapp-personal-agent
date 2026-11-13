@@ -3,11 +3,13 @@ import { S, subs } from './state.js';
 import { overview, inbox } from './pages-main.js';
 import { followups, numbers, models } from './pages-ops.js';
 import { playground, knowledge, settings, activity } from './pages-config.js';
+import { command } from './pages-command.js';
 
 const root = document.getElementById('root');
 
 const ROUTES = [
   ['overview', 'Overview', 'M2 2h5v6H2zM9 2h5v3H9zM9 7h5v7H9zM2 10h5v4H2z', overview],
+  ['command', 'Command', 'M2 3h12v10H2zM4 6l3 2-3 2M8 10h4', command],
   ['inbox', 'Inbox', 'M2 3h12v8H7l-3 3v-3H2z', inbox],
   ['followups', 'Follow-ups', 'M8 2a6 6 0 1 0 6 6M8 5v3l2 2M11 2h3v3', followups],
   ['numbers', 'Numbers', 'M5 1h6v14H5zM7 12h2', numbers],

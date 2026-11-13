@@ -28,6 +28,8 @@ export function buildSystem(settings, chat, mode) {
   out.push(section('Policies (delivery, payment, returns)', b.policies));
   out.push(section('Example replies in our voice', b.examples));
   out.push(section('Learned from the owner\'s own past chats (how they answer, what they quote; if this conflicts with a section above, the section above wins)', b.learned));
+  out.push(section('From the business website and WhatsApp profile', b.learnedWeb));
+  out.push(section('Standing instructions from the owner (always follow)', b.memory));
 
   out.push(`
 ## How to write
@@ -110,7 +112,8 @@ export function parseDecision(text, mode, chat) {
     if (mode !== 'reply' || /^\s*[{[]/.test(text) || /"messages"\s*:/.test(text)) throw new Error('Model did not return valid JSON');
     return { messages: [cleanText(text)], stage: chat.stage === 'new' ? 'engaged' : chat.stage, summary: chat.summary || '', handoff: false, handoffReason: '', followupHours: null };
   }
-  const stage = cleanStage(obj.stage, chat.stage);
+  // An opt-out is the customer's decision: a model can never move them back. Only the owner can.
+  const stage = chat.stage === 'opted_out' ? 'opted_out' : cleanStage(obj.stage, chat.stage);
   const summary = cleanText(obj.summary).slice(0, 300) || chat.summary || '';
   if (mode === 'reply') {
     const raw = Array.isArray(obj.messages) ? obj.messages : [obj.messages ?? obj.message ?? obj.reply];
@@ -128,13 +131,13 @@ export function parseDecision(text, mode, chat) {
  * Ask the model chain for a decision about one chat.
  * mode: 'reply' (answer the customer) | 'followup' (nudge a quiet lead) | 'analyze' (classify old chat)
  */
-export async function decide(chatId, mode = 'reply', { turns = null, chatOverride = null } = {}) {
+export async function decide(chatId, mode = 'reply', { turns = null, chatOverride = null, instruction = '' } = {}) {
   const settings = getSettings();
   const chat = chatOverride || get('SELECT * FROM chats WHERE id = ?', chatId);
   if (!chat) throw new Error('Chat not found');
   const messages = turns || buildTurns(chatId, mode === 'analyze' ? Math.max(40, settings.llm.historyMessages) : settings.llm.historyMessages);
   if (mode !== 'reply') {
-    messages.push({ role: 'user', content: `[Instruction from the business owner, not from the customer] ${mode === 'followup' ? `The customer has been quiet since ${ago(chat.last_in_at)}. This would be follow-up number ${(chat.followup_count || 0) + 1}.` : 'Review the conversation above.'} Respond with the JSON object described in your instructions.` });
+    messages.push({ role: 'user', content: `[Instruction from the business owner, not from the customer] ${mode === 'followup' ? `The customer has been quiet since ${ago(chat.last_in_at)}. This would be follow-up number ${(chat.followup_count || 0) + 1}.` : 'Review the conversation above.'}${instruction ? ` For this batch the owner asked: "${instruction}". Let that decide who gets a message and what it says (should_followup true whenever the owner's request applies to this person), while keeping every hard rule.` : ''} Respond with the JSON object described in your instructions.` });
   }
   const system = buildSystem(settings, chat, mode);
   let lastErr;

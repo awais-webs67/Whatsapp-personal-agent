@@ -7,7 +7,7 @@ import { CloudConnector } from './cloud.js';
 const connectors = new Map(); // accountId -> connector
 const statuses = new Map();   // accountId -> { state, qr, pairingCode, me, error }
 const pendingBot = new Map(); // chatId -> [{ text, by, at }] sends in flight, to recognise our own echoes
-let handlers = { onCustomer: () => {}, onOwner: () => {} };
+let handlers = { onCustomer: () => {}, onOwner: () => {}, onCommand: () => {} };
 export const setHandlers = (h) => { handlers = { ...handlers, ...h }; };
 
 export const statusOf = (id) => statuses.get(id) || { state: 'disconnected' };
@@ -99,7 +99,7 @@ function takePending(chatId, text) {
 }
 
 function ingest(accountId, msgs, live) {
-  const account = get('SELECT connected_at FROM accounts WHERE id = ?', accountId);
+  const account = get('SELECT connected_at, self_jid FROM accounts WHERE id = ?', accountId);
   const touched = new Map();
   db.exec('BEGIN');
   try {
@@ -114,7 +114,13 @@ function ingest(accountId, msgs, live) {
       const t = touched.get(chat.id) || { chat, last: null, liveCustomer: false, liveOwner: false };
       if (!t.last || m.ts >= t.last.ts) t.last = m;
       if (live && !m.fromMe) t.liveCustomer = true;
-      if (live && m.fromMe && !pending) t.liveOwner = true;
+      if (live && m.fromMe && !pending) {
+        // A message the owner typed in their own "Message yourself" chat is a command, not a customer reply.
+        if (connectors.get(accountId)?.isSelf?.(m.jid)) {
+          if (account.self_jid !== m.jid) { run('UPDATE accounts SET self_jid = ? WHERE id = ?', m.jid, accountId); account.self_jid = m.jid; }
+          t.command = m.text;
+        } else t.liveOwner = true;
+      }
       touched.set(chat.id, t);
     }
     for (const [chatId, t] of touched) {
@@ -136,7 +142,8 @@ function ingest(accountId, msgs, live) {
   if (!live) return emit('history', { accountId, chats: touched.size });
   for (const [chatId, t] of touched) {
     emit('chat', { chatId });
-    if (t.liveCustomer) handlers.onCustomer(chatId);
+    if (t.command) handlers.onCommand(chatId, t.command);
+    else if (t.liveCustomer) handlers.onCustomer(chatId);
     else if (t.liveOwner) handlers.onOwner(chatId);
   }
 }
@@ -169,6 +176,16 @@ export const markRead = (chat) => {
   run('UPDATE chats SET unread = 0 WHERE id = ?', chat.id);
   return connectors.get(chat.account_id)?.markRead(chat.jid) ?? Promise.resolve();
 };
+/** Business profile text of every connected number that can provide one. */
+export async function profiles() {
+  const out = [];
+  for (const [id, conn] of connectors) {
+    if (statusOf(id).state !== 'connected' || !conn.profile) continue;
+    const text = await conn.profile().catch(() => '');
+    if (text) out.push(text);
+  }
+  return out.join('\n\n');
+}
 export const idle = (accountId) => connectors.get(accountId)?.idle?.() ?? Promise.resolve();
 
 /** Test hook: register a fake connector without touching WhatsApp. */

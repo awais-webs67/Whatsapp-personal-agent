@@ -166,6 +166,34 @@ export class QrConnector {
     return this.sock;
   }
 
+  /** Is this the owner's own "Message yourself" chat? */
+  isSelf(jid) {
+    const u = this.sock?.user;
+    if (!u || !jid) return false;
+    return [u.id, u.lid].filter(Boolean).map((x) => jidNormalizedUser(x)).includes(jidNormalizedUser(jid));
+  }
+
+  /** WhatsApp Business profile and catalogue of this number, as plain text (best effort). */
+  async profile() {
+    const sock = this.#need();
+    const me = jidNormalizedUser(sock.user.id);
+    const lines = [];
+    const p = await sock.getBusinessProfile(me).catch(() => null);
+    if (p) {
+      if (p.category) lines.push(`Category: ${p.category}`);
+      if (p.description) lines.push(`Description: ${p.description}`);
+      if (p.address) lines.push(`Address: ${p.address}`);
+      if (p.email) lines.push(`Email: ${p.email}`);
+      if (p.website?.length) lines.push(`Website: ${[].concat(p.website).join(', ')}`);
+    }
+    const cat = await sock.getCatalog({ jid: me, limit: 50 }).catch(() => null);
+    for (const item of cat?.products || []) {
+      const price = item.price ? ` - ${item.currency || ''} ${Number(item.price) / 1000}` : '';
+      lines.push(`Product: ${item.name}${price}${item.description ? ` - ${String(item.description).replace(/\s+/g, ' ').slice(0, 300)}` : ''}`);
+    }
+    return lines.join('\n');
+  }
+
   async sendText(jid, text) {
     const sent = await this.#need().sendMessage(jid, { text });
     return sent?.key?.id || null;

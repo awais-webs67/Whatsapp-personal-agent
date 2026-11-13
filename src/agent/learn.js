@@ -118,3 +118,84 @@ export async function learnFromChats({ accountId = null, maxChats = 150 } = {}) 
 }
 
 export const hasLearned = () => !!getSettings().business.learned;
+
+// ---------- learning from a website ----------
+const WEB = `Below is text taken from a business's website. Extract only what the pages actually say. Do not invent anything.
+Return ONLY a JSON object:
+{"about": "2-3 sentences: what the business does and for whom",
+ "offers": ["product or service - price if stated - what is included"],
+ "faqs": [{"q": "question", "a": "answer"}],
+ "policies": ["payment, delivery, refund, warranty or contact rules stated on the site"]}
+Leave an array empty when the pages say nothing for it. Keep at most 60 offers.`;
+
+const PRIVATE_HOST = /^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|0\.|\[?::1\]?|\[?f[cd])/i;
+function publicUrl(raw) {
+  let u;
+  try { u = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`); } catch { throw new Error('That does not look like a web address'); }
+  if (!/^https?:$/.test(u.protocol) || PRIVATE_HOST.test(u.hostname)) throw new Error('Only public http(s) websites can be read');
+  return u;
+}
+
+export function htmlToText(html) {
+  return String(html)
+    .replace(/<(script|style|noscript|svg|template)[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<(br|\/p|\/div|\/li|\/h[1-6]|\/tr|\/section)[^>]*>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#0?39;/g, "'")
+    .replace(/[ \t]+/g, ' ').replace(/ ?\n ?/g, '\n').replace(/\n+/g, '\n').trim();
+}
+
+async function fetchPage(url) {
+  const res = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(15000), headers: { 'user-agent': 'Mozilla/5.0 (compatible; site-reader)', accept: 'text/html' } });
+  if (!res.ok) throw new Error(`${url.hostname} answered ${res.status}`);
+  if (!/html|text/.test(res.headers.get('content-type') || 'text/html')) return '';
+  return (await res.text()).slice(0, 600_000);
+}
+
+/** Read the given page plus a few same-site pages that look like products, pricing or about. */
+export async function readWebsite(raw, maxPages = 8) {
+  const start = publicUrl(raw);
+  const home = await fetchPage(start);
+  const links = [...home.matchAll(/href=["']([^"'#]+)["']/gi)].map((m) => { try { return new URL(m[1], start); } catch { return null; } })
+    .filter((u) => u && u.hostname === start.hostname && /^https?:$/.test(u.protocol) && !/\.(png|jpe?g|gif|svg|css|js|pdf|zip|ico|webp|xml)$/i.test(u.pathname));
+  const score = (u) => (/pric|product|shop|store|service|plan|package|catalog|about|faq|menu|collection/i.test(u.pathname) ? 0 : 1) + u.pathname.split('/').length / 10;
+  const picked = [...new Map(links.map((u) => [u.origin + u.pathname, u])).values()].filter((u) => u.pathname !== start.pathname).sort((a, b) => score(a) - score(b)).slice(0, maxPages - 1);
+  const pages = [{ url: start.href, text: htmlToText(home) }];
+  for (const u of picked) {
+    const html = await fetchPage(u).catch(() => '');
+    if (html) pages.push({ url: u.href, text: htmlToText(html) });
+  }
+  return pages;
+}
+
+function formatWeb(o, source) {
+  const n = normalise(o);
+  const part = (title, lines) => (lines.length ? `${title}:\n${lines.map((l) => `- ${l}`).join('\n')}` : '');
+  return [`Source: ${source}`, o?.about && String(o.about), part('Offers', n.offers), part('Questions and answers', n.faqs.map((f) => `Q: ${f.q} / A: ${f.a}`)), part('Rules', n.policies)].filter(Boolean).join('\n');
+}
+
+export async function learnFromWebsite(raw) {
+  const pages = await readWebsite(raw);
+  const body = pages.map((p) => `### ${p.url}\n${p.text.slice(0, 6000)}`).join('\n\n').slice(0, 30000);
+  if (body.replace(/###.*\n/g, '').trim().length < 200) throw new Error('Could not read enough text from that site (it may be rendered by JavaScript). Paste the product list into Knowledge instead.');
+  const out = await complete({ system: WEB, messages: [{ role: 'user', content: body }], maxTokens: 3000 }, { purpose: 'learn' });
+  const json = extractJson(out.text);
+  if (!json) throw new Error('Model did not return valid JSON');
+  const text = formatWeb(json, pages[0].url);
+  const prev = getSettings().business.learnedWeb || '';
+  // Re-reading the same site replaces its block; other sources stay.
+  const kept = prev.split(/\n\n(?=Source: )/).filter((b) => b.trim() && !b.startsWith(`Source: ${pages[0].url}`));
+  saveSettings({ business: { learnedWeb: [...kept, text].join('\n\n') } });
+  log('info', 'learn', `Learned from ${pages.length} pages of ${new URL(pages[0].url).hostname}`);
+  return { pages: pages.length, text };
+}
+
+/** WhatsApp Business profile + catalogue of the linked numbers. */
+export async function learnFromProfile(profileText) {
+  if (!profileText) throw new Error('No business profile found. This needs a connected WhatsApp Business number with a profile or catalogue filled in.');
+  const block = `Source: WhatsApp business profile\n${profileText}`;
+  const kept = (getSettings().business.learnedWeb || '').split(/\n\n(?=Source: )/).filter((b) => b.trim() && !b.startsWith('Source: WhatsApp business profile'));
+  saveSettings({ business: { learnedWeb: [...kept, block].join('\n\n') } });
+  log('info', 'learn', 'Learned from the WhatsApp business profile');
+  return { text: block };
+}

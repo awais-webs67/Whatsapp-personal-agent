@@ -21,6 +21,7 @@ const followups = await import('../src/agent/followups.js');
 
 // ---- fake OpenAI-compatible server: behaviour is switched per API key ----
 const calls = [];
+let cmdReplies = []; // scripted answers for the owner-command prompt
 let reply = JSON.stringify({ messages: ['Hi! The price is 2500.', 'Want me to book it?'], stage: 'interested', summary: 'Asked price', handoff: false });
 const server = http.createServer((req, res) => {
   let body = '';
@@ -32,7 +33,7 @@ const server = http.createServer((req, res) => {
     if (key === 'limited') return send(429, { error: { message: 'Rate limit reached' } }, { 'retry-after': '120' });
     if (key === 'broke') return send(429, { error: { message: 'You exceeded your current quota, please check your plan and billing details' } });
     if (key === 'badkey') return send(401, { error: { message: 'Incorrect API key provided' } });
-    send(200, { model: 'fake-1', choices: [{ message: { content: reply }, finish_reason: 'stop' }], usage: { prompt_tokens: 50, completion_tokens: 20 } },
+    send(200, { model: 'fake-1', choices: [{ message: { content: /operations assistant/.test(JSON.parse(body).messages[0].content) && cmdReplies.length ? cmdReplies.shift() : reply }, finish_reason: 'stop' }], usage: { prompt_tokens: 50, completion_tokens: 20 } },
       { 'x-ratelimit-remaining-requests': '42', 'x-ratelimit-limit-requests': '100' });
   });
 });
@@ -192,4 +193,63 @@ test('learns the owner\'s offers and voice from chats they handled, and the agen
   assert.match(learned, /Logo design - Rs 5000/);
   assert.match(calls.at(-1).body.messages.at(-1).content, /Me: Logo design 5000 ka hai bhai/);
   assert.match(buildSystem(getSettings(), { stage: 'new' }, 'reply'), /Logo design - Rs 5000/);
+});
+
+test('owner command: counts, asks nothing extra when told to send, and schedules a spaced batch', async () => {
+  const { runCommand } = await import('../src/agent/commander.js');
+  run("UPDATE followups SET status = 'skipped' WHERE status IN ('pending','approved')");
+  cmdReplies = [
+    JSON.stringify({ action: 'count_targets', args: { days: 30 } }),
+    JSON.stringify({ action: 'start_followups', args: { days: 30, instruction: 'Confirm the offer is still open', interval_minutes: 5, send: true } }),
+    JSON.stringify({ reply: 'Started: messages go out every 5 minutes.' }),
+  ];
+  reply = JSON.stringify({ stage: 'interested', summary: 's', should_followup: true, message: 'Offer abhi bhi open hai!', reason: 'owner asked' });
+  const out = await runCommand('last 30 din ki chats ko har 5 minute baad follow-up bhejo, pooche baghair');
+  assert.deepEqual(out.steps.map((s) => s.action), ['count_targets', 'start_followups']);
+  assert.ok(out.steps[0].result.people >= 2);
+  assert.equal(out.reply, 'Started: messages go out every 5 minutes.');
+  await until(() => !followups.campaign.running);
+  const queued = all("SELECT f.due_at, c.stage, c.jid FROM followups f JOIN chats c ON c.id = f.chat_id WHERE f.status = 'approved' ORDER BY f.due_at");
+  assert.ok(queued.length >= 2, 'batch queued for sending');
+  assert.ok(queued[1].due_at - queued[0].due_at >= 4 * 60_000 * 0.99, 'spaced about 5 minutes apart');
+  assert.ok(!queued.some((q) => q.jid === '333@s.whatsapp.net'), 'opted-out person is never messaged');
+  // The system prompt for the batch carried the owner's instruction.
+  assert.ok(calls.some((c) => /Confirm the offer is still open/.test(JSON.stringify(c.body?.messages?.at(-1) || ''))), 'drafts were written with the owner instruction');
+  run("UPDATE followups SET status = 'skipped' WHERE status = 'approved'");
+});
+
+test('owner command: remember adds a standing instruction the agent sees', async () => {
+  const { runCommand } = await import('../src/agent/commander.js');
+  const { buildSystem } = await import('../src/agent/brain.js');
+  const { getSettings } = await import('../src/core.js');
+  cmdReplies = [JSON.stringify({ action: 'remember', args: { text: '10% off this week' } }), JSON.stringify({ reply: 'Yaad rakh liya.' })];
+  const out = await runCommand('yaad rakho is hafte 10% discount hai');
+  assert.equal(out.reply, 'Yaad rakh liya.');
+  assert.match(buildSystem(getSettings(), { stage: 'new' }, 'reply'), /10% off this week/);
+});
+
+test('a message typed in "Message yourself" is run as a command and answered there', async () => {
+  const { startCommander } = await import('../src/agent/commander.js');
+  startCommander();
+  fake.isSelf = (jid) => jid === '999@s.whatsapp.net';
+  cmdReplies = [JSON.stringify({ action: 'stats', args: { days: 1 } }), JSON.stringify({ reply: 'Aaj 3 log aaye.' })];
+  const n = sent.length;
+  deliver([{ jid: '999@s.whatsapp.net', waId: 'self-1', fromMe: true, text: 'aaj kitne log aaye?', type: 'text', ts: now() }]);
+  await until(() => sent.length === n + 1);
+  assert.deepEqual(sent.at(-1), { jid: '999@s.whatsapp.net', text: 'Aaj 3 log aaye.' });
+  // The agent's own answer echoing back must not start another command.
+  deliver([{ jid: '999@s.whatsapp.net', waId: 'out-echo', fromMe: true, text: 'Aaj 3 log aaye.', type: 'text', ts: now() }]);
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(sent.length, n + 1);
+});
+
+test('website text extraction and profile learning', async () => {
+  const { htmlToText, learnFromProfile } = await import('../src/agent/learn.js');
+  const { getSettings } = await import('../src/core.js');
+  assert.equal(htmlToText('<html><style>x{}</style><h1>Shop</h1><p>Logo &amp; branding</p><script>1</script></html>'), 'Shop\nLogo & branding');
+  await learnFromProfile('Category: Software\nProduct: Website - PKR 45000');
+  await learnFromProfile('Category: Software\nProduct: Website - PKR 50000');
+  const web = getSettings().business.learnedWeb;
+  assert.match(web, /PKR 50000/);
+  assert.doesNotMatch(web, /PKR 45000/, 're-reading replaces the old block');
 });

@@ -17,6 +17,12 @@ people who showed interest but never bought. You watch and steer everything from
   realistic time, splits long answers into bubbles, and caps replies per hour.
 - **Learns from your chats.** "Learn from my chats" reads conversations you answered yourself and
   writes down what you offer, the prices you quote and how you sound. The result is editable.
+- **Commands in plain language.** On the Command page, or in WhatsApp's "Message yourself" chat on a
+  linked phone, tell the agent what to do: "check the last 5 days and follow up every 5 minutes with
+  people who did not buy", "who needs me today?", "remember: 10% off this week". Bulk sends are
+  confirmed with you first; daily caps, quiet hours and opt-outs always apply.
+- **Train it three ways.** From your own chats, from your website (give it a link), or from your
+  WhatsApp Business profile and catalogue. Each fills an editable text box on the Knowledge page.
 - **More than sales.** Set the agent's job to sales, support, bookings, a personal assistant, or your own.
 - **Reads old chats.** After a QR link, past conversations sync in. "Review past conversations"
   classifies each one and drafts a follow-up for interested people who did not buy.
@@ -83,6 +89,6 @@ past-chat review.
 src/server.js          HTTP API, auth, live events, Cloud API webhook
 src/llm/               provider presets, unified client, failover router
 src/wa/                QR connector, Cloud API connector, account manager
-src/agent/             prompt + decisions, live reply pipeline, follow-ups
+src/agent/             prompt + decisions, live reply pipeline, follow-ups, owner commands, learning
 public/                dashboard (no build step)
 ```

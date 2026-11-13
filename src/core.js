@@ -21,10 +21,14 @@ export function log(level, scope, msg) {
 // ---------- settings ----------
 export const DEFAULT_SETTINGS = {
   autopilot: true,
+  commandsViaWhatsApp: true,            // messages in "Message yourself" are treated as commands
   business: {
     name: '', persona: '',
     goal: 'Answer questions about what we offer and help the customer buy, without pressure.',
-    learned: '', learnedAt: null, about: '', catalog: '', faqs: '', policies: '',
+    learned: '', learnedAt: null,        // distilled from the owner's own chats
+    learnedWeb: '',                      // distilled from the website / WhatsApp business profile
+    memory: '',                          // things the owner told the agent to remember
+    about: '', catalog: '', faqs: '', policies: '',
     tone: 'Short, warm, natural WhatsApp messages. No long paragraphs, no bullet lists.',
     language: 'Reply in the same language and script the customer uses (English, Urdu, Roman Urdu...).',
     purchaseSignal: 'Customer confirms the order or shares a payment proof.',

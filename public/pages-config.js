@@ -121,6 +121,12 @@ const GOALS = {
 /** Reads the owner's own past replies and writes down how they answer; the result stays editable. */
 function learnCard(f, b) {
   f.learned = h('textarea', { rows: 10, placeholder: 'Nothing learned yet.', value: b.learned || '' });
+  f.learnedWeb = h('textarea', { rows: 8, placeholder: 'Nothing read yet.', value: b.learnedWeb || '' });
+  f.memory = h('textarea', { rows: 4, placeholder: '- Eid offer: 20% off until 30 June', value: b.memory || '' });
+  const url = h('input', { type: 'text', inputmode: 'url', placeholder: 'https://yourshop.com' });
+  const refill = async (msg) => { const s = await GET('/api/settings'); f.learnedWeb.value = s.business.learnedWeb || ''; toast(msg); };
+  const webBtn = h('button.btn', { onclick: () => act(webBtn, async () => { const r = await POST('/api/learn/website', { url: url.value }); await refill(`Read ${r.pages} pages. Check the text below.`); }) }, 'Read website');
+  const profBtn = h('button.btn', { title: 'Uses the business profile and catalogue of your connected WhatsApp Business number', onclick: () => act(profBtn, async () => { await POST('/api/learn/profile'); await refill('Profile read. Check the text below.'); }) }, 'Read WhatsApp profile');
   const status = h('div');
   const btn = h('button.btn.dark', { onclick: () => act(btn, async () => draw(await POST('/api/learn', {}))) }, b.learned ? 'Learn again' : 'Learn from my chats');
   const draw = (l) => {
@@ -131,10 +137,14 @@ function learnCard(f, b) {
   };
   live.on('learning', draw);
   GET('/api/learn').then((l) => l.running && draw(l));
-  return h('div.card', {}, h('header', {}, h('h2', {}, 'Learn from my chats'), btn), h('div.pad.stack', {},
-    h('p', {}, 'The agent reads conversations where you replied yourself and writes down what you offer, the prices you quote, how you answer common questions and how you sound. You can edit the result. Run it again whenever you have new chats.'),
+  return h('div.card', {}, h('header', {}, h('h2', {}, 'Train the agent'), btn), h('div.pad.stack', {},
+    h('p', {}, 'Three ways to teach it without typing everything: your own past chats, your website, and your WhatsApp Business profile. Each one fills a text box you can edit. Old chats and pages can hold old prices, so skim the result.'),
     status,
-    field('What it learned', f.learned, b.learnedAt ? `Last updated ${new Date(b.learnedAt).toLocaleString()}. Anything you write in the sections above wins over this.` : 'Needs a linked number with synced history.')));
+    field('From your chats', f.learned, b.learnedAt ? `Last updated ${new Date(b.learnedAt).toLocaleString()}. Anything you write in the sections above wins over this.` : 'Needs a linked number with synced history.'),
+    h('div.row.wrap', { style: 'align-items:flex-end' }, h('div.grow', { style: 'min-width:220px' }, field('Website to read', url, 'Reads this page and a few product, pricing and about pages on the same site.')),
+      h('div', { style: 'padding-bottom:22px' }, h('div.row', {}, webBtn, profBtn))),
+    field('From your website and WhatsApp profile', f.learnedWeb),
+    field('Standing instructions', f.memory, 'Things you told the agent to remember, e.g. a running offer. One per line. You can also add these by command: “remember that…”.')));
 }
 
 // ============================== Settings ==============================
