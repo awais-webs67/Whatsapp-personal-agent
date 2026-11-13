@@ -3,8 +3,8 @@
 // `model` is only a starting suggestion — the dashboard's "Load models" button fetches
 // the live list from the provider, and both base URL and model stay editable.
 export const PRESETS = [
-  { id: 'groq', name: 'Groq', kind: 'openai', baseUrl: 'https://api.groq.com/openai/v1', model: 'llama-3.3-70b-versatile',
-    models: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'], keyUrl: 'https://console.groq.com/keys', free: true, note: 'Fastest replies · free tier' },
+  { id: 'groq', name: 'Groq', kind: 'openai', baseUrl: 'https://api.groq.com/openai/v1', model: 'llama-3.1-8b-instant',
+    models: ['llama-3.1-8b-instant', 'llama-3.3-70b-versatile'], keyUrl: 'https://console.groq.com/keys', free: true, note: 'Fastest replies · free tier' },
   { id: 'anthropic', name: 'Claude (Anthropic)', kind: 'anthropic', baseUrl: '', model: 'claude-opus-5-5',
     models: ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'], keyUrl: 'https://console.anthropic.com/settings/keys', free: false },
   { id: 'openai', name: 'ChatGPT (OpenAI)', kind: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini',

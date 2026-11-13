@@ -35,6 +35,7 @@ function agentSim() {
       h('div.kv', {}, 'Answered by', h('b', {}, last.provider)),
       h('div.kv', {}, 'Model', h('b.mono', {}, last.model)),
       h('div.kv', {}, 'Thinking time', h('b', {}, `${(last.latencyMs / 1000).toFixed(1)}s`)),
+      last.usage ? h('div.kv', {}, 'Tokens used', h('b', {}, `${num(last.usage.in)} in · ${num(last.usage.out)} out`)) : null,
       last.followupHours ? h('div.kv', {}, 'Would follow up in', h('b', {}, `${last.followupHours}h`)) : null,
       last.summary ? h('div', {}, h('div.muted', { style: 'font-size:12px' }, 'Summary'), h('div', { style: 'color:var(--ink)' }, last.summary)) : null,
       last.handoff ? h('div.note.bad', {}, h('b', {}, 'Would hand over to you. '), last.handoffReason || '') : null,
@@ -169,12 +170,14 @@ export function settings() {
       inputs.push([group, a, x], [group, b, y]);
       return h('label.f', {}, label, h('div.row', {}, x, h('span.muted', {}, 'to'), y), hint && h('small', {}, hint));
     };
+    const saver = toggle(s.llm.tokenSaver !== false, () => {}, 'Token saver');
     const fuOn = toggle(s.followup.enabled, () => {}, 'Automatic follow-ups'), fuApprove = toggle(s.followup.approval, () => {}, 'Approve before sending');
     const steps = h('input', { type: 'text', value: s.followup.stepsHours.join(', ') });
     const tz = h('input', { type: 'text', value: s.followup.timezone });
     const save = h('button.btn.primary', { onclick: () => act(save, async () => {
       const patch = { human: {}, followup: {}, llm: {} };
       for (const [g, k, i] of inputs) patch[g][k] = Number(i.value) || 0;
+      patch.llm.tokenSaver = saver.querySelector('input').checked;
       Object.assign(patch.followup, { enabled: fuOn.querySelector('input').checked, approval: fuApprove.querySelector('input').checked, timezone: tz.value.trim(),
         stepsHours: steps.value.split(/[,\s]+/).map(Number).filter((x) => x > 0) });
       await PUT('/api/settings', patch);
@@ -198,8 +201,10 @@ export function settings() {
         h('div.grid3', {}, field('Follow up after (hours)', steps, 'One entry per follow-up. “24, 72, 168” = after 1, 3 and 7 days of silence, then stop.'),
           n('followup', 'dailyCap', 'Max follow-ups per day, per number'), pair('followup', 'gapMinSec', 'gapMaxSec', 'Gap between follow-ups (sec)')),
         h('div.grid3', {}, pair('followup', 'quietStart', 'quietEnd', 'Quiet hours (24h clock)', 'No follow-ups are sent between these hours.'), field('Time zone', tz, 'e.g. Asia/Karachi')))),
-      h('div.card', {}, h('header', {}, h('h2', {}, 'Model calls')), h('div.pad', {}, h('div.grid3', {},
-        n('llm', 'historyMessages', 'Messages of history per reply', 'More context, more tokens.'), n('llm', 'maxTokens', 'Max tokens per reply', 'Raise this if a reasoning model returns empty answers.'), n('llm', 'timeoutSec', 'Give up on a model after (sec)', 'Then the next model in the chain is tried.')))),
+      h('div.card', {}, h('header', {}, h('h2', {}, 'Model calls')), h('div.pad.stack', {},
+        h('div.row', {}, saver, h('div.grow', {}, h('b', { style: 'color:var(--ink)' }, 'Token saver'), h('div.muted', {}, 'With long product lists, send only the products this customer is asking about in full, and the rest as name and price. Uses about 4 times fewer tokens with a large catalogue.'))),
+        h('div.grid3', {},
+        n('llm', 'historyMessages', 'Messages of history per reply', 'More context, more tokens. 12 is plenty for most sales chats.'), n('llm', 'maxTokens', 'Max tokens per reply', 'Raise this if a reasoning model returns empty answers.'), n('llm', 'timeoutSec', 'Give up on a model after (sec)', 'Then the next model in the chain is tried.')))),
       h('div', {}, save),
       h('div.card', {}, h('header', {}, h('h2', {}, 'Owner password')), h('div.pad', {}, h('div.grid3', { style: 'align-items:end' }, field('Current password', cur), field('New password', next),
         h('button.btn', { onclick: (e) => act(e.target, async () => { await POST('/api/settings/password', { current: cur.value, next: next.value }); cur.value = next.value = ''; }, 'Password changed') }, 'Change password'))))));

@@ -298,3 +298,17 @@ test('a retired model is replaced with the closest current one and the request s
   run('DELETE FROM providers WHERE id = ?', id);
   run('UPDATE providers SET enabled = 1');
 });
+
+test('token saver sends matching products in full and the rest as a short index', async () => {
+  const { focus } = await import('../src/agent/knowledge.js');
+  const items = Array.from({ length: 60 }, (_, i) => `- Tool ${i} Pro 1 Month — PKR ${1000 + i} — long description number ${i} with many words in it — https://shop.example/p/${i}`);
+  const text = ['Source: shop.example', 'We sell software.', 'Products and prices (61):', ...items, '- Figma Edu 2 Years — PKR 2,000 — Ready-made account — https://shop.example/p/figma', 'Rules:', '- Refunds within 3 days', '- Pay by Easypaisa'].join('\n');
+  const out = focus(text, 'figma ka price kya hai?');
+  assert.ok(out.length < text.length / 2, `much shorter (${out.length} vs ${text.length})`);
+  assert.match(out, /Figma Edu 2 Years — PKR 2,000 — Ready-made account — https:\/\/shop\.example\/p\/figma/, 'asked-about product in full');
+  assert.match(out, /Tool 3 Pro 1 Month — PKR 1003;/, 'others as name and price');
+  assert.doesNotMatch(out, /long description number 3 /, 'without their descriptions');
+  assert.match(out, /- Refunds within 3 days\n- Pay by Easypaisa/, 'short lists (rules) stay whole');
+  assert.match(out, /We sell software\./);
+  assert.equal(focus('- a\n- b', 'x'), '- a\n- b', 'short lists untouched');
+});

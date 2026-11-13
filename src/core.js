@@ -53,7 +53,7 @@ export const DEFAULT_SETTINGS = {
     dailyCap: 40,                       // proactive messages per account per day
     gapMinSec: 60, gapMaxSec: 240,
   },
-  llm: { historyMessages: 30, maxTokens: 1024, timeoutSec: 20 },
+  llm: { historyMessages: 12, maxTokens: 1024, timeoutSec: 20, tokenSaver: true },
 };
 
 const merge = (base, over) => {
@@ -89,11 +89,15 @@ export const kvSet = (key, value) =>
 
 /** Installs created with the first, slower defaults move to the fast pacing once. */
 export function migrateSettings() {
-  if (kvGet('settingsVersion', 1) >= 2) return;
+  const version = kvGet('settingsVersion', 1);
+  if (version >= 3) return;
   const row = get('SELECT value FROM settings WHERE key = ?', 'app');
-  const stored = row ? parse(row.value) : null;
-  if (stored?.human?.debounceMin === 4 && stored.human.debounceMax === 9) kvSet('app', merge(stored, { human: PACING.fast, llm: { timeoutSec: 20 } }));
-  kvSet('settingsVersion', 2);
+  let stored = row ? parse(row.value) : null;
+  if (stored && version < 2 && stored.human?.debounceMin === 4 && stored.human.debounceMax === 9) stored = merge(stored, { human: PACING.fast, llm: { timeoutSec: 20 } });
+  // v3: shorter history by default (fewer tokens per reply), unless the owner had changed it.
+  if (stored && stored.llm?.historyMessages === 30) stored = merge(stored, { llm: { historyMessages: 12 } });
+  if (stored) kvSet('app', stored);
+  kvSet('settingsVersion', 3);
 }
 
 // ---------- secrets ----------

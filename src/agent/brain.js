@@ -2,6 +2,7 @@
 import { all, get } from '../db.js';
 import { getSettings } from '../core.js';
 import { complete } from '../llm/router.js';
+import { focus } from './knowledge.js';
 
 export const STAGES = ['new', 'engaged', 'interested', 'negotiating', 'purchased', 'not_interested', 'opted_out'];
 export const CLOSED = ['purchased', 'not_interested', 'opted_out'];
@@ -16,19 +17,21 @@ function ago(ts) {
   return `${Math.round(h / 24)} days ago`;
 }
 
-export function buildSystem(settings, chat, mode) {
+export function buildSystem(settings, chat, mode, query = '') {
+  // Token saver: long lists (products, Q&A) are cut to what this conversation is about.
+  const fit = (text) => (settings.llm.tokenSaver === false ? text : focus(text, query));
   const b = settings.business;
   const who = b.persona?.trim() || 'a member of the sales team';
   const shop = b.name?.trim() || 'this business';
   const out = [`You are ${who}, chatting with a person on WhatsApp on behalf of ${shop}.\nYour job: ${b.goal?.trim() || 'Help the person with what they ask.'}`];
 
   out.push(section('About the business', b.about));
-  out.push(section('Products, services and prices', b.catalog));
-  out.push(section('Frequently asked questions', b.faqs));
+  out.push(section('Products, services and prices', fit(b.catalog)));
+  out.push(section('Frequently asked questions', fit(b.faqs)));
   out.push(section('Policies (delivery, payment, returns)', b.policies));
   out.push(section('Example replies in our voice', b.examples));
-  out.push(section('Learned from the owner\'s own past chats (how they answer, what they quote; if this conflicts with a section above, the section above wins)', b.learned));
-  out.push(section('From the business website and WhatsApp profile', b.learnedWeb));
+  out.push(section('Learned from the owner\'s own past chats (how they answer, what they quote; if this conflicts with a section above, the section above wins)', fit(b.learned)));
+  out.push(section('From the business website and WhatsApp profile', fit(b.learnedWeb)));
   out.push(section('Standing instructions from the owner (always follow)', b.memory));
 
   out.push(`
@@ -97,7 +100,11 @@ Return ONLY a JSON object:
 /** Conversation rows -> chat-completion turns. */
 export function buildTurns(chatId, limit) {
   const rows = all('SELECT from_me, text, ts FROM messages WHERE chat_id = ? ORDER BY ts DESC, id DESC LIMIT ?', chatId, limit).reverse();
-  return rows.map((r) => ({ role: r.from_me ? 'assistant' : 'user', content: r.text || '' }));
+  // Very long old messages (pasted lists, forwards) cost tokens on every reply; the latest stays whole.
+  return rows.map((r, i) => {
+    const t = r.text || '';
+    return { role: r.from_me ? 'assistant' : 'user', content: i < rows.length - 1 && t.length > 600 ? `${t.slice(0, 600)}…` : t };
+  });
 }
 
 /** Tolerant JSON extraction: models wrap JSON in prose or code fences more often than not. */
@@ -151,12 +158,14 @@ export async function decide(chatId, mode = 'reply', { turns = null, chatOverrid
   if (mode !== 'reply') {
     messages.push({ role: 'user', content: `[Instruction from the business owner, not from the customer] ${mode === 'followup' ? `The customer has been quiet since ${ago(chat.last_in_at)}. This would be follow-up number ${(chat.followup_count || 0) + 1}.` : 'Review the conversation above.'}${instruction ? ` For this batch the owner asked: "${instruction}". Let that decide who gets a message and what it says (should_followup true whenever the owner's request applies to this person), while keeping every hard rule.` : ''} Respond with the JSON object described in your instructions.` });
   }
-  const system = buildSystem(settings, chat, mode);
+  // What the conversation is about decides which products and answers go into the instructions.
+  const recent = messages.filter((m) => m.role === 'user').slice(mode === 'reply' ? -4 : -12).map((m) => m.content).join(' ');
+  const system = buildSystem(settings, chat, mode, `${recent} ${chat.summary || ''} ${chat.notes || ''}`);
   let lastErr;
   for (let attempt = 0; attempt < 2; attempt++) {
     const out = await complete({ system, messages }, { purpose: mode });
     try {
-      return { ...parseDecision(out.text, mode, chat), provider: out.providerName, model: out.model, latencyMs: out.latencyMs, hops: out.hops };
+      return { ...parseDecision(out.text, mode, chat), provider: out.providerName, model: out.model, latencyMs: out.latencyMs, hops: out.hops, usage: out.usage };
     } catch (e) {
       lastErr = e; // one retry: a second sample usually fixes malformed JSON
     }
