@@ -23,7 +23,8 @@ const followups = await import('../src/agent/followups.js');
 const calls = [];
 let cmdReplies = [];
 let flakyCount = 0;
-let tpmCount = 0; // scripted answers for the owner-command prompt
+let tpmCount = 0;
+const budget = { left: 3000, resetAt: 0 }; // scripted answers for the owner-command prompt
 let reply = JSON.stringify({ messages: ['Hi! The price is 2500.', 'Want me to book it?'], stage: 'interested', summary: 'Asked price', handoff: false });
 const server = http.createServer((req, res) => {
   let body = '';
@@ -39,6 +40,16 @@ const server = http.createServer((req, res) => {
     if (key === 'toolcalls') return send(200, { model: 'small', choices: [{ message: { content: null, tool_calls: [{ type: 'function', function: { name: 'stats', arguments: '{"days":3}' } }] }, finish_reason: 'stop' }] });
     if (key === 'think') return send(200, { model: 'qwen', choices: [{ message: { content: '<think>the user wants stats</think>\n{"reply": "Sab theek hai."}' }, finish_reason: 'stop' }] });
     if (key === 'tpm' && (tpmCount = (tpmCount || 0) + 1) === 1) return send(429, { error: { message: 'Rate limit reached for model `llama-3.1-8b-instant` in organization `org_x` service tier `on_demand` on tokens per minute (TPM): Limit 6000, Used 4500, Requested 2951. Please try again in 1.2s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', type: 'tokens', code: 'rate_limit_exceeded' } });
+    if (key === 'budget') {
+      // Like Groq's free tier: a small per-minute token budget that refills shortly, enforced with a 429.
+      const need = Math.ceil(JSON.stringify(JSON.parse(body).messages).length / 3.5) + (JSON.parse(body).max_tokens || 0);
+      const nowMs = Date.now();
+      if (nowMs > budget.resetAt) Object.assign(budget, { left: 3000, resetAt: nowMs + 1500 });
+      if (need > budget.left) return send(429, { error: { message: `Rate limit reached on tokens per minute (TPM): Limit 3000, Used ${3000 - budget.left}, Requested ${need}. Please try again in 1.5s.` } });
+      budget.left -= need;
+      return send(200, { model: 'small', choices: [{ message: { content: reply }, finish_reason: 'stop' }], usage: { prompt_tokens: need, completion_tokens: 5 } },
+        { 'x-ratelimit-remaining-tokens': String(budget.left), 'x-ratelimit-limit-tokens': '3000', 'x-ratelimit-reset-tokens': `${((budget.resetAt - nowMs) / 1000).toFixed(2)}s` });
+    }
     if (key === 'groqtool') return send(400, { error: { message: 'Tool choice is none, but model called a tool', type: 'invalid_request_error', code: 'tool_use_failed', failed_generation: '<function=stats>{"days": 5}</function>' } });
     if (req.url.endsWith('/models')) return send(200, { data: [{ id: 'whisper-large-v3' }, { id: 'llama-3.1-8b-instant' }, { id: 'llama-4-70b-versatile' }, { id: 'openai/gpt-oss-120b' }] });
     if (key === 'retired' && calls.at(-1).body?.model === 'llama-3.3-70b-versatile') return send(404, { error: { message: 'The model `llama-3.3-70b-versatile` does not exist or you do not have access to it.', type: 'invalid_request_error', code: 'model_not_found' } });
@@ -417,4 +428,25 @@ test('automatic model choice skips tiny-context and single-language models', asy
   assert.notEqual(chooseModel(groq, ''), 'allam-2-7b');
   assert.notEqual(chooseModel(['allam-2-7b', 'qwen/qwen3-32b'], ''), 'allam-2-7b', 'even without context info');
   assert.equal(chooseModel([{ id: 'allam-2-7b', context: 4096 }]), null, 'never picks a model too small for the prompt');
+});
+
+test('commands reserve few tokens per step and wait for the per-minute budget instead of failing', async () => {
+  const { outputBudget } = await import('../src/llm/router.js');
+  assert.equal(outputBudget('llama-3.1-8b-instant', 450, 'command', 1024), 450);
+  assert.equal(outputBudget('llama-3.1-8b-instant', undefined, 'reply', 1024), 500);
+  assert.equal(outputBudget('openai/gpt-oss-120b', 450, 'command', 1024), 1024, 'reasoning models keep room to think');
+
+  run('UPDATE providers SET enabled = 0');
+  const id = Number(run('INSERT INTO providers (preset, name, kind, base_url, api_key, model, priority, created_at) VALUES (?,?,?,?,?,?,?,?)', 'groq', 'Groq budget', 'openai', baseUrl, encrypt('budget'), 'llama-3.1-8b-instant', -1, now()).lastInsertRowid);
+  reply = '{"reply": "ok"}';
+  const big = 'x'.repeat(4000); // ~1150 tokens + 450 reserved per call: two fit in 3000, the third must wait
+  for (let i = 0; i < 4; i++) {
+    const out = await complete({ system: big, messages: [{ role: 'user', content: 'haal?' }], maxTokens: 450 }, { purpose: 'command' });
+    assert.equal(out.text, '{"reply": "ok"}');
+  }
+  const state = listProviders().map(publicProvider).find((p) => p.id === id);
+  assert.equal(state.status, 'ready');
+  assert.equal(state.usage.errors, 0, 'paced itself: no 429 ever reached the provider');
+  run('DELETE FROM providers WHERE id = ?', id);
+  run('UPDATE providers SET enabled = 1');
 });

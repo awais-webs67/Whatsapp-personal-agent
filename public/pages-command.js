@@ -17,6 +17,8 @@ export function command() {
   const input = h('textarea', { rows: 2, placeholder: 'Tell the agent what to do, in your own words', 'aria-label': 'Command',
     onkeydown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send.click(); } } });
   let waiting = false;
+  let note = '';
+  let lastRows = [];
   const draw = (rows) => {
     set(thread, rows.length ? rows.map((r) => r.role === 'owner'
       ? h('div.msg.me', {}, r.text, h('small', {}, clock(r.ts)))
@@ -26,19 +28,21 @@ export function command() {
       : h('div.empty', { style: 'margin:auto;max-width:560px' }, h('b', {}, 'Give the agent a job'),
         'It can read chats, report numbers, run follow-ups on a schedule, message a customer, remember offers and learn from your site.',
         h('div.stack', { style: 'margin-top:16px;text-align:left' }, EXAMPLES.map((x) => h('button.chip', { style: 'white-space:normal;text-align:left;padding:8px 10px', onclick: () => { input.value = x; input.focus(); } }, x)))),
-    waiting ? h('div.msg', { style: 'opacity:.6' }, 'Working on it…') : null);
+    waiting ? h('div.msg', { style: 'opacity:.7' }, 'Working on it…', note ? h('small', {}, note) : null) : null);
     thread.scrollTop = thread.scrollHeight;
   };
-  const load = () => GET('/api/commands').then(draw);
+  const load = () => GET('/api/commands').then((rows) => { lastRows = rows; draw(rows); });
   const send = h('button.btn.primary', { onclick: () => {
     const text = input.value.trim();
     if (!text || waiting) return;
-    input.value = ''; waiting = true;
+    input.value = ''; waiting = true; note = '';
     act(send, () => POST('/api/commands', { text })).finally(() => { waiting = false; load(); });
   } }, 'Send');
   const viaWa = toggle(true, (on) => act(null, () => PUT('/api/settings', { commandsViaWhatsApp: on }), on ? 'Commands from WhatsApp are on' : 'Commands from WhatsApp are off'), 'Accept commands from WhatsApp');
   GET('/api/settings').then((s) => { viaWa.querySelector('input').checked = s.commandsViaWhatsApp; });
   live.on('command', load);
+  // Show what the agent is doing while it waits (rate-limit pauses, model switches).
+  live.on('log', (l) => { if (waiting && ['router', 'command'].includes(l.scope)) { note = l.msg; draw(lastRows); } });
   load();
   return h('div.page', { style: 'display:flex;flex-direction:column;height:100vh;padding-bottom:24px' },
     h('div.head', {}, h('div', {}, h('h1', {}, 'Command'), h('p', {}, 'Tell the agent what to do. Anything that messages customers in bulk is confirmed with you first, and daily caps and quiet hours still apply.')),

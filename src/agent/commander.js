@@ -13,6 +13,7 @@ import { learnFromChats, learnFromWebsite, learnFromProfile } from './learn.js';
 
 const MAX_STEPS = 8;
 const DAY = 86_400_000;
+const clip = (t, n) => { const v = String(t ?? '').replace(/\s+/g, ' ').trim(); return v.length > n ? `${v.slice(0, n - 1)}…` : v; };
 const title = (c) => c.name || (c.phone ? `+${c.phone}` : c.jid.split('@')[0]);
 const days = (v, d = 7) => Math.min(3650, Math.max(0.01, Number(v) || d));
 const stageList = (v) => (Array.isArray(v) ? v.filter((s) => STAGES.includes(s)) : []);
@@ -49,8 +50,9 @@ const TOOLS = {
       const st = stageList(stages);
       const rows = all(`SELECT * FROM chats WHERE last_in_at >= ? ${st.length ? `AND stage IN (${st.map(() => '?').join(',')})` : ''}
                         ${text ? 'AND (name LIKE ? OR phone LIKE ? OR summary LIKE ? OR last_text LIKE ?)' : ''} ORDER BY last_in_at DESC LIMIT ?`,
-        now() - days(d) * DAY, ...st, ...(text ? Array(4).fill(`%${text}%`) : []), Math.min(30, Number(limit) || 20));
-      return rows.map((c) => ({ chat_id: c.id, name: title(c), stage: c.stage, summary: c.summary || c.last_text, last_message_hours_ago: Math.round((now() - c.last_in_at) / 3_600_000), needs_owner: !!c.needs_human }));
+        now() - days(d) * DAY, ...st, ...(text ? Array(4).fill(`%${text}%`) : []), Math.min(25, Number(limit) || 10));
+      const total = get(`SELECT COUNT(*) n FROM chats WHERE last_in_at >= ? ${st.length ? `AND stage IN (${st.map(() => '?').join(',')})` : ''}`, now() - days(d) * DAY, ...st).n;
+      return { total, shown: rows.length, chats: rows.map((c) => ({ id: c.id, name: title(c), stage: c.stage, about: clip(c.summary || c.last_text, 90), hours_ago: Math.round((now() - c.last_in_at) / 3_600_000), ...(c.needs_human ? { needs_owner: true } : {}) })) };
     },
   },
   read_chat: {
@@ -58,8 +60,8 @@ const TOOLS = {
     run: ({ chat_id }) => {
       const c = get('SELECT * FROM chats WHERE id = ?', Number(chat_id));
       if (!c) return { error: 'No such chat' };
-      const rows = all('SELECT from_me, by, text, ts FROM (SELECT * FROM messages WHERE chat_id = ? ORDER BY ts DESC, id DESC LIMIT 30) ORDER BY ts, id', c.id);
-      return { name: title(c), stage: c.stage, summary: c.summary, messages: rows.map((m) => `${m.from_me ? (m.by === 'owner' ? 'Owner' : 'Agent') : 'Customer'}: ${String(m.text).slice(0, 300)}`) };
+      const rows = all('SELECT from_me, by, text, ts FROM (SELECT * FROM messages WHERE chat_id = ? ORDER BY ts DESC, id DESC LIMIT 16) ORDER BY ts, id', c.id);
+      return { name: title(c), stage: c.stage, summary: c.summary, messages: rows.map((m) => `${m.from_me ? (m.by === 'owner' ? 'Owner' : 'Agent') : 'Customer'}: ${clip(m.text, 200)}`) };
     },
   },
   count_targets: {
@@ -166,7 +168,8 @@ export async function runCommand(text, history = []) {
   const steps = [];
   let corrections = 0;
   for (let i = 0; i <= MAX_STEPS; i++) {
-    const out = await complete({ system: systemPrompt(), messages, maxTokens: 1500 }, { purpose: 'command' });
+    // A step is one short JSON object; the final reply to the owner rarely needs more than a few sentences.
+    const out = await complete({ system: systemPrompt(), messages, maxTokens: 450 }, { purpose: 'command' });
     const obj = extractJson(toolCallToJson(out.text));
     const usable = obj && (TOOLS[obj.action] || (!obj.action && typeof obj.reply === 'string' && obj.reply.trim()));
     if (!usable) {
@@ -191,7 +194,7 @@ export async function runCommand(text, history = []) {
     steps.push({ action: obj.action, args: obj.args || {}, result });
     log('info', 'command', `${obj.action} ${JSON.stringify(obj.args || {}).slice(0, 200)}`);
     messages.push({ role: 'assistant', content: JSON.stringify({ action: obj.action, args: obj.args || {} }) });
-    messages.push({ role: 'user', content: `[result of ${obj.action}] ${JSON.stringify(result).slice(0, 3000)}${i === MAX_STEPS - 1 ? '\nThat was the last tool you may use. Reply to the owner now.' : ''}` });
+    messages.push({ role: 'user', content: `[result of ${obj.action}] ${JSON.stringify(result).slice(0, 2000)}${i === MAX_STEPS - 1 ? '\nThat was the last tool you may use. Reply to the owner now.' : ''}` });
   }
   return { reply: 'I used every step I am allowed for one request. Here is what happened so far; tell me how to continue.', steps };
 }
@@ -200,7 +203,7 @@ let queue = Promise.resolve();
 /** Handle a command from the dashboard or from the owner's own WhatsApp chat; requests run one at a time. */
 export function handleCommand(text, { chatId = null } = {}) {
   const job = queue.then(async () => {
-    const history = all("SELECT role, text FROM (SELECT * FROM commands ORDER BY id DESC LIMIT 6) ORDER BY id").map((r) => ({ role: r.role === 'owner' ? 'user' : 'assistant', content: r.role === 'owner' ? r.text : JSON.stringify({ reply: r.text }) }));
+    const history = all("SELECT role, text FROM (SELECT * FROM commands ORDER BY id DESC LIMIT 6) ORDER BY id").map((r) => ({ role: r.role === 'owner' ? 'user' : 'assistant', content: r.role === 'owner' ? clip(r.text, 300) : JSON.stringify({ reply: clip(r.text, 300) }) }));
     run('INSERT INTO commands (role, text, ts) VALUES (?,?,?)', 'owner', text, now());
     emit('command');
     let out;

@@ -93,8 +93,9 @@ export async function callProvider(row, req, { purpose = 'reply' } = {}) {
   // Live replies use the short timeout from Settings; background work (commands, learning, reviews) can take longer.
   const live = purpose === 'reply' || purpose === 'test';
   const timeoutMs = (live ? s.timeoutSec : Math.max(s.timeoutSec, 90)) * 1000;
-  await waitForBudget(row, req);
-  const once = (r) => chat(hydrate(r), { maxTokens: s.maxTokens, timeoutMs, fast: purpose === 'reply', ...req });
+  const maxTokens = outputBudget(row.model, req.maxTokens, purpose, s.maxTokens);
+  await waitForBudget(row, { ...req, maxTokens }, live ? 30_000 : 65_000);
+  const once = (r) => chat(hydrate(r), { timeoutMs, fast: purpose === 'reply', ...req, maxTokens: outputBudget(r.model, req.maxTokens, purpose, s.maxTokens) });
   // Small models now and then return an empty answer; a second sample almost always works.
   const call = async (r) => {
     for (let attempt = 0; ; attempt++) {
@@ -124,6 +125,18 @@ export async function callProvider(row, req, { purpose = 'reply' } = {}) {
   }
 }
 
+// Models that think before answering need room for it in max_tokens; others answer our short JSON in a few hundred.
+const REASONING = /gemini-(2\.5|[3-9])|gpt-oss|(^|\/)o\d|gpt-5|qwen3|qwq|deepseek-r1|reason|think|magistral|kimi-k2-thinking|claude/i;
+
+/**
+ * Output tokens to reserve per call. Chat replies and command steps are short JSON, so a small cap keeps
+ * Groq/OpenAI per-minute limits (which count the reservation) from running out; reasoning models keep the full setting.
+ */
+export function outputBudget(model, requested, purpose, setting) {
+  const need = requested ?? (purpose === 'reply' ? 500 : setting);
+  return REASONING.test(model || '') ? Math.max(need, setting) : need;
+}
+
 /** Rough token count of a request (about 3.5 characters per token for mixed English / Roman Urdu). */
 export const estimateTokens = (req) => Math.ceil((String(req.system || '').length + (req.messages || []).reduce((n, m) => n + String(m.content || '').length, 0)) / 3.5) + 300;
 
@@ -136,7 +149,7 @@ async function waitForBudget(row, req, maxWaitMs = 30_000) {
   if (!l || l.tokRemaining == null || !l.at) return;
   const refillAt = l.at + (l.tokResetSec ?? 60) * 1000;
   if (now() >= refillAt) return; // budget has refilled since we last looked
-  const need = estimateTokens(req);
+  const need = estimateTokens(req) + (req.maxTokens || 0);
   if (need <= l.tokRemaining) return;
   const wait = refillAt - now() + 250;
   if (wait > 0 && wait <= maxWaitMs) {
@@ -172,7 +185,7 @@ export async function complete(req, { purpose = 'reply' } = {}) {
     const soon = chainFor(purpose).filter((r) => r.enabled && blockedReason(r) === 'rate_limited')
       .map((r) => parse(r.state).cooldownUntil).filter(Boolean).sort((a, b) => a - b)[0];
     const wait = soon ? soon - now() + 300 : null;
-    if (!(e instanceof LLMError) || wait == null || wait > 35_000) throw e;
+    if (!(e instanceof LLMError) || wait == null || wait > (purpose === 'reply' ? 35_000 : 65_000)) throw e;
     log('info', 'router', `${purpose}: every model is briefly rate limited, retrying in ${(wait / 1000).toFixed(1)}s`);
     await new Promise((r) => setTimeout(r, Math.max(0, wait)));
     return completeOnce(req, purpose);
