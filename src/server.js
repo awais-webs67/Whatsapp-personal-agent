@@ -255,6 +255,7 @@ function providerInput(body, prev = null) {
     daily_limit: body.dailyLimit === undefined ? prev?.daily_limit ?? null : Number(body.dailyLimit) > 0 ? Math.round(Number(body.dailyLimit)) : null,
   };
   if (body.enabled !== undefined) out.enabled = body.enabled ? 1 : 0;
+  if (['all', 'replies', 'background'].includes(body.useFor)) out.use_for = body.useFor;
   if (body.apiKey) out.api_key = encrypt(String(body.apiKey).trim());
   if (out.kind === 'openai' && !/^https?:\/\//.test(out.base_url)) throw bad('Base URL must start with http:// or https://');
   return out;
@@ -271,8 +272,8 @@ app.post('/api/providers', wrap(async (req) => {
     if (models.length && !models.includes(p.model)) p.model = chooseModel(models, p.model) || p.model;
   } catch { /* the test call right after saving reports key or network problems */ }
   const max = get('SELECT COALESCE(MAX(priority), -1) m FROM providers').m;
-  const { lastInsertRowid } = run('INSERT INTO providers (preset, name, kind, base_url, api_key, model, daily_limit, priority, created_at) VALUES (?,?,?,?,?,?,?,?,?)',
-    p.preset, p.name, p.kind, p.base_url, p.api_key || '', p.model, p.daily_limit, max + 1, now());
+  const { lastInsertRowid } = run('INSERT INTO providers (preset, name, kind, base_url, api_key, model, daily_limit, priority, use_for, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+    p.preset, p.name, p.kind, p.base_url, p.api_key || '', p.model, p.daily_limit, max + 1, p.use_for || 'all', now());
   broadcastProviders();
   syncBalances().catch(() => {});
   return { id: Number(lastInsertRowid) };
@@ -282,7 +283,7 @@ app.patch('/api/providers/:id', wrap((req) => {
   const p = providerInput(req.body, row);
   // A new key or a manual reset clears a bad-key / cooldown state.
   if (p.api_key || req.body.reset || p.model !== row.model) p.state = JSON.stringify({ ...parse(row.state), status: 'ready', cooldownUntil: null, lastError: null });
-  update('providers', row.id, p, ['name', 'base_url', 'model', 'daily_limit', 'enabled', 'api_key', 'state']);
+  update('providers', row.id, p, ['name', 'base_url', 'model', 'daily_limit', 'enabled', 'api_key', 'state', 'use_for']);
   broadcastProviders();
   return { ok: true };
 }));

@@ -120,7 +120,7 @@ CREATE TABLE IF NOT EXISTS commands (
 );
 `);
 // Additive migrations for databases created by earlier versions.
-for (const sql of ['ALTER TABLE accounts ADD COLUMN self_jid TEXT']) {
+for (const sql of ['ALTER TABLE accounts ADD COLUMN self_jid TEXT', "ALTER TABLE providers ADD COLUMN use_for TEXT NOT NULL DEFAULT 'all'"]) {
   try { db.exec(sql); } catch { /* column already exists */ }
 }
 

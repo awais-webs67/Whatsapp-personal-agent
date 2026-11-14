@@ -160,6 +160,7 @@ export function numbers() {
 }
 
 // ============================== Models ==============================
+const USE_FOR = [['all', 'Everything'], ['replies', 'Customer replies only'], ['background', 'Commands, learning and reviews only']];
 export function models() {
   let presets = [];
   const box = h('div.card');
@@ -195,7 +196,8 @@ export function models() {
       return h(`div.prov${p === active ? '.active' : ''}${p.enabled ? '' : '.off'}`, {},
         h('div.ord', {}, String(i + 1).padStart(2, '0')),
         h('div', {}, h('div.row.wrap', {}, h('h3', {}, p.name), h(`span.pill${tone ? `.${tone}` : ''}`, {}, p === active ? 'Serving now' : label), p.cooldownUntil ? h('span.muted', { style: 'font-size:12px' }, `back ${rel(p.cooldownUntil)}`) : null),
-          h('div.mono.muted', { style: 'margin-top:4px;overflow-wrap:anywhere' }, p.model || 'no model chosen', p.keyHint ? ` · key ${p.keyHint}` : '')),
+          h('div.mono.muted', { style: 'margin-top:4px;overflow-wrap:anywhere' }, p.model || 'no model chosen', p.keyHint ? ` · key ${p.keyHint}` : ''),
+          p.useFor && p.useFor !== 'all' ? h('div', { style: 'margin-top:6px' }, h('span.pill', {}, p.useFor === 'replies' ? 'Customer replies only' : 'Commands & background only')) : null),
         h('div.meta', {},
           limitBar('Requests left', p.limits?.reqRemaining, p.limits?.reqLimit), limitBar('Tokens left', p.limits?.tokRemaining, p.limits?.tokLimit),
           p.dailyLimit ? limitBar('Your daily cap', Math.max(0, p.dailyLimit - u.requests), p.dailyLimit) : null,
@@ -229,7 +231,8 @@ export function models() {
       urlField.classList.toggle('hide', c.kind === 'anthropic');
       set(keyHint, p ? `Saved key ${p.keyHint || '(none)'}. Leave blank to keep it. ` : '', c.keyUrl ? h('a', { href: c.keyUrl, target: '_blank', rel: 'noopener' }, 'Get a key') : '', c.noKey ? 'No key needed for a local server.' : '');
     };
-    const body = () => ({ preset: st.preset, name: name.value, apiKey: key.value, baseUrl: url.value, model: model.value, dailyLimit: Number(cap.value) || 0 });
+    const useFor = select(USE_FOR, p?.useFor || 'all', null, { 'aria-label': 'Use this model for' });
+    const body = () => ({ preset: st.preset, name: name.value, apiKey: key.value, baseUrl: url.value, model: model.value, dailyLimit: Number(cap.value) || 0, useFor: useFor.value });
     const loadBtn = h('button.btn', { type: 'button', onclick: () => act(loadBtn, async () => {
       const { models: list } = p && !key.value ? await GET(`/api/providers/${p.id}/models`) : await POST('/api/providers/models', body());
       set(datalist, ...list.map((m) => h('option', { value: m })));
@@ -243,6 +246,7 @@ export function models() {
       h('div.grid2', {}, field('Name', name), h('label.f', {}, 'API key', key, keyHint)),
       urlField,
       h('div.row', { style: 'align-items:flex-end' }, h('div.grow', {}, field('Model', model, 'Suggested IDs can go out of date. “Load models” asks the provider for the current list.')), h('div', { style: 'padding-bottom:22px' }, loadBtn)),
+      field('Use this model for', useFor, 'Tip: a small fast model for customer replies, and a larger one for commands, learning and reviews, which need more thinking. You can add the same provider twice with different models.'),
       field('Your own daily cap (requests)', cap, 'Optional. Handy for free tiers with a known daily allowance: the agent moves on before the provider cuts you off.'),
       h('p.muted', { style: 'font-size:12.5px' }, 'Keys are encrypted on this server and never shown again.'),
     ], (close) => [

@@ -164,11 +164,23 @@ You get the result back and can then take another action or reply. At most ${MAX
 export async function runCommand(text, history = []) {
   const messages = [...history, { role: 'user', content: text }];
   const steps = [];
+  let corrections = 0;
   for (let i = 0; i <= MAX_STEPS; i++) {
     const out = await complete({ system: systemPrompt(), messages, maxTokens: 1500 }, { purpose: 'command' });
     const obj = extractJson(toolCallToJson(out.text));
-    if (!obj || (!obj.action && obj.reply === undefined)) return { reply: out.text.trim(), steps };
-    if (!obj.action) return { reply: String(obj.reply || 'Done.'), steps };
+    const usable = obj && (TOOLS[obj.action] || (!obj.action && typeof obj.reply === 'string' && obj.reply.trim()));
+    if (!usable) {
+      // Plain prose with no JSON is still an answer to the owner.
+      if (!obj && out.text.trim() && !/^\s*[{[<]/.test(out.text)) return { reply: out.text.trim(), steps };
+      if (corrections++ < 3) {
+        messages.push({ role: 'assistant', content: out.text.slice(0, 500) || '(empty)' });
+        messages.push({ role: 'user', content: `That was not usable${obj?.action ? `: "${obj.action}" is not one of the actions` : ''}. Answer with exactly one JSON object: {"action": "<one of: ${Object.keys(TOOLS).join(', ')}>", "args": {...}} or {"reply": "..."}.` });
+        i--;
+        continue;
+      }
+      return { reply: 'The model kept answering in a form I could not use. Try again, or give Commands a larger model on the Models page.', steps };
+    }
+    if (!obj.action) return { reply: String(obj.reply).trim(), steps };
     const tool = TOOLS[obj.action];
     let result;
     try {

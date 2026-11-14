@@ -21,7 +21,8 @@ const followups = await import('../src/agent/followups.js');
 
 // ---- fake OpenAI-compatible server: behaviour is switched per API key ----
 const calls = [];
-let cmdReplies = []; // scripted answers for the owner-command prompt
+let cmdReplies = [];
+let flakyCount = 0; // scripted answers for the owner-command prompt
 let reply = JSON.stringify({ messages: ['Hi! The price is 2500.', 'Want me to book it?'], stage: 'interested', summary: 'Asked price', handoff: false });
 const server = http.createServer((req, res) => {
   let body = '';
@@ -33,6 +34,9 @@ const server = http.createServer((req, res) => {
     if (key === 'limited') return send(429, { error: { message: 'Rate limit reached' } }, { 'retry-after': '120' });
     if (key === 'broke') return send(429, { error: { message: 'You exceeded your current quota, please check your plan and billing details' } });
     if (key === 'badkey') return send(401, { error: { message: 'Incorrect API key provided' } });
+    if (key === 'flaky' && (flakyCount = (flakyCount || 0) + 1) === 1) return send(200, { model: 'small', choices: [{ message: { content: '' }, finish_reason: 'stop' }] });
+    if (key === 'toolcalls') return send(200, { model: 'small', choices: [{ message: { content: null, tool_calls: [{ type: 'function', function: { name: 'stats', arguments: '{"days":3}' } }] }, finish_reason: 'stop' }] });
+    if (key === 'think') return send(200, { model: 'qwen', choices: [{ message: { content: '<think>the user wants stats</think>\n{"reply": "Sab theek hai."}' }, finish_reason: 'stop' }] });
     if (key === 'groqtool') return send(400, { error: { message: 'Tool choice is none, but model called a tool', type: 'invalid_request_error', code: 'tool_use_failed', failed_generation: '<function=stats>{"days": 5}</function>' } });
     if (req.url.endsWith('/models')) return send(200, { data: [{ id: 'whisper-large-v3' }, { id: 'llama-3.1-8b-instant' }, { id: 'llama-4-70b-versatile' }, { id: 'openai/gpt-oss-120b' }] });
     if (key === 'retired' && calls.at(-1).body?.model === 'llama-3.3-70b-versatile') return send(404, { error: { message: 'The model `llama-3.3-70b-versatile` does not exist or you do not have access to it.', type: 'invalid_request_error', code: 'model_not_found' } });
@@ -330,4 +334,41 @@ test('Groq "model called a tool" errors are recovered into a normal command step
   assert.equal(listProviders().map(publicProvider).find((p) => p.id === id).status, 'ready', 'not counted as a failure');
   run('DELETE FROM providers WHERE id = ?', id);
   run('UPDATE providers SET enabled = 1');
+});
+
+test('unreliable small-model answers are retried or understood instead of failing', async () => {
+  run('UPDATE providers SET enabled = 0');
+  const add = (name, key, useFor = 'all') => Number(run('INSERT INTO providers (preset, name, kind, base_url, api_key, model, priority, use_for, created_at) VALUES (?,?,?,?,?,?,?,?,?)', 'groq', name, 'openai', baseUrl, encrypt(key), 'small', -1, useFor, now()).lastInsertRowid);
+  const only = (id) => { run('UPDATE providers SET enabled = 0'); run('UPDATE providers SET enabled = 1 WHERE id = ?', id); };
+  const ids = [add('Flaky', 'flaky'), add('Tool calls', 'toolcalls'), add('Thinker', 'think')];
+
+  only(ids[0]);
+  reply = '{"reply": "ok"}';
+  assert.equal((await complete({ messages: [{ role: 'user', content: 'x' }] }, { purpose: 'command' })).text, '{"reply": "ok"}', 'empty first answer is retried');
+
+  only(ids[1]);
+  assert.deepEqual(JSON.parse((await complete({ messages: [{ role: 'user', content: 'x' }] }, { purpose: 'command' })).text), { action: 'stats', args: { days: 3 } });
+
+  only(ids[2]);
+  assert.equal((await complete({ messages: [{ role: 'user', content: 'x' }] }, { purpose: 'command' })).text, '{"reply": "Sab theek hai."}', '<think> is stripped');
+  for (const id of ids) run('DELETE FROM providers WHERE id = ?', id);
+  run('UPDATE providers SET enabled = 1');
+});
+
+test('a command that gets an unusable answer is corrected, not abandoned', async () => {
+  const { runCommand } = await import('../src/agent/commander.js');
+  cmdReplies = ['{"action": "make_coffee", "args": {}}', JSON.stringify({ reply: 'Ho gaya.' })];
+  const out = await runCommand('kuch karo');
+  assert.equal(out.reply, 'Ho gaya.');
+  assert.equal(out.steps.length, 0);
+  cmdReplies = ['Aaj sab normal hai, koi masla nahi.'];
+  assert.equal((await runCommand('haal?')).reply, 'Aaj sab normal hai, koi masla nahi.', 'plain prose is accepted as the answer');
+});
+
+test('"Use for" sends customer replies and background work to different models', async () => {
+  const { chainFor } = await import('../src/llm/router.js');
+  const rows = [{ id: 1, enabled: 1, use_for: 'replies' }, { id: 2, enabled: 1, use_for: 'background' }, { id: 3, enabled: 1, use_for: 'all' }];
+  assert.deepEqual(chainFor('reply', rows).map((r) => r.id), [1, 3]);
+  assert.deepEqual(chainFor('command', rows).map((r) => r.id), [2, 3]);
+  assert.deepEqual(chainFor('command', [{ id: 1, enabled: 1, use_for: 'replies' }]).map((r) => r.id), [1], 'never left with no model');
 });

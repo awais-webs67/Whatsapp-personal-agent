@@ -123,9 +123,15 @@ async function chatOpenAI(p, { system, messages, maxTokens, timeoutMs, fast }) {
   }
   const { body, headers } = out;
   const choice = body.choices?.[0];
-  let text = choice?.message?.content;
+  const msg = choice?.message || {};
+  let text = msg.content;
   if (Array.isArray(text)) text = text.map((part) => part.text || '').join('');
-  if (!text?.trim()) {
+  // Reasoning models may put their thinking inline; only the answer after it matters.
+  text = String(text ?? '').replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/^[\s\S]*<\/think>/i, '').replace(/<\|[a-z_]+\|>/g, '').trim();
+  // Some models answer through the function-calling channel even when none was offered.
+  const call = msg.tool_calls?.[0]?.function || msg.function_call;
+  if (!text && call?.name) text = toolCallToJson(JSON.stringify({ name: call.name, arguments: call.arguments }));
+  if (!text) {
     throw new LLMError('empty', choice?.finish_reason === 'length'
       ? 'Model ran out of tokens before answering — raise "Max tokens" in Settings'
       : `Model returned no text (finish_reason: ${choice?.finish_reason ?? 'unknown'})`);

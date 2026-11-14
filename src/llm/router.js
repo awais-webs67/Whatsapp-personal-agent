@@ -33,7 +33,7 @@ export function publicProvider(row) {
   const blocked = blockedReason(row, state);
   return {
     id: row.id, preset: row.preset, name: row.name, kind: row.kind, baseUrl: row.base_url, model: row.model,
-    enabled: !!row.enabled, priority: row.priority, dailyLimit: row.daily_limit, keyHint: mask(row.api_key),
+    enabled: !!row.enabled, priority: row.priority, dailyLimit: row.daily_limit, keyHint: mask(row.api_key), useFor: row.use_for || 'all',
     status: blocked || 'ready',
     cooldownUntil: state.cooldownUntil && state.cooldownUntil > now() ? state.cooldownUntil : null,
     lastError: state.lastError || null, lastOkAt: state.lastOkAt || null, lastLatencyMs: state.lastLatencyMs || null,
@@ -93,7 +93,15 @@ export async function callProvider(row, req, { purpose = 'reply' } = {}) {
   // Live replies use the short timeout from Settings; background work (commands, learning, reviews) can take longer.
   const live = purpose === 'reply' || purpose === 'test';
   const timeoutMs = (live ? s.timeoutSec : Math.max(s.timeoutSec, 90)) * 1000;
-  const call = (r) => chat(hydrate(r), { maxTokens: s.maxTokens, timeoutMs, fast: purpose === 'reply', ...req });
+  const once = (r) => chat(hydrate(r), { maxTokens: s.maxTokens, timeoutMs, fast: purpose === 'reply', ...req });
+  // Small models now and then return an empty answer; a second sample almost always works.
+  const call = async (r) => {
+    for (let attempt = 0; ; attempt++) {
+      try { return await once(r); } catch (e) {
+        if (attempt >= 2 || !(e instanceof LLMError) || e.kind !== 'empty' || /ran out of tokens/.test(e.message)) throw e;
+      }
+    }
+  };
   try {
     let out;
     try {
@@ -127,8 +135,16 @@ export async function replaceModel(row) {
 }
 
 /** Walk the chain until a provider answers. Returns the reply plus which hops were tried. */
+/** Which models may serve this kind of work. Customer replies vs. everything else (commands, learning, reviews). */
+export function chainFor(purpose, rows = listProviders()) {
+  const live = purpose === 'reply';
+  const fits = rows.filter((r) => !r.use_for || r.use_for === 'all' || (live ? r.use_for === 'replies' : r.use_for === 'background'));
+  // Never strand a request: if nothing is assigned to this kind of work, any enabled model may serve it.
+  return fits.some((r) => r.enabled) ? fits : rows;
+}
+
 export async function complete(req, { purpose = 'reply' } = {}) {
-  const chain = listProviders();
+  const chain = chainFor(purpose);
   if (!chain.some((r) => r.enabled)) throw new LLMError('bad_request', 'No AI model is configured. Add one on the Models page.');
   const hops = [];
   for (const row of chain) {
@@ -149,7 +165,11 @@ export async function complete(req, { purpose = 'reply' } = {}) {
   }
   const why = { rate_limited: 'rate limited', quota_exhausted: 'quota used up', invalid_key: 'API key rejected', daily_limit: 'daily cap reached', provider_down: 'provider down', unreachable: 'not reachable from this server', cooldown: 'cooling down', model_missing: 'model not found (pick another on the Models page)' };
   const detail = hops.map((h) => `${h.provider}: ${h.skipped ? why[h.skipped] || h.skipped : h.message || h.error}`).join('; ');
-  throw new LLMError('quota', `No model could answer. ${detail}${chain.filter((r) => r.enabled).length < 2 ? '. Add a second model from another provider so one can cover when the other fails.' : ''}`);
+  const weak = hops.some((h) => h.error === 'empty' || h.error === 'bad_request');
+  const tip = weak && purpose !== 'reply'
+    ? ' The model gave an unusable answer. Small models (8B) struggle with multi-step commands: add a larger model and set "Use this model for" to "Commands, learning and reviews only" on the Models page.'
+    : chain.filter((r) => r.enabled).length < 2 ? ' Add a second model from another provider so one can cover when the other fails.' : '';
+  throw new LLMError('quota', `No model could answer. ${detail}.${tip}`);
 }
 
 /** Refresh account balances where the vendor has an endpoint for it. */

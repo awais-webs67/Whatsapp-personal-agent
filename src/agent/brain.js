@@ -162,7 +162,7 @@ export async function decide(chatId, mode = 'reply', { turns = null, chatOverrid
   const recent = messages.filter((m) => m.role === 'user').slice(mode === 'reply' ? -4 : -12).map((m) => m.content).join(' ');
   const system = buildSystem(settings, chat, mode, `${recent} ${chat.summary || ''} ${chat.notes || ''}`);
   let lastErr;
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     const out = await complete({ system, messages }, { purpose: mode });
     try {
       return { ...parseDecision(out.text, mode, chat), provider: out.providerName, model: out.model, latencyMs: out.latencyMs, hops: out.hops, usage: out.usage };
