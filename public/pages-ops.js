@@ -160,6 +160,48 @@ export function numbers() {
 }
 
 // ============================== Models ==============================
+const tokens = (n) => (n == null ? '—' : n >= 1e6 ? `${+(n / 1e6).toFixed(n % 1e6 ? 1 : 0)}M` : n >= 1000 ? `${Math.round(n / 1000)}K` : String(n));
+const usd = (n) => (n == null ? null : n === 0 ? '0' : n < 0.01 ? n.toFixed(4) : n < 1 ? n.toFixed(3).replace(/0$/, '') : n.toFixed(2));
+const price = (m) => (m.free ? 'Free' : m.priceIn == null ? '—' : `$${usd(m.priceIn)} / $${usd(m.priceOut ?? 0)}`);
+
+/** Full, searchable model list with token limits and prices; clicking a row picks it. */
+function modelPicker(onPick) {
+  const st = { list: [], q: '', all: false, sort: 'name', current: '' };
+  const body = h('div.picklist', { role: 'listbox', 'aria-label': 'Models' });
+  const head = h('div.row.wrap', { style: 'gap:8px' });
+  const el = h('div.picker.hide', {}, head, body);
+  const draw = () => {
+    const q = st.q.toLowerCase();
+    const rows = st.list.filter((m) => (st.all || m.chat) && (!q || m.id.toLowerCase().includes(q) || (m.name || '').toLowerCase().includes(q)));
+    const key = { name: (m) => m.id, context: (m) => -(m.context || 0), output: (m) => -(m.maxOutput || 0), price: (m) => (m.free ? -1 : m.priceIn ?? 1e9) }[st.sort];
+    rows.sort((a, b) => { const x = key(a); const y = key(b); return typeof x === 'string' ? x.localeCompare(y) : x - y; });
+    const hasPrice = st.list.some((m) => m.priceIn != null || m.free);
+    set(body,
+      h('div.pickrow.pickhead', {}, h('span', {}, `Model (${rows.length})`), h('span', {}, 'Context'), h('span', {}, 'Max output'), hasPrice ? h('span', {}, 'Price per 1M in / out') : h('span')),
+      rows.length ? rows.slice(0, 400).map((m) => h(`button.pickrow${m.id === st.current ? '.on' : ''}${m.chat ? '' : '.dim'}`, {
+        type: 'button', role: 'option', 'aria-selected': m.id === st.current,
+        onclick: () => { st.current = m.id; onPick(m.id); draw(); },
+      },
+      h('span', {}, h('b.mono', {}, m.id), m.name ? h('small', {}, m.name) : null, !m.chat ? h('small', {}, 'Not a chat model') : null),
+      h('span.mono', {}, tokens(m.context)), h('span.mono', {}, tokens(m.maxOutput)),
+      h(`span.mono${m.free ? '.free' : ''}`, {}, hasPrice ? price(m) : ''))) : h('div.empty', {}, 'No model matches.'),
+      rows.length > 400 ? h('div.muted', { style: 'padding:8px 12px' }, `Showing 400 of ${rows.length}. Search to narrow it down.`) : null);
+  };
+  const search = h('input', { type: 'search', placeholder: 'Search models', 'aria-label': 'Search models', oninput: (e) => { st.q = e.target.value; draw(); } });
+  const sort = select([['name', 'Sort: name'], ['context', 'Sort: biggest context'], ['output', 'Sort: biggest output'], ['price', 'Sort: cheapest']], 'name', (v) => { st.sort = v; draw(); }, { 'aria-label': 'Sort models' });
+  const all = h('label.row', { style: 'font-size:12.5px;gap:6px' }, h('input', { type: 'checkbox', style: 'accent-color:var(--orange)', onchange: (e) => { st.all = e.target.checked; draw(); } }), 'Show non-chat models');
+  set(head, h('div.grow', { style: 'min-width:180px' }, search), h('div', { style: 'width:200px' }, sort), all);
+  return {
+    el,
+    show(list, current) {
+      Object.assign(st, { list, current });
+      el.classList.remove('hide');
+      toast(`${list.length} models loaded (${list.filter((m) => m.chat).length} chat models). Click one to use it.`);
+      draw();
+    },
+  };
+}
+
 const USE_FOR = [['all', 'Everything'], ['replies', 'Customer replies only'], ['background', 'Commands, learning and reviews only']];
 export function models() {
   let presets = [];
@@ -233,19 +275,21 @@ export function models() {
     };
     const useFor = select(USE_FOR, p?.useFor || 'all', null, { 'aria-label': 'Use this model for' });
     const body = () => ({ preset: st.preset, name: name.value, apiKey: key.value, baseUrl: url.value, model: model.value, dailyLimit: Number(cap.value) || 0, useFor: useFor.value });
+    const picker = modelPicker((id) => { model.value = id; });
     const loadBtn = h('button.btn', { type: 'button', onclick: () => act(loadBtn, async () => {
       const { models: list } = p && !key.value ? await GET(`/api/providers/${p.id}/models`) : await POST('/api/providers/models', body());
-      set(datalist, ...list.map((m) => h('option', { value: m })));
-      toast(`${list.length} models found. Start typing in the model box to pick one.`);
-      model.focus();
+      set(datalist, ...list.map((m) => h('option', { value: m.id })));
+      picker.show(list, model.value);
     }) }, 'Load models');
     if (p) { name.value = p.name; url.value = p.baseUrl || ''; model.value = p.model; }
+    if (p) setTimeout(() => loadBtn.click(), 0); // show the current list straight away
     fill(!p);
     modal(p ? `Edit ${p.name}` : 'Add a model', [
       !p && h('div', {}, h('label.f', {}, 'Provider'), grid),
       h('div.grid2', {}, field('Name', name), h('label.f', {}, 'API key', key, keyHint)),
       urlField,
       h('div.row', { style: 'align-items:flex-end' }, h('div.grow', {}, field('Model', model, 'Suggested IDs can go out of date. “Load models” asks the provider for the current list.')), h('div', { style: 'padding-bottom:22px' }, loadBtn)),
+      picker.el,
       field('Use this model for', useFor, 'Tip: a small fast model for customer replies, and a larger one for commands, learning and reviews, which need more thinking. You can add the same provider twice with different models.'),
       field('Your own daily cap (requests)', cap, 'Optional. Handy for free tiers with a known daily allowance: the agent moves on before the provider cuts you off.'),
       h('p.muted', { style: 'font-size:12.5px' }, 'Keys are encrypted on this server and never shown again.'),

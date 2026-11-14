@@ -144,10 +144,44 @@ async function chatOpenAI(p, { system, messages, maxTokens, timeoutMs, fast }) {
   };
 }
 
+const num = (...vals) => { for (const v of vals) { const n = Number(v); if (v != null && v !== '' && Number.isFinite(n) && n > 0) return n; } return null; };
+
+/** One provider model entry -> { id, name, context, maxOutput, priceIn, priceOut, free, chat, owner }. Fields a provider does not publish stay null. */
+export function describeModel(m) {
+  const id = String(m.id || m.name || '').replace(/^models\//, '');
+  const pr = m.pricing || {};
+  // OpenRouter-style prices are USD per token; Together-style are already per million.
+  const perM = (v, perToken) => { const n = Number(v); return v == null || v === '' || !Number.isFinite(n) || n < 0 ? null : perToken ? n * 1e6 : n; };
+  const priceIn = pr.prompt != null ? perM(pr.prompt, true) : perM(pr.input, false);
+  const priceOut = pr.completion != null ? perM(pr.completion, true) : perM(pr.output, false);
+  const outputs = m.architecture?.output_modalities;
+  return {
+    id,
+    name: m.display_name || (m.name && m.name !== id ? m.name : null),
+    context: num(m.context_window, m.context_length, m.max_context_length, m.top_provider?.context_length, m.inputTokenLimit, m.max_input_tokens, m.limits?.max_input_tokens, m.max_model_len),
+    maxOutput: num(m.max_completion_tokens, m.top_provider?.max_completion_tokens, m.outputTokenLimit, m.max_output_tokens, m.max_tokens, m.limits?.max_output_tokens),
+    priceIn, priceOut,
+    free: /:free$/.test(id) || (priceIn === 0 && priceOut === 0),
+    chat: !NOT_CHAT.test(id) && (!outputs || outputs.includes('text')) && m.active !== false,
+    owner: m.owned_by || m.owner || null,
+  };
+}
+
 async function modelsOpenAI(p) {
   const { body } = await fetchJson(`${base(p)}/models`, { headers: authHeaders(p) }, 20000);
-  const list = body.data || body.models || [];
-  return list.map((m) => String(m.id || m.name || '').replace(/^models\//, '')).filter(Boolean).sort();
+  const list = (body.data || body.models || []).map(describeModel).filter((m) => m.id);
+  // Gemini's OpenAI-compatible list has no token limits; its own API does.
+  if (/generativelanguage\.googleapis\.com/.test(base(p))) {
+    try {
+      const native = await fetchJson(`${base(p).replace(/\/openai$/, '')}/models?pageSize=1000`, { headers: { 'x-goog-api-key': p.apiKey || '' } }, 20000);
+      const byId = new Map((native.body.models || []).map((m) => [String(m.name).replace(/^models\//, ''), m]));
+      for (const m of list) {
+        const n = byId.get(m.id);
+        if (n) Object.assign(m, { context: m.context ?? num(n.inputTokenLimit), maxOutput: m.maxOutput ?? num(n.outputTokenLimit), name: m.name || n.displayName || null });
+      }
+    } catch { /* limits are a nice-to-have */ }
+  }
+  return list.sort((a, b) => a.id.localeCompare(b.id));
 }
 
 // ---------- Anthropic (official SDK) ----------
@@ -199,9 +233,9 @@ async function chatAnthropic(p, { system, messages, maxTokens, timeoutMs }) {
 
 async function modelsAnthropic(p) {
   try {
-    const ids = [];
-    for await (const m of anthropicClient(p, 20000).models.list()) ids.push(m.id);
-    return ids;
+    const out = [];
+    for await (const m of anthropicClient(p, 20000).models.list()) out.push(describeModel(m));
+    return out;
   } catch (e) {
     throw anthropicError(e);
   }
@@ -217,7 +251,10 @@ export async function chat(provider, { system = '', messages, maxTokens = 1024, 
   return { ...out, latencyMs: Date.now() - started };
 }
 
+/** Full model descriptions (id, context window, max output, price when published). */
 export const listModels = (provider) => (provider.kind === 'anthropic' ? modelsAnthropic(provider) : modelsOpenAI(provider));
+/** Just the ids, for picking a replacement model. */
+export const listModelIds = async (provider) => (await listModels(provider)).map((m) => m.id);
 
 /** Account balance where the vendor exposes one. Returns null when there is no such endpoint. */
 export async function fetchBalance(provider) {

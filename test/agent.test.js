@@ -372,3 +372,19 @@ test('"Use for" sends customer replies and background work to different models',
   assert.deepEqual(chainFor('command', rows).map((r) => r.id), [2, 3]);
   assert.deepEqual(chainFor('command', [{ id: 1, enabled: 1, use_for: 'replies' }]).map((r) => r.id), [1], 'never left with no model');
 });
+
+test('model lists keep context window, max output and price from each provider format', async () => {
+  const { describeModel } = await import('../src/llm/client.js');
+  const groq = describeModel({ id: 'llama-3.1-8b-instant', object: 'model', owned_by: 'Meta', active: true, context_window: 131072, max_completion_tokens: 131072 });
+  assert.deepEqual([groq.context, groq.maxOutput, groq.chat, groq.priceIn], [131072, 131072, true, null]);
+  const orr = describeModel({ id: 'x/y:free', name: 'X: Y (free)', context_length: 1048576, pricing: { prompt: '0', completion: '0' }, top_provider: { max_completion_tokens: 32000 }, architecture: { output_modalities: ['text'] } });
+  assert.deepEqual([orr.context, orr.maxOutput, orr.free, orr.name], [1048576, 32000, true, 'X: Y (free)']);
+  const paid = describeModel({ id: 'a/b', context_length: 32768, pricing: { prompt: '0.0000008', completion: '0.0000016' } });
+  assert.ok(Math.abs(paid.priceIn - 0.8) < 1e-9 && Math.abs(paid.priceOut - 1.6) < 1e-9, 'per-token prices become per million');
+  const together = describeModel({ id: 'meta/llama', context_length: 8192, pricing: { input: 0.18, output: 0.18 } });
+  assert.equal(together.priceIn, 0.18);
+  const claude = describeModel({ id: 'claude-haiku-5-5', display_name: 'Claude Haiku 5.5', max_input_tokens: 1000000, max_tokens: 128000 });
+  assert.deepEqual([claude.context, claude.maxOutput, claude.name], [1000000, 128000, 'Claude Haiku 5.5']);
+  assert.equal(describeModel({ id: 'whisper-large-v3' }).chat, false);
+  assert.equal(describeModel({ id: 'old-model', active: false }).chat, false, 'retired models are not offered as chat models');
+});

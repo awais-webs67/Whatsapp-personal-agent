@@ -3,7 +3,7 @@
 // benched (with a reason and a timer) and the next one takes over automatically.
 import { all, get, run, now, parse, update } from '../db.js';
 import { decrypt, mask, emit, log, dayKey, getSettings } from '../core.js';
-import { chat, fetchBalance, listModels, chooseModel, LLMError } from './client.js';
+import { chat, fetchBalance, listModelIds, chooseModel, LLMError } from './client.js';
 
 const MIN = 60_000;
 
@@ -126,7 +126,7 @@ export async function callProvider(row, req, { purpose = 'reply' } = {}) {
 /** The provider no longer has this model: ask it for its current list and switch to the closest one. */
 export async function replaceModel(row) {
   let models;
-  try { models = await listModels(hydrate(row)); } catch { return null; }
+  try { models = await listModelIds(hydrate(row)); } catch { return null; }
   const next = chooseModel(models, row.model);
   if (!next || next === row.model) return null;
   update('providers', row.id, { model: next }, ['model']);
