@@ -23,6 +23,12 @@ people who showed interest but never bought. You watch and steer everything from
   confirmed with you first; daily caps, quiet hours and opt-outs always apply.
 - **Train it three ways.** From your own chats, from your website (give it a link), or from your
   WhatsApp Business profile and catalogue. Each fills an editable text box on the Knowledge page.
+- **Tasks.** Every job you give the agent (a follow-up batch, or "every 30 minutes…", "daily at 21:00…")
+  shows on the Tasks page with its progress, and can be paused, resumed, run now or removed.
+- **Saved shop knowledge.** `knowledge/*.md` is loaded at start, so the agent knows the shop even when
+  the website cannot be opened from this computer. Refresh the product list with
+  `node scripts/fetch-shop.mjs https://yourshop.com/shop`.
+- **Urdu.** Replies in Urdu script (اردو) when the customer writes in it, or always, if you choose.
 - **More than sales.** Set the agent's job to sales, support, bookings, a personal assistant, or your own.
 - **Reads old chats.** After a QR link, past conversations sync in. "Review past conversations"
   classifies each one and drafts a follow-up for interested people who did not buy.

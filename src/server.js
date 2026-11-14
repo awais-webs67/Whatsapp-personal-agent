@@ -17,6 +17,7 @@ import { startFollowups, runCampaign, campaign } from './agent/followups.js';
 import { learnFromChats, learnFromWebsite, learnFromProfile, learning } from './agent/learn.js';
 import { importKnowledgeFiles } from './agent/knowledge-files.js';
 import { handleCommand, startCommander } from './agent/commander.js';
+import { listTasks, createTask, controlTask, startTasks } from './agent/tasks.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // On slow or IPv6-broken connections Node's fetch gives up after 250 ms per address and reports
@@ -135,6 +136,7 @@ app.get('/api/overview', wrap(() => {
       needsHuman: count('SELECT COUNT(*) n FROM chats WHERE needs_human = 1'),
       pendingFollowups: count("SELECT COUNT(*) n FROM followups WHERE status = 'pending'"),
       purchased: count("SELECT COUNT(*) n FROM chats WHERE stage = 'purchased'"),
+      activeTasks: count("SELECT COUNT(*) n FROM tasks WHERE status = 'active'"),
     },
     stages: all('SELECT stage, COUNT(*) n FROM chats GROUP BY stage'),
     campaign,
@@ -347,6 +349,11 @@ app.post('/api/learn/website', wrap(async (req) => learnFromWebsite(String(req.b
 app.post('/api/learn/files', wrap(() => importKnowledgeFiles({ force: true })));
 app.post('/api/learn/profile', wrap(async () => learnFromProfile(await wa.profiles())));
 
+// ---------- tasks ----------
+app.get('/api/tasks', wrap(() => listTasks()));
+app.post('/api/tasks', wrap((req) => ({ id: createTask({ kind: 'scheduled', title: req.body.title, instruction: req.body.instruction, schedule: req.body.schedule }) })));
+app.patch('/api/tasks/:id', wrap((req) => controlTask(Number(req.params.id), String(req.body.action || ''))));
+
 // ---------- owner commands ----------
 app.get('/api/commands', wrap(() => all('SELECT * FROM (SELECT * FROM commands ORDER BY id DESC LIMIT 100) ORDER BY id').map((c) => ({ ...c, steps: parse(c.steps, []) }))));
 app.post('/api/commands', wrap(async (req) => {
@@ -420,6 +427,7 @@ export function start(port = Number(process.env.PORT) || 3000) {
   try { importKnowledgeFiles(); } catch (e) { log('error', 'learn', `Could not load knowledge files: ${e.message}`); }
   startPipeline();
   startCommander();
+  startTasks();
   startFollowups();
   startRouterTicker();
   wa.startAll();

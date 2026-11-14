@@ -461,3 +461,64 @@ test('a VPN or country block is reported as a network problem, not a bad key', a
   run('DELETE FROM providers WHERE id = ?', id);
   run('UPDATE providers SET enabled = 1');
 });
+
+test('tasks: a follow-up batch can be paused, resumed and removed', async () => {
+  const tasks = await import('../src/agent/tasks.js');
+  const id = tasks.createTask({ kind: 'batch', title: 'Test batch', instruction: 'confirm offer' });
+  const chat = get("SELECT id FROM chats WHERE jid = '111@s.whatsapp.net'");
+  run("UPDATE chats SET stage = 'interested' WHERE id = ?", chat.id);
+  run("INSERT INTO followups (chat_id, kind, text, reason, status, due_at, task_id, created_at) VALUES (?, 'campaign', 'Paused one', '', 'approved', ?, ?, ?)", chat.id, now() - 1000, id, now());
+  tasks.controlTask(id, 'pause');
+  const n = sent.length;
+  await followups._tick();
+  assert.equal(sent.length, n, 'paused task sends nothing');
+  assert.equal(tasks.listTasks().find((t) => t.id === id).progress.queued, 1);
+  tasks.controlTask(id, 'resume');
+  await followups._tick();
+  assert.equal(sent.at(-1).text, 'Paused one', 'resumed task sends');
+  assert.equal(tasks.listTasks().find((t) => t.id === id).progress.sent, 1);
+  run("INSERT INTO followups (chat_id, kind, text, reason, status, due_at, task_id, created_at) VALUES (?, 'campaign', 'Never sent', '', 'approved', ?, ?, ?)", chat.id, now() + 60_000, id, now());
+  tasks.controlTask(id, 'remove');
+  assert.equal(get("SELECT status FROM followups WHERE text = 'Never sent'").status, 'skipped');
+  assert.ok(!tasks.listTasks().some((t) => t.id === id), 'removed tasks are hidden');
+});
+
+test('tasks: a repeating task runs on time, can be paused, and reports its result', async () => {
+  const tasks = await import('../src/agent/tasks.js');
+  const { startCommander } = await import('../src/agent/commander.js');
+  startCommander();
+  const id = tasks.createTask({ kind: 'scheduled', title: 'Stats every 30 min', instruction: 'aaj ka haal batao', schedule: { type: 'every', minutes: 30 } });
+  let t = tasks.listTasks().find((x) => x.id === id);
+  assert.equal(t.scheduleText, 'Every 30 minutes');
+  assert.ok(Math.abs(t.next_run_at - (now() + 30 * 60_000)) < 5000);
+  run('UPDATE tasks SET next_run_at = ? WHERE id = ?', now() - 1, id);
+  cmdReplies = [JSON.stringify({ action: 'stats', args: { days: 1 } }), JSON.stringify({ reply: 'Aaj 4 log aaye.' })];
+  await tasks._tick();
+  t = tasks.listTasks().find((x) => x.id === id);
+  assert.equal(t.runs, 1);
+  assert.equal(t.last_result, 'Aaj 4 log aaye.');
+  assert.equal(t.status, 'active');
+  assert.ok(t.next_run_at > now() + 29 * 60_000, 'scheduled again in 30 minutes');
+  assert.match(get("SELECT text FROM commands WHERE role = 'owner' ORDER BY id DESC LIMIT 1").text, /Task #\d+: Stats every 30 min/);
+  tasks.controlTask(id, 'pause');
+  run('UPDATE tasks SET next_run_at = ? WHERE id = ?', now() - 1, id);
+  await tasks._tick();
+  assert.equal(tasks.listTasks().find((x) => x.id === id).runs, 1, 'paused task does not run');
+  tasks.controlTask(id, 'remove');
+
+  const once = tasks.createTask({ kind: 'scheduled', instruction: 'ek dafa', schedule: { type: 'once' } });
+  cmdReplies = [JSON.stringify({ reply: 'Ho gaya.' })];
+  await tasks._tick();
+  assert.equal(tasks.listTasks().find((x) => x.id === once).status, 'done');
+});
+
+test('tasks: schedule times', async () => {
+  const { nextRun, normaliseSchedule } = await import('../src/agent/tasks.js');
+  const from = now();
+  const daily = nextRun({ type: 'daily', time: '10:00' }, from);
+  assert.ok(daily > from && daily <= from + 24 * 3_600_000);
+  assert.equal(nextRun({ type: 'every', minutes: 5 }, from), from + 5 * 60_000);
+  assert.equal(nextRun({ type: 'once' }, from, { ranBefore: true }), null);
+  assert.throws(() => normaliseSchedule({ type: 'daily', time: 'morning' }));
+  assert.throws(() => normaliseSchedule({ type: 'every', minutes: 0 }));
+});

@@ -111,6 +111,20 @@ CREATE TABLE IF NOT EXISTS logs (
   msg TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS tasks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  instruction TEXT NOT NULL,
+  kind TEXT NOT NULL,               -- batch | scheduled
+  schedule TEXT,                    -- JSON: {type: once|every|daily, at|minutes|time}
+  status TEXT NOT NULL,             -- active | paused | done | failed | removed
+  next_run_at INTEGER,
+  last_run_at INTEGER,
+  last_result TEXT,
+  runs INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS commands (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   role TEXT NOT NULL,               -- owner | agent
@@ -120,7 +134,7 @@ CREATE TABLE IF NOT EXISTS commands (
 );
 `);
 // Additive migrations for databases created by earlier versions.
-for (const sql of ['ALTER TABLE accounts ADD COLUMN self_jid TEXT', "ALTER TABLE providers ADD COLUMN use_for TEXT NOT NULL DEFAULT 'all'"]) {
+for (const sql of ['ALTER TABLE accounts ADD COLUMN self_jid TEXT', "ALTER TABLE providers ADD COLUMN use_for TEXT NOT NULL DEFAULT 'all'", 'ALTER TABLE followups ADD COLUMN task_id INTEGER']) {
   try { db.exec(sql); } catch { /* column already exists */ }
 }
 

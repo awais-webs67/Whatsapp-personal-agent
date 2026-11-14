@@ -8,6 +8,7 @@ import { toolCallToJson } from '../llm/client.js';
 import * as wa from '../wa/manager.js';
 import { STAGES, extractJson } from './brain.js';
 import { runCampaign, campaign } from './followups.js';
+import { createTask, listTasks, taskView, controlTask, setTaskRunner, setCampaign } from './tasks.js';
 import { humanSend } from './pipeline.js';
 import { learnFromChats, learnFromWebsite, learnFromProfile } from './learn.js';
 
@@ -75,11 +76,28 @@ const TOOLS = {
       if (!t.length) return { started: false, reason: 'No chats match' };
       const s = getSettings().followup;
       const interval = Math.max(1, Number(a.interval_minutes) || 5);
-      await runCampaign({ sinceDays: days(a.days), limit: Math.min(500, Number(a.limit) || 100), reanalyze: true, instruction: String(a.instruction || '').slice(0, 600), autoApprove: !!a.send, intervalMinutes: interval, stages: stageList(a.stages) });
-      return { started: true, chats_being_read: Math.min(t.length, Number(a.limit) || 100), interval_minutes: interval, mode: a.send ? 'sends automatically' : 'drafts wait for approval',
+      const taskId = createTask({ kind: 'batch', title: `Follow-ups: ${String(a.instruction || 'quiet leads').slice(0, 80)}`, instruction: `Last ${days(a.days)} days${stageList(a.stages).length ? `, stages ${stageList(a.stages).join(', ')}` : ''}, every ${interval} min, ${a.send ? 'sends automatically' : 'drafts for approval'}. ${a.instruction || ''}`.trim() });
+      await runCampaign({ taskId, sinceDays: days(a.days), limit: Math.min(500, Number(a.limit) || 100), reanalyze: true, instruction: String(a.instruction || '').slice(0, 600), autoApprove: !!a.send, intervalMinutes: interval, stages: stageList(a.stages) });
+      return { started: true, task_id: taskId, chats_being_read: Math.min(t.length, Number(a.limit) || 100), interval_minutes: interval, mode: a.send ? 'sends automatically' : 'drafts wait for approval',
         limits: `at most ${s.dailyCap} per number per day; nothing is sent between ${s.quietStart}:00 and ${s.quietEnd}:00 (${s.timezone}); people who would not benefit are skipped` };
     },
   },
+  schedule_task: {
+    doc: 'schedule_task {"instruction": "what to do each time, in the owner\'s words", "every_minutes": 30} or {"instruction": "...", "daily_at": "10:00"} or {"instruction": "...", "at": "18:30"} - set up a task that runs later or repeatedly. The instruction is carried out like a new request each time.',
+    run: (a) => {
+      const schedule = a.every_minutes ? { type: 'every', minutes: Number(a.every_minutes) } : a.daily_at ? { type: 'daily', time: String(a.daily_at) } : { type: 'once', at: a.at ? String(a.at) : undefined };
+      const id = createTask({ kind: 'scheduled', instruction: String(a.instruction || ''), title: a.title, schedule });
+      const t = taskView(get('SELECT * FROM tasks WHERE id = ?', id));
+      return { task_id: id, schedule: t.scheduleText, first_run: t.next_run_at ? new Date(t.next_run_at).toISOString() : null };
+    },
+  },
+  list_tasks: {
+    doc: 'list_tasks {} - the owner\'s tasks with status, schedule and progress.',
+    run: () => listTasks().slice(0, 15).map((t) => ({ id: t.id, title: t.title, status: t.status, schedule: t.scheduleText, ...(t.progress ? { progress: t.progress } : {}), last_result: clip(t.last_result, 120) })),
+  },
+  pause_task: { doc: 'pause_task {"id": 3}', run: ({ id }) => ({ status: controlTask(id, 'pause').status }) },
+  resume_task: { doc: 'resume_task {"id": 3}', run: ({ id }) => ({ status: controlTask(id, 'resume').status }) },
+  remove_task: { doc: 'remove_task {"id": 3} - stop it and cancel its queued messages.', run: ({ id }) => ({ status: controlTask(id, 'remove').status }) },
   stop_followups: {
     doc: 'stop_followups {} - stop the running batch and cancel everything queued to send.',
     run: () => {
@@ -139,11 +157,11 @@ const TOOLS = {
   },
 };
 
-function systemPrompt() {
+function systemPrompt(scheduled = false) {
   const s = getSettings();
   return `You are the operations assistant of ${s.business.name || 'a business'}'s WhatsApp agent. The business OWNER is talking to you (not a customer). Carry out what they ask using the actions below, then report back briefly in the owner's language.
 
-Today is ${new Date().toLocaleString('en-GB', { timeZone: s.followup.timezone, dateStyle: 'full', timeStyle: 'short' })}. Autopilot is ${s.autopilot ? 'on' : 'off'}.
+Today is ${new Date().toLocaleString('en-GB', { timeZone: s.followup.timezone, dateStyle: 'full', timeStyle: 'short' })} (${s.followup.timezone}). Autopilot is ${s.autopilot ? 'on' : 'off'}.${scheduled ? '\nThis request is a scheduled task the owner set up earlier and already approved: carry it out without asking for confirmation, then report what you did in one or two sentences. Do not create new scheduled tasks from it.' : ''}\nWhen the owner asks for something later or repeatedly ("every 30 minutes", "roz subah 10 baje", "at 6 pm"), use schedule_task. Batches of follow-ups appear as tasks the owner can pause or remove.
 
 ## Actions you can take
 ${Object.values(TOOLS).map((t) => `- ${t.doc}`).join('\n')}
@@ -163,13 +181,13 @@ You get the result back and can then take another action or reply. At most ${MAX
 }
 
 /** Run one owner request through the tool loop. */
-export async function runCommand(text, history = []) {
+export async function runCommand(text, history = [], { scheduled = false } = {}) {
   const messages = [...history, { role: 'user', content: text }];
   const steps = [];
   let corrections = 0;
   for (let i = 0; i <= MAX_STEPS; i++) {
     // A step is one short JSON object; the final reply to the owner rarely needs more than a few sentences.
-    const out = await complete({ system: systemPrompt(), messages, maxTokens: 450 }, { purpose: 'command' });
+    const out = await complete({ system: systemPrompt(scheduled), messages, maxTokens: 450 }, { purpose: 'command' });
     const obj = extractJson(toolCallToJson(out.text));
     const usable = obj && (TOOLS[obj.action] || (!obj.action && typeof obj.reply === 'string' && obj.reply.trim()));
     if (!usable) {
@@ -201,14 +219,14 @@ export async function runCommand(text, history = []) {
 
 let queue = Promise.resolve();
 /** Handle a command from the dashboard or from the owner's own WhatsApp chat; requests run one at a time. */
-export function handleCommand(text, { chatId = null } = {}) {
+export function handleCommand(text, { chatId = null, scheduled = false, label = null } = {}) {
   const job = queue.then(async () => {
     const history = all("SELECT role, text FROM (SELECT * FROM commands ORDER BY id DESC LIMIT 6) ORDER BY id").map((r) => ({ role: r.role === 'owner' ? 'user' : 'assistant', content: r.role === 'owner' ? clip(r.text, 300) : JSON.stringify({ reply: clip(r.text, 300) }) }));
-    run('INSERT INTO commands (role, text, ts) VALUES (?,?,?)', 'owner', text, now());
+    run('INSERT INTO commands (role, text, ts) VALUES (?,?,?)', 'owner', label || text, now());
     emit('command');
     let out;
     try {
-      out = await runCommand(text, history);
+      out = await runCommand(text, scheduled ? [] : history, { scheduled });
     } catch (e) {
       out = { reply: `I could not do that: ${e.message}`, steps: [] };
     }
@@ -222,5 +240,7 @@ export function handleCommand(text, { chatId = null } = {}) {
 }
 
 export function startCommander() {
+  setCampaign(campaign);
+  setTaskRunner((t) => handleCommand(t.instruction, { scheduled: true, label: `⏰ Task #${t.id}: ${t.title}` }));
   wa.setHandlers({ onCommand: (chatId, text) => { if (getSettings().commandsViaWhatsApp) handleCommand(text, { chatId }); } });
 }

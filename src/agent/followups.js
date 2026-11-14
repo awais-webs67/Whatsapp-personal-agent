@@ -9,12 +9,14 @@ import { eligibility, humanSend, scheduleNextFollowup } from './pipeline.js';
 const nextSlot = new Map(); // accountId -> earliest time the next proactive message may go out
 let drafting = false;
 let sending = false;
-export const campaign = { running: false, total: 0, done: 0, drafted: 0, failed: 0, cancel: false, startedAt: null, error: null };
+// A follow-up that belongs to a task only goes out while that task is active (not paused or removed).
+const TASK_ACTIVE = "(f.task_id IS NULL OR (SELECT t.status FROM tasks t WHERE t.id = f.task_id) = 'active')";
+export const campaign = { taskId: null, running: false, total: 0, done: 0, drafted: 0, failed: 0, cancel: false, startedAt: null, error: null };
 
 const label = (c) => c.name || c.phone || c.jid;
 
-function queue(chatId, kind, text, reason, status, dueAt = now()) {
-  run('INSERT INTO followups (chat_id, kind, text, reason, status, due_at, created_at) VALUES (?,?,?,?,?,?,?)', chatId, kind, text, reason, status, Math.round(dueAt), now());
+function queue(chatId, kind, text, reason, status, dueAt = now(), taskId = null) {
+  run('INSERT INTO followups (chat_id, kind, text, reason, status, due_at, task_id, created_at) VALUES (?,?,?,?,?,?,?,?)', chatId, kind, text, reason, status, Math.round(dueAt), taskId, now());
   emit('followups');
 }
 
@@ -53,13 +55,13 @@ async function sendApproved() {
   try {
     const s = getSettings().followup;
     if (isQuiet(hourIn(s.timezone), s.quietStart, s.quietEnd)) return;
-    const accounts = all("SELECT DISTINCT c.account_id id FROM followups f JOIN chats c ON c.id = f.chat_id WHERE f.status = 'approved' AND f.due_at <= ?", now());
+    const accounts = all(`SELECT DISTINCT c.account_id id FROM followups f JOIN chats c ON c.id = f.chat_id WHERE f.status = 'approved' AND f.due_at <= ? AND ${TASK_ACTIVE}`, now());
     for (const { id: accountId } of accounts) {
       if ((nextSlot.get(accountId) || 0) > now()) continue;
       if (wa.statusOf(accountId).state !== 'connected') continue;
       const sentToday = get("SELECT COUNT(*) n FROM followups f JOIN chats c ON c.id = f.chat_id WHERE c.account_id = ? AND f.status = 'sent' AND f.sent_at > ?", accountId, now() - 86_400_000).n;
       if (sentToday >= s.dailyCap) continue;
-      const f = get("SELECT f.* FROM followups f JOIN chats c ON c.id = f.chat_id WHERE c.account_id = ? AND f.status = 'approved' AND f.due_at <= ? ORDER BY f.due_at, f.id LIMIT 1", accountId, now());
+      const f = get(`SELECT f.* FROM followups f JOIN chats c ON c.id = f.chat_id WHERE c.account_id = ? AND f.status = 'approved' AND f.due_at <= ? AND ${TASK_ACTIVE} ORDER BY f.due_at, f.id LIMIT 1`, accountId, now());
       if (!f) continue;
       nextSlot.set(accountId, now() + rand(s.gapMinSec, s.gapMaxSec) * 1000);
       const chat = get('SELECT * FROM chats WHERE id = ?', f.chat_id);
@@ -95,7 +97,7 @@ async function sendApproved() {
  *  intervalMinutes  spacing between messages (each one is scheduled, with a little jitter)
  *  stages           only these stages (purchased chats are included only when listed here)
  */
-export async function runCampaign({ accountId = null, sinceDays = 90, limit = 200, reanalyze = false, instruction = '', autoApprove = false, intervalMinutes = 0, stages = null } = {}) {
+export async function runCampaign({ accountId = null, sinceDays = 90, limit = 200, reanalyze = false, instruction = '', autoApprove = false, intervalMinutes = 0, stages = null, taskId = null } = {}) {
   if (campaign.running) throw new Error('A review is already running');
   const since = now() - sinceDays * 86_400_000;
   const chats = all(`SELECT c.* FROM chats c
@@ -109,7 +111,7 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
       ORDER BY c.last_in_at DESC LIMIT ?4`, accountId, since, reanalyze || instruction ? 1 : 0, limit, stages?.length ? `,${stages.join(',')},` : '');
   const gap = Math.max(0, Number(intervalMinutes) || 0) * 60_000;
   let nextDue = now();
-  Object.assign(campaign, { running: true, total: chats.length, done: 0, drafted: 0, failed: 0, cancel: false, startedAt: now(), error: null });
+  Object.assign(campaign, { taskId, running: true, total: chats.length, done: 0, drafted: 0, failed: 0, cancel: false, startedAt: now(), error: null });
   emit('campaign', campaign);
   log('info', 'campaign', `Reviewing ${chats.length} past conversations`);
   (async () => {
@@ -119,7 +121,7 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
         const d = await decide(chat.id, 'analyze', { instruction });
         update('chats', chat.id, { stage: d.stage, summary: d.summary, analyzed_at: now() }, ['stage', 'summary', 'analyzed_at']);
         if (!d.skip) {
-          queue(chat.id, 'campaign', d.message, d.reason, autoApprove ? 'approved' : 'pending', nextDue);
+          queue(chat.id, 'campaign', d.message, d.reason, autoApprove ? 'approved' : 'pending', nextDue, taskId);
           nextDue = Math.max(nextDue, now()) + gap * rand(0.8, 1.2);
           campaign.drafted++;
         }
@@ -130,10 +132,12 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
       }
       campaign.done++;
       emit('campaign', campaign);
+      if (taskId) emit('tasks');
       await sleep(rand(400, 1200)); // stay gentle on free-tier rate limits
     }
     campaign.running = false;
     emit('campaign', campaign);
+    if (taskId) emit('tasks');
     log('info', 'campaign', `Review finished: ${campaign.done} read, ${campaign.drafted} follow-ups drafted, ${campaign.failed} failed`);
   })();
   return campaign;
