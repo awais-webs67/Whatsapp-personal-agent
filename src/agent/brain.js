@@ -38,6 +38,7 @@ export function buildSystem(settings, chat, mode, query = '') {
 ## How to write
 - ${b.tone}
 - ${b.language}
+- Urdu must be written in Urdu (Arabic) script with correct Urdu spelling, never in Hindi (Devanagari) script. Prices and product names may stay in English letters and digits.
 - Write like a person texting: 1 to 3 short bubbles, plain text, no markdown, no headings, no lists. Ask at most one question at a time.
 - Read the whole conversation first. Never repeat something already answered, never re-greet mid-conversation.
 - Move the conversation one step toward your job above, without pressure.

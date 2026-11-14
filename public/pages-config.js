@@ -23,9 +23,9 @@ function agentSim() {
   let last = null;
   const thread = h('div.thread');
   const info = h('div.card');
-  const input = h('textarea', { rows: 1, placeholder: 'Write as a customer would, e.g. “price kya hai?”', 'aria-label': 'Customer message', onkeydown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send.click(); } } });
+  const input = h('textarea', { dir: 'auto', rows: 1, placeholder: 'Write as a customer would, e.g. “price kya hai?”', 'aria-label': 'Customer message', onkeydown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send.click(); } } });
   const drawThread = (thinking) => {
-    set(thread, ...(turns.length ? turns.map((t) => h(`div.msg${t.role === 'assistant' ? '.me.ai' : ''}`, {}, t.content)) : [h('div.empty', { style: 'margin:auto' }, h('b', {}, 'Play the customer'), 'Send a message and see exactly what your agent would reply, and which model answered.')]),
+    set(thread, ...(turns.length ? turns.map((t) => h(`div.msg${t.role === 'assistant' ? '.me.ai' : ''}`, { dir: 'auto' }, t.content)) : [h('div.empty', { style: 'margin:auto' }, h('b', {}, 'Play the customer'), 'Send a message and see exactly what your agent would reply, and which model answered.')]),
       thinking ? h('div.msg.me.ai', { style: 'opacity:.6' }, 'typing…') : '');
     thread.scrollTop = thread.scrollHeight;
   };
@@ -106,7 +106,9 @@ export function knowledge() {
         area('policies', 'Payment, delivery and refund rules', null, 4),
         line('purchaseSignal', 'What counts as a sale', 'The agent marks a chat “Purchased” when it sees this.'))),
       h('div.card', {}, h('header', {}, h('h2', {}, 'How it should sound')), h('div.pad.stack', {},
-        area('tone', 'Tone', null, 2), area('language', 'Language', null, 2),
+        area('tone', 'Tone', null, 2),
+        h('label.f', {}, 'Language', h('div.chips', {}, Object.entries(LANGS).map(([label, text]) => h('button.chip', { type: 'button', onclick: () => { f.language.value = text; } }, label))),
+          (f.language = h('textarea', { rows: 2, dir: 'auto', value: b.language || '' })), h('small', {}, 'Pick one or write your own.')),
         area('examples', 'A few real replies of yours', 'Paste 5 to 15 messages you actually sent customers. This is the strongest way to make it sound like you.', 7))),
       learnCard(f, b),
       h('div.row', {}, save, h('a.btn', { href: '#/playground' }, 'Try it in Live test'))));
@@ -114,6 +116,12 @@ export function knowledge() {
   return el;
 }
 
+const LANGS = {
+  'Match the customer': 'Reply in the language and script the customer uses: if they write in Urdu script (اردو), reply in proper Urdu script; if they write Roman Urdu, reply in Roman Urdu; if English, reply in English.',
+  'Always Urdu (اردو)': 'Always reply in Urdu script (اردو), even if the customer writes in Roman Urdu or English. Keep prices and product names in English letters and digits.',
+  'Roman Urdu': 'Reply in Roman Urdu (Urdu written in English letters), unless the customer clearly prefers English.',
+  English: 'Reply in simple English.',
+};
 const GOALS = {
   Sales: 'Answer questions about what we offer and help the customer buy, without pressure.',
   Support: 'Help existing customers with questions and problems about their order or service. Solve what you can from the information here and hand over to the owner for anything else.',
@@ -137,6 +145,7 @@ function learnCard(f, b) {
     } catch (e) { set(webNote, h('span', { style: 'color:var(--danger)' }, e.message)); throw e; }
   }) }, 'Read website');
   live.on('weblearn', (w) => w.running && w.total && set(webNote, `Reading product pages: ${w.done} of ${w.total}…`));
+  const filesBtn = h('button.btn', { title: 'Loads the shop data saved in the knowledge folder (made with scripts/fetch-shop.mjs). Works without opening the website.', onclick: () => act(filesBtn, async () => { const r = await POST('/api/learn/files'); await refill(r.files ? `Loaded ${r.names.join(', ')}.` : 'No saved files found in the knowledge folder.'); }) }, 'Load saved shop files');
   const profBtn = h('button.btn', { title: 'Uses the business profile and catalogue of your connected WhatsApp Business number', onclick: () => act(profBtn, async () => { await POST('/api/learn/profile'); await refill('Profile read. Check the text below.'); }) }, 'Read WhatsApp profile');
   const status = h('div');
   const btn = h('button.btn.dark', { onclick: () => act(btn, async () => draw(await POST('/api/learn', {}))) }, b.learned ? 'Learn again' : 'Learn from my chats');
@@ -153,7 +162,7 @@ function learnCard(f, b) {
     status,
     field('From your chats', f.learned, b.learnedAt ? `Last updated ${new Date(b.learnedAt).toLocaleString()}. Anything you write in the sections above wins over this.` : 'Needs a linked number with synced history.'),
     h('div.row.wrap', { style: 'align-items:flex-end' }, h('div.grow', { style: 'min-width:220px' }, field('Website to read', url, 'Reads every product (name, price, description) the site publishes, plus its about, FAQ and policy pages. Your shop or home page link is enough.')),
-      h('div', { style: 'padding-bottom:22px' }, h('div.row', {}, webBtn, profBtn))),
+      h('div', { style: 'padding-bottom:22px' }, h('div.row.wrap', {}, webBtn, filesBtn, profBtn))),
     webNote,
     field('From your website and WhatsApp profile', f.learnedWeb),
     field('Standing instructions', f.memory, 'Things you told the agent to remember, e.g. a running offer. One per line. You can also add these by command: “remember that…”.')));

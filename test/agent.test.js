@@ -50,6 +50,7 @@ const server = http.createServer((req, res) => {
       return send(200, { model: 'small', choices: [{ message: { content: reply }, finish_reason: 'stop' }], usage: { prompt_tokens: need, completion_tokens: 5 } },
         { 'x-ratelimit-remaining-tokens': String(budget.left), 'x-ratelimit-limit-tokens': '3000', 'x-ratelimit-reset-tokens': `${((budget.resetAt - nowMs) / 1000).toFixed(2)}s` });
     }
+    if (key === 'geo') return send(403, { error: { message: 'Access denied. Please check your network settings.' } });
     if (key === 'groqtool') return send(400, { error: { message: 'Tool choice is none, but model called a tool', type: 'invalid_request_error', code: 'tool_use_failed', failed_generation: '<function=stats>{"days": 5}</function>' } });
     if (req.url.endsWith('/models')) return send(200, { data: [{ id: 'whisper-large-v3' }, { id: 'llama-3.1-8b-instant' }, { id: 'llama-4-70b-versatile' }, { id: 'openai/gpt-oss-120b' }] });
     if (key === 'retired' && calls.at(-1).body?.model === 'llama-3.3-70b-versatile') return send(404, { error: { message: 'The model `llama-3.3-70b-versatile` does not exist or you do not have access to it.', type: 'invalid_request_error', code: 'model_not_found' } });
@@ -447,6 +448,16 @@ test('commands reserve few tokens per step and wait for the per-minute budget in
   const state = listProviders().map(publicProvider).find((p) => p.id === id);
   assert.equal(state.status, 'ready');
   assert.equal(state.usage.errors, 0, 'paced itself: no 429 ever reached the provider');
+  run('DELETE FROM providers WHERE id = ?', id);
+  run('UPDATE providers SET enabled = 1');
+});
+
+test('a VPN or country block is reported as a network problem, not a bad key', async () => {
+  run('UPDATE providers SET enabled = 0');
+  const id = Number(run('INSERT INTO providers (preset, name, kind, base_url, api_key, model, priority, created_at) VALUES (?,?,?,?,?,?,?,?)', 'groq', 'Groq geo', 'openai', baseUrl, encrypt('geo'), 'llama-3.1-8b-instant', -1, now()).lastInsertRowid);
+  await assert.rejects(complete({ messages: [{ role: 'user', content: 'x' }] }), /blocking this connection, most likely because of the VPN/);
+  const st = listProviders().map(publicProvider).find((p) => p.id === id);
+  assert.equal(st.status, 'unreachable', 'retried after a short pause, not benched as a bad key');
   run('DELETE FROM providers WHERE id = ?', id);
   run('UPDATE providers SET enabled = 1');
 });

@@ -14,15 +14,15 @@ const STEP = { stats: 'Looked at the numbers', find_chats: 'Searched chats', rea
 /** Tell the agent what to do in plain language. The same works from WhatsApp's "Message yourself" chat. */
 export function command() {
   const thread = h('div.thread', { style: 'flex:1' });
-  const input = h('textarea', { rows: 2, placeholder: 'Tell the agent what to do, in your own words', 'aria-label': 'Command',
+  const input = h('textarea', { dir: 'auto', rows: 2, placeholder: 'Tell the agent what to do, in your own words', 'aria-label': 'Command',
     onkeydown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send.click(); } } });
   let waiting = false;
   let note = '';
   let lastRows = [];
   const draw = (rows) => {
     set(thread, rows.length ? rows.map((r) => r.role === 'owner'
-      ? h('div.msg.me', {}, r.text, h('small', {}, clock(r.ts)))
-      : h('div.msg', {}, r.text,
+      ? h('div.msg.me', { dir: 'auto' }, r.text, h('small', {}, clock(r.ts)))
+      : h('div.msg', { dir: 'auto' }, r.text,
         r.steps?.length ? h('div.steps', {}, r.steps.map((s) => h(`div.step${s.result?.error ? '.bad' : ''}`, { title: JSON.stringify(s.args) }, h('i.dia' + (s.result?.error ? '.bad' : '.ok')), STEP[s.action] || s.action, s.result?.error ? `: ${s.result.error}` : ''))) : null,
         h('small', {}, clock(r.ts))))
       : h('div.empty', { style: 'margin:auto;max-width:560px' }, h('b', {}, 'Give the agent a job'),

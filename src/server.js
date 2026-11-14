@@ -15,6 +15,7 @@ import { STAGES, decide, buildSystem } from './agent/brain.js';
 import { startPipeline, onOwner, eligibility } from './agent/pipeline.js';
 import { startFollowups, runCampaign, campaign } from './agent/followups.js';
 import { learnFromChats, learnFromWebsite, learnFromProfile, learning } from './agent/learn.js';
+import { importKnowledgeFiles } from './agent/knowledge-files.js';
 import { handleCommand, startCommander } from './agent/commander.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -343,6 +344,7 @@ app.get('/api/settings', wrap(() => getSettings()));
 app.get('/api/pacing', wrap(() => PACING));
 app.get('/api/learn', wrap(() => learning));
 app.post('/api/learn/website', wrap(async (req) => learnFromWebsite(String(req.body.url || ''))));
+app.post('/api/learn/files', wrap(() => importKnowledgeFiles({ force: true })));
 app.post('/api/learn/profile', wrap(async () => learnFromProfile(await wa.profiles())));
 
 // ---------- owner commands ----------
@@ -415,6 +417,7 @@ app.use((err, _req, res, _next) => {
 
 export function start(port = Number(process.env.PORT) || 3000) {
   migrateSettings();
+  try { importKnowledgeFiles(); } catch (e) { log('error', 'learn', `Could not load knowledge files: ${e.message}`); }
   startPipeline();
   startCommander();
   startFollowups();

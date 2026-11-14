@@ -287,3 +287,8 @@ label.f { align-content: start; }
 .pickhead { position: sticky; top: 0; z-index: 1; background: var(--white); cursor: default; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--slate); }
 .pickhead:hover { background: var(--white); }
 @media (max-width: 760px) { .pickrow { grid-template-columns: minmax(0, 1fr) 56px 64px; } .pickrow > :nth-child(4) { display: none; } }
+
+/* Urdu: messages and inputs pick their direction from the text; Urdu gets a Nastaliq face and room for it. */
+.msg, textarea, .chatrow p { unicode-bidi: plaintext; }
+.msg:dir(rtl), textarea:dir(rtl), .chatrow p:dir(rtl) { font-family: "Noto Nastaliq Urdu", "Jameel Noori Nastaleeq", var(--sans); line-height: 2.1; }
+.msg:dir(rtl) small { direction: ltr; text-align: right; font-family: var(--sans); line-height: 1.5; }

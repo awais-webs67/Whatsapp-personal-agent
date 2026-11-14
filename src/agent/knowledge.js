@@ -53,9 +53,12 @@ function trimBlock(head, items, q, { full, keepAll, indexChars }) {
   ];
 }
 
+const looksLikeProduct = (line) => (line.match(/\s[—–]\s/g) || []).length >= 2 && /\d/.test(line);
+
 /**
- * Keep prose as it is; in any list longer than `keepAll` items, send the items matching `query`
- * in full and the rest as a compact "name — price" index capped at `indexChars`.
+ * Keep prose as it is. Product-like list items (name — price — …) are ranked together across every list:
+ * the `full` best matches for `query` go in full, every other one as "name — price" (capped at `indexChars`).
+ * Other long lists (Q&A, rules) are trimmed the same way on their own.
  */
 export function focus(text, query, { full = 8, keepAll = 12, indexChars = 1600 } = {}) {
   const src = String(text || '').trim();
@@ -71,5 +74,27 @@ export function focus(text, query, { full = 8, keepAll = 12, indexChars = 1600 }
     }
   }
   blocks.push(cur);
-  return blocks.flatMap((b) => trimBlock(b.head, b.items, q, { full, keepAll, indexChars })).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+
+  const pool = blocks.flatMap((b, bi) => b.items.map((line, i) => ({ line, bi, i, s: score(line, q) }))).filter((x) => looksLikeProduct(x.line));
+  const pooled = pool.length > keepAll;
+  const topKeys = new Set(pooled ? [...pool].sort((a, b) => b.s - a.s || a.bi - b.bi || a.i - b.i).filter((x) => x.s >= 3).slice(0, full).map((x) => `${x.bi}:${x.i}`) : []);
+  let budget = indexChars;
+  let hiddenTotal = 0;
+
+  const out = [];
+  blocks.forEach((b, bi) => {
+    const productLines = b.items.filter(looksLikeProduct);
+    if (!pooled || !productLines.length) { out.push(...trimBlock(b.head, b.items, q, { full, keepAll, indexChars })); return; }
+    const shown = [];
+    const index = [];
+    b.items.forEach((line, i) => {
+      if (!looksLikeProduct(line) || topKeys.has(`${bi}:${i}`)) { shown.push(line); return; }
+      const c = short(line);
+      if (c.length + 2 <= budget) { index.push(c); budget -= c.length + 2; } else hiddenTotal++;
+    });
+    out.push(...b.head, ...shown);
+    if (index.length) out.push(`Also: ${index.join('; ')}`);
+  });
+  if (pooled) out.push(`(Only the products matching this conversation are shown in full${hiddenTotal ? `; ${hiddenTotal} more are not listed here` : ''}. If the customer asks about another product, ask which one and say you will check.)`);
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }

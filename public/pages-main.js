@@ -88,7 +88,7 @@ export function inbox(openId) {
     if (!st.chats.length) return set(list, h('div.empty', {}, h('b', {}, st.q || st.stage || st.filter ? 'No chats match' : 'No chats yet'), st.q || st.stage || st.filter ? 'Try another filter.' : 'Chats appear here as soon as a linked number receives a message.'));
     set(list, ...st.chats.map((c) => h(`div.chatrow${c.id === st.id ? '.on' : ''}`, { role: 'listitem', tabindex: 0, onclick: () => open(c.id), onkeydown: (e) => e.key === 'Enter' && open(c.id) },
       h('b', {}, c.title), h('time', {}, rel(c.last_msg_at)),
-      h('p', {}, c.last_text || ''),
+      h('p', { dir: 'auto' }, c.last_text || ''),
       h('div.tags', {}, c.needs_human ? h('i.dia.bad', { title: 'Needs you' }) : c.auto ? h('i.dia.hot', { title: 'Agent is handling this chat' }) : null, c.unread ? h('span.badge', {}, c.unread) : null))));
   }
   async function loadList() {
@@ -127,10 +127,10 @@ export function inbox(openId) {
       const who = { ai: 'Agent', owner: 'You', followup: 'Follow-up', customer: '' }[m.by];
       bubbles.push(h(`div.msg${m.from_me ? `.me.${m.by}` : ''}`, {}, m.text, h('small', {}, [who, clock(m.ts)].filter(Boolean).join(' · '))));
     }
-    for (const f of followups) bubbles.push(h('div.msg.me.followup', {}, f.text, h('small', {}, f.status === 'pending' ? 'Follow-up draft · waiting for your approval' : 'Follow-up · queued to send')));
+    for (const f of followups) bubbles.push(h('div.msg.me.followup', { dir: 'auto' }, f.text, h('small', {}, f.status === 'pending' ? 'Follow-up draft · waiting for your approval' : 'Follow-up · queued to send')));
     const thread = h('div.thread', {}, bubbles.length ? bubbles : h('div.empty', {}, 'No messages stored for this chat.'));
 
-    const input = h('textarea', { rows: 1, placeholder: 'Write a reply. Enter to send, Shift+Enter for a new line.', 'aria-label': 'Reply', value: draft,
+    const input = h('textarea', { dir: 'auto', rows: 1, placeholder: 'Write a reply. Enter to send, Shift+Enter for a new line.', 'aria-label': 'Reply', value: draft,
       onkeydown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendBtn.click(); } } });
     const sendBtn = h('button.btn.primary', { onclick: () => { const text = input.value.trim(); if (text) act(sendBtn, async () => { await POST(`/api/chats/${chat.id}/send`, { text }); input.value = ''; }); } }, 'Send');
     const suggestBtn = h('button.btn', { title: 'Let the agent draft a reply for you to edit', onclick: () => act(suggestBtn, async () => { const d = await POST(`/api/chats/${chat.id}/suggest`); input.value = d.messages.join('\n\n'); input.focus(); toast(`Draft from ${d.provider}`); }) }, 'Draft');

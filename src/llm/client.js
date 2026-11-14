@@ -13,6 +13,7 @@ export class LLMError extends Error {
   }
 }
 
+const GEO_RE = /check your network settings|access denied|not available in your (country|region|location)|unsupported_country|unsupported (country|region)|region is not supported|country.*not supported/i;
 const QUOTA_RE = /insufficient[_ ](quota|balance|credit)|exceeded your current quota|quota (has been )?exceeded|out of credits|billing|payment required|daily limit|free tier.*(limit|exhaust)|resource[_ ]exhausted.*(day|quota)/i;
 
 function classify(status, body) {
@@ -20,6 +21,8 @@ function classify(status, body) {
   if (status === 400 && /api[ _-]?key|API_KEY_INVALID/i.test(text)) return 'auth'; // Gemini reports a bad key as 400
   // The configured model was renamed, retired, or is not on this account: the router picks a current one.
   if ((status === 404 || status === 400 || status === 403) && /model[^"]{0,80}(does not exist|not[ _]found|decommission|deprecat|no longer|not supported|do not have access|is not available|unknown)|model_(not_found|decommissioned)|invalid model/i.test(text)) return 'model_missing';
+  // Region / VPN blocks (Groq: "Access denied. Please check your network settings.") are not key problems.
+  if (status === 403 && GEO_RE.test(text)) return 'network';
   if (status === 401 || status === 403) return QUOTA_RE.test(text) ? 'quota' : 'auth';
   if (status === 402) return 'quota';
   if (status === 429) {
@@ -85,8 +88,9 @@ async function fetchJson(url, init, timeoutMs) {
   if (!res.ok) {
     const b = Array.isArray(body) ? body[0] : body; // Gemini wraps errors in an array
     const msg = b?.error?.message || b?.message || (typeof b?.error === 'string' ? b.error : null) || String(raw).slice(0, 300) || res.statusText;
+    const geo = res.status === 403 && GEO_RE.test(JSON.stringify(body ?? raw));
     const hinted = /try again in ((?:\d+(?:\.\d+)?(?:ms|h|m|s))+)/i.exec(msg)?.[1];
-    const err = new LLMError(classify(res.status, body), `${res.status} ${msg}`, {
+    const err = new LLMError(classify(res.status, body), `${res.status} ${msg}${geo ? ` ${new URL(url).hostname} is blocking this connection, most likely because of the VPN or country it comes from. Switch the VPN to another country (USA or Europe usually work) or turn it off for this computer.` : ''}`, {
       status: res.status,
       retryAfter: parseDuration(res.headers.get('retry-after')) ?? parseDuration(hinted) ?? parseDuration(res.headers.get('x-ratelimit-reset-tokens')) ?? parseDuration(res.headers.get('x-ratelimit-reset-requests')),
     });

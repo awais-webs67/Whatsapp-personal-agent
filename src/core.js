@@ -31,7 +31,7 @@ export const DEFAULT_SETTINGS = {
     memory: '',                          // things the owner told the agent to remember
     about: '', catalog: '', faqs: '', policies: '',
     tone: 'Short, warm, natural WhatsApp messages. No long paragraphs, no bullet lists.',
-    language: 'Reply in the same language and script the customer uses (English, Urdu, Roman Urdu...).',
+    language: 'Reply in the language and script the customer uses: if they write in Urdu script (اردو), reply in proper Urdu script; if they write Roman Urdu, reply in Roman Urdu; if English, reply in English.',
     purchaseSignal: 'Customer confirms the order or shares a payment proof.',
     examples: '',
   },
@@ -90,14 +90,16 @@ export const kvSet = (key, value) =>
 /** Installs created with the first, slower defaults move to the fast pacing once. */
 export function migrateSettings() {
   const version = kvGet('settingsVersion', 1);
-  if (version >= 3) return;
+  if (version >= 4) return;
   const row = get('SELECT value FROM settings WHERE key = ?', 'app');
   let stored = row ? parse(row.value) : null;
   if (stored && version < 2 && stored.human?.debounceMin === 4 && stored.human.debounceMax === 9) stored = merge(stored, { human: PACING.fast, llm: { timeoutSec: 20 } });
+  // v4: Urdu script support in the default language rule.
+  if (stored && stored.business?.language === 'Reply in the same language and script the customer uses (English, Urdu, Roman Urdu...).') stored = merge(stored, { business: { language: 'Reply in the language and script the customer uses: if they write in Urdu script (اردو), reply in proper Urdu script; if they write Roman Urdu, reply in Roman Urdu; if English, reply in English.' } });
   // v3: shorter history by default (fewer tokens per reply), unless the owner had changed it.
   if (stored && stored.llm?.historyMessages === 30) stored = merge(stored, { llm: { historyMessages: 12 } });
   if (stored) kvSet('app', stored);
-  kvSet('settingsVersion', 3);
+  kvSet('settingsVersion', 4);
 }
 
 // ---------- secrets ----------
