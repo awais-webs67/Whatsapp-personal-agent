@@ -22,7 +22,10 @@ function classify(status, body) {
   if ((status === 404 || status === 400 || status === 403) && /model[^"]{0,80}(does not exist|not[ _]found|decommission|deprecat|no longer|not supported|do not have access|is not available|unknown)|model_(not_found|decommissioned)|invalid model/i.test(text)) return 'model_missing';
   if (status === 401 || status === 403) return QUOTA_RE.test(text) ? 'quota' : 'auth';
   if (status === 402) return 'quota';
-  if (status === 429) return QUOTA_RE.test(text) ? 'quota' : 'rate_limit';
+  if (status === 429) {
+    if (/per (minute|second)|\b(TPM|RPM|RPS|ITPM|OTPM)\b|try again in \d|rate limit reached/i.test(text) && !/per day|\bTPD\b|\bRPD\b|daily/i.test(text)) return 'rate_limit';
+    return QUOTA_RE.test(text) ? 'quota' : 'rate_limit';
+  }
   if (status === 408 || status >= 500) return 'server';
   return 'bad_request';
 }
@@ -47,6 +50,7 @@ export function readLimits(headers) {
     tokRemaining: num(h('x-ratelimit-remaining-tokens') ?? h('anthropic-ratelimit-tokens-remaining')),
     tokLimit: num(h('x-ratelimit-limit-tokens') ?? h('anthropic-ratelimit-tokens-limit')),
     resetSec: parseDuration(h('x-ratelimit-reset-requests') ?? h('anthropic-ratelimit-requests-reset')),
+    tokResetSec: parseDuration(h('x-ratelimit-reset-tokens') ?? h('anthropic-ratelimit-tokens-reset')),
   };
   return Object.values(out).some((v) => v != null) ? out : null;
 }
@@ -81,9 +85,10 @@ async function fetchJson(url, init, timeoutMs) {
   if (!res.ok) {
     const b = Array.isArray(body) ? body[0] : body; // Gemini wraps errors in an array
     const msg = b?.error?.message || b?.message || (typeof b?.error === 'string' ? b.error : null) || String(raw).slice(0, 300) || res.statusText;
+    const hinted = /try again in ((?:\d+(?:\.\d+)?(?:ms|h|m|s))+)/i.exec(msg)?.[1];
     const err = new LLMError(classify(res.status, body), `${res.status} ${msg}`, {
       status: res.status,
-      retryAfter: parseDuration(res.headers.get('retry-after')) ?? parseDuration(res.headers.get('x-ratelimit-reset-requests')),
+      retryAfter: parseDuration(res.headers.get('retry-after')) ?? parseDuration(hinted) ?? parseDuration(res.headers.get('x-ratelimit-reset-tokens')) ?? parseDuration(res.headers.get('x-ratelimit-reset-requests')),
     });
     // Groq rejects output that looks like a tool call when no tools were sent, but includes what the model wrote.
     if (typeof b?.error?.failed_generation === 'string') err.failedGeneration = b.error.failed_generation;
@@ -290,17 +295,27 @@ const NOT_CHAT = /whisper|tts|audio|speech|transcri|embed|guard|moderation|image
 const GOOD = [/gpt-oss-120b/i, /llama-4-maverick|llama-3\.3-70b|70b/i, /qwen3?-.*(32b|235b)|kimi-k2/i, /flash(?!-lite)|sonnet|gpt-4\.1|gpt-4o|large|pro\b/i, /versatile|instruct|chat|turbo/i, /mini|instant|8b|lite/i];
 
 /** Choose the closest current chat model to the one that disappeared. */
+// Models built for one language or narrow jobs: fine if chosen on purpose, poor as an automatic pick.
+const NICHE = /allam|arabic|jais|sea-?lion|coder|code-|math|deepseek-r1-distill|-guard|saba|tiny|-1b\b|-3b\b/i;
+
+/**
+ * Choose the closest usable chat model. `available` may be ids or descriptions from listModels.
+ * Models with a known context under 16K tokens are skipped: a sales prompt alone can be 2-3K.
+ */
 export function chooseModel(available, previous = '') {
-  const list = [...new Set(available)].filter((m) => m && !NOT_CHAT.test(m));
+  const all = [...new Map(available.filter(Boolean).map((m) => (typeof m === 'string' ? { id: m } : m)).map((m) => [m.id, m])).values()];
+  const list = all.filter((m) => !NOT_CHAT.test(m.id) && m.chat !== false && !(m.context && m.context < 16000));
   if (!list.length) return null;
   const words = String(previous).toLowerCase().split(/[^a-z0-9.]+/).filter((w) => w.length > 1);
   const score = (m) => {
-    const id = m.toLowerCase();
+    const id = m.id.toLowerCase();
     const shared = words.filter((w) => id.includes(w)).length;
-    const rank = GOOD.findIndex((re) => re.test(m));
-    return shared * 3 + (rank === -1 ? 0 : GOOD.length - rank) - (/preview|exp|beta|alpha|test/i.test(m) ? 2 : 0);
+    const rank = GOOD.findIndex((re) => re.test(m.id));
+    return shared * 3 + (rank === -1 ? 0 : GOOD.length - rank)
+      - (/preview|exp|beta|alpha|test/i.test(id) ? 2 : 0) - (NICHE.test(id) ? 6 : 0)
+      + (m.context ? Math.min(2, Math.log2(m.context / 16000)) : 0);
   };
-  return list.sort((a, b) => score(b) - score(a) || a.localeCompare(b))[0];
+  return list.sort((a, b) => score(b) - score(a) || a.id.localeCompare(b.id))[0].id;
 }
 
 /**

@@ -22,7 +22,8 @@ const followups = await import('../src/agent/followups.js');
 // ---- fake OpenAI-compatible server: behaviour is switched per API key ----
 const calls = [];
 let cmdReplies = [];
-let flakyCount = 0; // scripted answers for the owner-command prompt
+let flakyCount = 0;
+let tpmCount = 0; // scripted answers for the owner-command prompt
 let reply = JSON.stringify({ messages: ['Hi! The price is 2500.', 'Want me to book it?'], stage: 'interested', summary: 'Asked price', handoff: false });
 const server = http.createServer((req, res) => {
   let body = '';
@@ -37,6 +38,7 @@ const server = http.createServer((req, res) => {
     if (key === 'flaky' && (flakyCount = (flakyCount || 0) + 1) === 1) return send(200, { model: 'small', choices: [{ message: { content: '' }, finish_reason: 'stop' }] });
     if (key === 'toolcalls') return send(200, { model: 'small', choices: [{ message: { content: null, tool_calls: [{ type: 'function', function: { name: 'stats', arguments: '{"days":3}' } }] }, finish_reason: 'stop' }] });
     if (key === 'think') return send(200, { model: 'qwen', choices: [{ message: { content: '<think>the user wants stats</think>\n{"reply": "Sab theek hai."}' }, finish_reason: 'stop' }] });
+    if (key === 'tpm' && (tpmCount = (tpmCount || 0) + 1) === 1) return send(429, { error: { message: 'Rate limit reached for model `llama-3.1-8b-instant` in organization `org_x` service tier `on_demand` on tokens per minute (TPM): Limit 6000, Used 4500, Requested 2951. Please try again in 1.2s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', type: 'tokens', code: 'rate_limit_exceeded' } });
     if (key === 'groqtool') return send(400, { error: { message: 'Tool choice is none, but model called a tool', type: 'invalid_request_error', code: 'tool_use_failed', failed_generation: '<function=stats>{"days": 5}</function>' } });
     if (req.url.endsWith('/models')) return send(200, { data: [{ id: 'whisper-large-v3' }, { id: 'llama-3.1-8b-instant' }, { id: 'llama-4-70b-versatile' }, { id: 'openai/gpt-oss-120b' }] });
     if (key === 'retired' && calls.at(-1).body?.model === 'llama-3.3-70b-versatile') return send(404, { error: { message: 'The model `llama-3.3-70b-versatile` does not exist or you do not have access to it.', type: 'invalid_request_error', code: 'model_not_found' } });
@@ -387,4 +389,32 @@ test('model lists keep context window, max output and price from each provider f
   assert.deepEqual([claude.context, claude.maxOutput, claude.name], [1000000, 128000, 'Claude Haiku 5.5']);
   assert.equal(describeModel({ id: 'whisper-large-v3' }).chat, false);
   assert.equal(describeModel({ id: 'old-model', active: false }).chat, false, 'retired models are not offered as chat models');
+});
+
+test('a per-minute limit is a short pause, not an exhausted quota, and the request still goes through', async () => {
+  run('UPDATE providers SET enabled = 0');
+  const id = Number(run('INSERT INTO providers (preset, name, kind, base_url, api_key, model, priority, created_at) VALUES (?,?,?,?,?,?,?,?)', 'groq', 'Groq TPM', 'openai', baseUrl, encrypt('tpm'), 'llama-3.1-8b-instant', -1, now()).lastInsertRowid);
+  reply = '{"reply": "ok"}';
+  const started = Date.now();
+  const out = await complete({ messages: [{ role: 'user', content: 'x' }] }, { purpose: 'command' });
+  assert.equal(out.text, '{"reply": "ok"}');
+  const waited = Date.now() - started;
+  assert.ok(waited >= 1000 && waited < 8000, `waited about as long as Groq asked (${waited}ms)`);
+  assert.equal(listProviders().map(publicProvider).find((p) => p.id === id).status, 'ready', 'not benched for an hour');
+  run('DELETE FROM providers WHERE id = ?', id);
+  run('UPDATE providers SET enabled = 1');
+});
+
+test('automatic model choice skips tiny-context and single-language models', async () => {
+  const { chooseModel } = await import('../src/llm/client.js');
+  const groq = [
+    { id: 'allam-2-7b', context: 4096, chat: true },
+    { id: 'llama-3.1-8b-instant', context: 131072, chat: true },
+    { id: 'whisper-large-v3', chat: false },
+    { id: 'openai/gpt-oss-20b', context: 131072, chat: true },
+  ];
+  assert.equal(chooseModel(groq, 'llama-3.1-8b-instant-old'), 'llama-3.1-8b-instant');
+  assert.notEqual(chooseModel(groq, ''), 'allam-2-7b');
+  assert.notEqual(chooseModel(['allam-2-7b', 'qwen/qwen3-32b'], ''), 'allam-2-7b', 'even without context info');
+  assert.equal(chooseModel([{ id: 'allam-2-7b', context: 4096 }]), null, 'never picks a model too small for the prompt');
 });

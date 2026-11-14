@@ -3,7 +3,7 @@
 // benched (with a reason and a timer) and the next one takes over automatically.
 import { all, get, run, now, parse, update } from '../db.js';
 import { decrypt, mask, emit, log, dayKey, getSettings } from '../core.js';
-import { chat, fetchBalance, listModelIds, chooseModel, LLMError } from './client.js';
+import { chat, fetchBalance, listModels, chooseModel, LLMError } from './client.js';
 
 const MIN = 60_000;
 
@@ -62,7 +62,7 @@ function bump(id, { requests = 0, errors = 0, tin = 0, tout = 0 }) {
 export function cooldownFor(err) {
   const hinted = err.retryAfter ? Math.min(err.retryAfter * 1000, 24 * 60 * MIN) : null;
   switch (err.kind) {
-    case 'rate_limit': return { status: 'rate_limited', ms: Math.max(hinted ?? MIN, 5000) };
+    case 'rate_limit': return { status: 'rate_limited', ms: hinted != null ? Math.max(hinted, 1000) : MIN };
     case 'quota': return { status: 'quota_exhausted', ms: hinted ?? 60 * MIN };
     case 'auth': return { status: 'invalid_key', ms: 0 };
     case 'server': return { status: 'provider_down', ms: hinted ?? 30_000 };
@@ -93,6 +93,7 @@ export async function callProvider(row, req, { purpose = 'reply' } = {}) {
   // Live replies use the short timeout from Settings; background work (commands, learning, reviews) can take longer.
   const live = purpose === 'reply' || purpose === 'test';
   const timeoutMs = (live ? s.timeoutSec : Math.max(s.timeoutSec, 90)) * 1000;
+  await waitForBudget(row, req);
   const once = (r) => chat(hydrate(r), { maxTokens: s.maxTokens, timeoutMs, fast: purpose === 'reply', ...req });
   // Small models now and then return an empty answer; a second sample almost always works.
   const call = async (r) => {
@@ -123,10 +124,31 @@ export async function callProvider(row, req, { purpose = 'reply' } = {}) {
   }
 }
 
+/** Rough token count of a request (about 3.5 characters per token for mixed English / Roman Urdu). */
+export const estimateTokens = (req) => Math.ceil((String(req.system || '').length + (req.messages || []).reduce((n, m) => n + String(m.content || '').length, 0)) / 3.5) + 300;
+
+/**
+ * Providers like Groq report how many tokens are left this minute and when that refills.
+ * If this request clearly will not fit and the refill is near, wait instead of hitting a 429.
+ */
+async function waitForBudget(row, req, maxWaitMs = 30_000) {
+  const l = parse(row.state).limits;
+  if (!l || l.tokRemaining == null || !l.at) return;
+  const refillAt = l.at + (l.tokResetSec ?? 60) * 1000;
+  if (now() >= refillAt) return; // budget has refilled since we last looked
+  const need = estimateTokens(req);
+  if (need <= l.tokRemaining) return;
+  const wait = refillAt - now() + 250;
+  if (wait > 0 && wait <= maxWaitMs) {
+    log('info', 'router', `${row.name}: waiting ${(wait / 1000).toFixed(1)}s for its per-minute token limit to refill`);
+    await new Promise((r) => setTimeout(r, wait));
+  }
+}
+
 /** The provider no longer has this model: ask it for its current list and switch to the closest one. */
 export async function replaceModel(row) {
   let models;
-  try { models = await listModelIds(hydrate(row)); } catch { return null; }
+  try { models = await listModels(hydrate(row)); } catch { return null; }
   const next = chooseModel(models, row.model);
   if (!next || next === row.model) return null;
   update('providers', row.id, { model: next }, ['model']);
@@ -144,6 +166,20 @@ export function chainFor(purpose, rows = listProviders()) {
 }
 
 export async function complete(req, { purpose = 'reply' } = {}) {
+  try {
+    return await completeOnce(req, purpose);
+  } catch (e) {
+    const soon = chainFor(purpose).filter((r) => r.enabled && blockedReason(r) === 'rate_limited')
+      .map((r) => parse(r.state).cooldownUntil).filter(Boolean).sort((a, b) => a - b)[0];
+    const wait = soon ? soon - now() + 300 : null;
+    if (!(e instanceof LLMError) || wait == null || wait > 35_000) throw e;
+    log('info', 'router', `${purpose}: every model is briefly rate limited, retrying in ${(wait / 1000).toFixed(1)}s`);
+    await new Promise((r) => setTimeout(r, Math.max(0, wait)));
+    return completeOnce(req, purpose);
+  }
+}
+
+async function completeOnce(req, purpose) {
   const chain = chainFor(purpose);
   if (!chain.some((r) => r.enabled)) throw new LLMError('bad_request', 'No AI model is configured. Add one on the Models page.');
   const hops = [];
@@ -186,6 +222,13 @@ export async function syncBalances() {
 // Cooldowns expire silently; nudge dashboards so the status flips back without a refresh.
 let lastSig = '';
 export function startRouterTicker() {
+  // Earlier versions mistook per-minute limits for an exhausted quota and benched the model for an hour.
+  for (const row of listProviders()) {
+    const st = parse(row.state);
+    if (st.status === 'quota_exhausted' && /per (minute|second)|\b(TPM|RPM)\b|try again in \d/i.test(st.lastError?.message || '')) {
+      setState(row.id, { status: 'ready', cooldownUntil: null });
+    }
+  }
   const tick = () => {
     const sig = listProviders().map((r) => `${r.id}:${blockedReason(r) || 'ready'}`).join('|');
     if (sig !== lastSig) { lastSig = sig; broadcast(); }

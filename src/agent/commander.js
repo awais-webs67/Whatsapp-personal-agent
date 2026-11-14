@@ -191,7 +191,7 @@ export async function runCommand(text, history = []) {
     steps.push({ action: obj.action, args: obj.args || {}, result });
     log('info', 'command', `${obj.action} ${JSON.stringify(obj.args || {}).slice(0, 200)}`);
     messages.push({ role: 'assistant', content: JSON.stringify({ action: obj.action, args: obj.args || {} }) });
-    messages.push({ role: 'user', content: `[result of ${obj.action}] ${JSON.stringify(result).slice(0, 6000)}${i === MAX_STEPS - 1 ? '\nThat was the last tool you may use. Reply to the owner now.' : ''}` });
+    messages.push({ role: 'user', content: `[result of ${obj.action}] ${JSON.stringify(result).slice(0, 3000)}${i === MAX_STEPS - 1 ? '\nThat was the last tool you may use. Reply to the owner now.' : ''}` });
   }
   return { reply: 'I used every step I am allowed for one request. Here is what happened so far; tell me how to continue.', steps };
 }
@@ -200,7 +200,7 @@ let queue = Promise.resolve();
 /** Handle a command from the dashboard or from the owner's own WhatsApp chat; requests run one at a time. */
 export function handleCommand(text, { chatId = null } = {}) {
   const job = queue.then(async () => {
-    const history = all("SELECT role, text FROM (SELECT * FROM commands ORDER BY id DESC LIMIT 12) ORDER BY id").map((r) => ({ role: r.role === 'owner' ? 'user' : 'assistant', content: r.role === 'owner' ? r.text : JSON.stringify({ reply: r.text }) }));
+    const history = all("SELECT role, text FROM (SELECT * FROM commands ORDER BY id DESC LIMIT 6) ORDER BY id").map((r) => ({ role: r.role === 'owner' ? 'user' : 'assistant', content: r.role === 'owner' ? r.text : JSON.stringify({ reply: r.text }) }));
     run('INSERT INTO commands (role, text, ts) VALUES (?,?,?)', 'owner', text, now());
     emit('command');
     let out;

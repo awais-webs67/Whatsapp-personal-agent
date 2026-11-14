@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { all, get, run, now, parse, update } from './db.js';
 import { bus, emit, log, getSettings, saveSettings, kvGet, kvSet, encrypt, SECRET, PACING, migrateSettings } from './core.js';
 import { PRESETS, preset } from './llm/catalog.js';
-import { listModels, listModelIds, probe, LLMError } from './llm/client.js';
+import { listModels, probe, LLMError } from './llm/client.js';
 import { listProviders, publicProvider, callProvider, complete, hydrate, syncBalances, startRouterTicker } from './llm/router.js';
 import { chooseModel } from './llm/client.js';
 import * as wa from './wa/manager.js';
@@ -268,8 +268,8 @@ app.post('/api/providers', wrap(async (req) => {
   if (!p.api_key && !preset(p.preset)?.noKey) throw bad('API key is required');
   // Suggested model IDs go stale; if the provider no longer lists this one, start with the closest that it does.
   try {
-    const models = await listModelIds({ ...p, baseUrl: p.base_url, apiKey: String(req.body.apiKey || '').trim() });
-    if (models.length && !models.includes(p.model)) p.model = chooseModel(models, p.model) || p.model;
+    const models = await listModels({ ...p, baseUrl: p.base_url, apiKey: String(req.body.apiKey || '').trim() });
+    if (models.length && !models.some((m) => m.id === p.model)) p.model = chooseModel(models, p.model) || p.model;
   } catch { /* the test call right after saving reports key or network problems */ }
   const max = get('SELECT COALESCE(MAX(priority), -1) m FROM providers').m;
   const { lastInsertRowid } = run('INSERT INTO providers (preset, name, kind, base_url, api_key, model, daily_limit, priority, use_for, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
