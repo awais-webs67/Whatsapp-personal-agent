@@ -151,7 +151,25 @@ export function parseDecision(text, mode, chat, { instructed = false } = {}) {
  * Ask the model chain for a decision about one chat.
  * mode: 'reply' (answer the customer) | 'followup' (nudge a quiet lead) | 'analyze' (classify old chat)
  */
-export async function decide(chatId, mode = 'reply', { turns = null, chatOverride = null, instruction = '' } = {}) {
+/** Reading a chat to record its stage and summary needs the conversation, not the whole product catalogue. */
+export function leanSystem(settings) {
+  const b = settings.business;
+  return `You are reviewing one WhatsApp conversation between ${b.name?.trim() || 'a business'} and a customer. Read all of it and classify it. Do not write to the customer.
+
+Stages:
+- new: only a greeting or one unclear message
+- engaged: talking, no clear product interest yet
+- interested: asked about a product, price or how to buy
+- negotiating: discussing price, discount, terms or payment
+- purchased: ${b.purchaseSignal}
+- not_interested: said no, too expensive and left, or bought elsewhere
+- opted_out: asked not to be contacted
+
+Return ONLY a JSON object:
+{"stage": "${STAGES.join(' | ')}", "summary": "one or two lines: what they wanted (which product), any price discussed, how it ended and what is still open", "should_followup": false, "message": "", "reason": ""}`;
+}
+
+export async function decide(chatId, mode = 'reply', { turns = null, chatOverride = null, instruction = '', lean = false } = {}) {
   const settings = getSettings();
   const chat = chatOverride || get('SELECT * FROM chats WHERE id = ?', chatId);
   if (!chat) throw new Error('Chat not found');
@@ -161,10 +179,10 @@ export async function decide(chatId, mode = 'reply', { turns = null, chatOverrid
   }
   // What the conversation is about decides which products and answers go into the instructions.
   const recent = messages.filter((m) => m.role === 'user').slice(mode === 'reply' ? -4 : -12).map((m) => m.content).join(' ');
-  const system = buildSystem(settings, chat, mode, `${recent} ${chat.summary || ''} ${chat.notes || ''}`);
+  const system = lean ? leanSystem(settings) : buildSystem(settings, chat, mode, `${recent} ${chat.summary || ''} ${chat.notes || ''}`);
   let lastErr;
   for (let attempt = 0; attempt < 3; attempt++) {
-    const out = await complete({ system, messages }, { purpose: mode });
+    const out = await complete({ system, messages, ...(lean ? { maxTokens: 400 } : {}) }, { purpose: mode });
     try {
       return { ...parseDecision(out.text, mode, chat, { instructed: !!instruction }), provider: out.providerName, model: out.model, latencyMs: out.latencyMs, hops: out.hops, usage: out.usage };
     } catch (e) {

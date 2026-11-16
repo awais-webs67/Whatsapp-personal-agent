@@ -94,13 +94,30 @@ export async function callProvider(row, req, { purpose = 'reply' } = {}) {
   const live = purpose === 'reply' || purpose === 'test';
   const timeoutMs = (live ? s.timeoutSec : Math.max(s.timeoutSec, 90)) * 1000;
   const maxTokens = outputBudget(row.model, req.maxTokens, purpose, s.maxTokens);
-  await waitForBudget(row, { ...req, maxTokens }, live ? 30_000 : 65_000);
-  let room = 1; // grows when the model runs out of tokens
-  const once = (r) => chat(hydrate(r), { timeoutMs, fast: purpose === 'reply', ...req, maxTokens: Math.min(8192, outputBudget(r.model, req.maxTokens, purpose, s.maxTokens) * room) });
+  let room = 1;   // grows when the model runs out of tokens
+  let shrink = 1; // shrinks when the provider says the request is too large
+  const build = (r) => {
+    const want = { ...req, maxTokens: Math.min(8192, outputBudget(r.model, req.maxTokens, purpose, s.maxTokens) * room) };
+    const limit = tokenLimit(r);
+    // Stay under the per-minute limit with a margin; if the limit is unknown, only shrink after being told to.
+    const budget = limit ? Math.floor(limit * 0.9 * shrink) : shrink < 1 ? Math.floor((estimateTokens(want) + want.maxTokens) * shrink) : null;
+    const fitted = fitRequest(want, budget);
+    if (fitted.shortened && !build.told) { build.told = true; log('info', 'router', `${r.name}: request shortened to fit its limit of ${limit || 'unknown'} tokens per minute`); }
+    return fitted;
+  };
+  await waitForBudget(row, build(row), live ? 30_000 : 65_000);
+  const once = (r) => { const { shortened, ...fitted } = build(r); return chat(hydrate(r), { timeoutMs, fast: purpose === 'reply', ...fitted }); };
   // Small models now and then return an empty answer; a second sample almost always works.
   const call = async (r) => {
     for (let attempt = 0; ; attempt++) {
       try { return await once(r); } catch (e) {
+        if (e instanceof LLMError && e.kind === 'too_large' && attempt < 3) {
+          // "Limit 8000, Requested 8355": remember the limit and send a smaller request straight away.
+          const limit = Number((/limit[:\s]+(\d{3,7})/i.exec(e.message) || [])[1]) || null;
+          if (limit) { setState(r.id, { tpm: limit }); r = get('SELECT * FROM providers WHERE id = ?', r.id) || r; }
+          shrink *= limit ? 0.95 : 0.6;
+          continue;
+        }
         if (attempt >= 2 || !(e instanceof LLMError) || e.kind !== 'empty') throw e;
         // Cut off mid-answer: try again with more room (thinking models in particular need it).
         if (/ran out of tokens/.test(e.message)) room *= 3;
@@ -141,7 +158,41 @@ export function outputBudget(model, requested, purpose, setting) {
 }
 
 /** Rough token count of a request (about 3.5 characters per token for mixed English / Roman Urdu). */
-export const estimateTokens = (req) => Math.ceil((String(req.system || '').length + (req.messages || []).reduce((n, m) => n + String(m.content || '').length, 0)) / 3.5) + 300;
+export const estimateTokens = (req) => Math.ceil((String(req.system || '').length + (req.messages || []).reduce((n, m) => n + String(m.content || '').length, 0)) / 3.2) + 300;
+
+const cutMiddle = (text, removeChars) => {
+  const t = String(text);
+  const keep = Math.max(200, t.length - removeChars - 40);
+  if (keep >= t.length) return t;
+  const head = Math.ceil(keep * 0.55);
+  return `${t.slice(0, head)}\n[… shortened to fit this model's limit …]\n${t.slice(t.length - (keep - head))}`;
+};
+
+/**
+ * Make a request fit a token budget (prompt + reserved output), in the least harmful order:
+ * a smaller output reservation, then dropping the oldest turns, then shortening the longest text in the middle
+ * (the start and the end of a prompt carry the instructions).
+ */
+export function fitRequest(req, budget) {
+  const r = { ...req, messages: (req.messages || []).map((m) => ({ ...m })) };
+  const size = () => estimateTokens(r) + (r.maxTokens || 0);
+  if (!budget || size() <= budget) return r;
+  const floor = Math.min(r.maxTokens || 0, Math.max(300, Math.round((req.maxTokens || 0) * 0.4)));
+  r.maxTokens = Math.max(floor, Math.min(r.maxTokens || 0, budget - estimateTokens(r)));
+  while (size() > budget && r.messages.length > 2) r.messages.shift();
+  for (let i = 0; i < 6 && size() > budget; i++) {
+    const over = Math.ceil((size() - budget) * 3.2) + 200;
+    const parts = [{ get: () => r.system || '', set: (v) => { r.system = v; } }, ...r.messages.map((m) => ({ get: () => m.content || '', set: (v) => { m.content = v; } }))];
+    const longest = parts.sort((a, b) => b.get().length - a.get().length)[0];
+    if (longest.get().length < 400) break;
+    longest.set(cutMiddle(longest.get(), over));
+  }
+  r.shortened = true;
+  return r;
+}
+
+/** The provider's tokens-per-minute limit, learned from its headers or from a "too large" error. */
+const tokenLimit = (row) => { const st = parse(row.state); return st.tpm || st.limits?.tokLimit || null; };
 
 /**
  * Providers like Groq report how many tokens are left this minute and when that refills.
@@ -217,9 +268,12 @@ async function completeOnce(req, purpose) {
   }
   const why = { rate_limited: 'rate limited', quota_exhausted: 'quota used up', invalid_key: 'API key rejected', daily_limit: 'daily cap reached', provider_down: 'provider down', unreachable: 'not reachable from this server', cooldown: 'cooling down', model_missing: 'model not found (pick another on the Models page)' };
   const detail = hops.map((h) => `${h.provider}: ${h.skipped ? why[h.skipped] || h.skipped : h.message || h.error}`).join('; ');
+  const tooLarge = hops.some((h) => h.error === 'too_large');
   const weak = hops.some((h) => (h.error === 'empty' && !/ran out of tokens/.test(h.message || '')) || h.error === 'bad_request');
   const cut = hops.some((h) => /ran out of tokens/.test(h.message || ''));
-  const tip = cut
+  const tip = tooLarge
+    ? ' The request stayed too large for this model even after shortening. Lower "Messages of history per reply" in Settings, or use a model with a higher limit.'
+    : cut
     ? ' Even with extra room the model did not finish. Pick a non-thinking model for commands, or raise "Max tokens per reply" in Settings.'
     : weak && purpose !== 'reply'
     ? ' The model gave an unusable answer. Small models (8B) struggle with multi-step commands: add a larger model and set "Use this model for" to "Commands, learning and reviews only" on the Models page.'

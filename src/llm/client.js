@@ -4,7 +4,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { explainFetchError } from '../agent/website.js';
 
 export class LLMError extends Error {
-  /** kind: rate_limit | quota | auth | server | network | model_missing | bad_request | refusal | empty */
+  /** kind: rate_limit | quota | auth | server | network | model_missing | too_large | bad_request | refusal | empty */
   constructor(kind, message, { status = 0, retryAfter = null } = {}) {
     super(message);
     this.kind = kind;
@@ -29,6 +29,8 @@ function classify(status, body) {
     if (/per (minute|second)|\b(TPM|RPM|RPS|ITPM|OTPM)\b|try again in \d|rate limit reached/i.test(text) && !/per day|\bTPD\b|\bRPD\b|daily/i.test(text)) return 'rate_limit';
     return QUOTA_RE.test(text) ? 'quota' : 'rate_limit';
   }
+  // One request bigger than the provider allows (per-minute token limit or context window): shrink it, do not wait.
+  if (status === 413 || /request too large|reduce your message size|reduce the length|maximum context length|context[_ ]length[_ ]exceeded|too many tokens|context window/i.test(text)) return 'too_large';
   if (status === 408 || status >= 500) return 'server';
   return 'bad_request';
 }

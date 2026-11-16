@@ -56,6 +56,13 @@ const server = http.createServer((req, res) => {
       if (mt < 1000) return send(200, { model: 'small', choices: [{ message: { content: '{"reply": "Pichle 5 din mein' }, finish_reason: 'length' }] });
       return send(200, { model: 'small', choices: [{ message: { content: `{"reply": "done with ${mt}"}` }, finish_reason: 'stop' }] });
     }
+    if (key === 'tiny') {
+      // Groq free tier: one request may not exceed the per-minute token limit.
+      const j = JSON.parse(body);
+      const requested = Math.ceil(JSON.stringify(j.messages).length / 4) + (j.max_tokens || 0);
+      if (requested > 2000) return send(413, { error: { message: `Request too large for model \`openai/gpt-oss-20b\` in organization \`org_x\` service tier \`on_demand\` on tokens per minute (TPM): Limit 2000, Requested ${requested}, please reduce your message size and try again. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing`, type: 'tokens', code: 'rate_limit_exceeded' } });
+      return send(200, { model: 'small', choices: [{ message: { content: reply }, finish_reason: 'stop' }], usage: { prompt_tokens: requested, completion_tokens: 5 } });
+    }
     if (key === 'groqtool') return send(400, { error: { message: 'Tool choice is none, but model called a tool', type: 'invalid_request_error', code: 'tool_use_failed', failed_generation: '<function=stats>{"days": 5}</function>' } });
     if (req.url.endsWith('/models')) return send(200, { data: [{ id: 'whisper-large-v3' }, { id: 'llama-3.1-8b-instant' }, { id: 'llama-4-70b-versatile' }, { id: 'openai/gpt-oss-120b' }] });
     if (key === 'retired' && calls.at(-1).body?.model === 'llama-3.3-70b-versatile') return send(404, { error: { message: 'The model `llama-3.3-70b-versatile` does not exist or you do not have access to it.', type: 'invalid_request_error', code: 'model_not_found' } });
@@ -649,4 +656,45 @@ test('"read the chats and learn" runs as a task: every chat gets a stage and sum
   assert.equal(get("SELECT summary FROM chats WHERE jid = '444@s.whatsapp.net'").summary, 'Wants a discount on the website package');
   assert.equal(sent.length, n, 'analysis sends nothing');
   assert.equal(get("SELECT COUNT(*) n FROM followups WHERE task_id = ?", id).n, 0);
+});
+
+test('a request larger than the provider allows is shortened and sent, not failed', async () => {
+  const { fitRequest, estimateTokens } = await import('../src/llm/router.js');
+  const big = { system: `RULES-START ${'catalogue line. '.repeat(900)} OUTPUT-FORMAT-END`, messages: Array.from({ length: 30 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', content: `message ${i} ${'x'.repeat(200)}` })), maxTokens: 1024 };
+  const fitted = fitRequest(big, 2500);
+  assert.ok(estimateTokens(fitted) + fitted.maxTokens <= 2500, 'fits the budget');
+  assert.match(fitted.system, /^RULES-START/); assert.match(fitted.system, /OUTPUT-FORMAT-END$/, 'the start and end of the instructions survive');
+  assert.equal(fitted.messages.at(-1).content, big.messages.at(-1).content, 'the latest message is kept whole');
+  assert.equal(fitRequest({ system: 'short', messages: [{ role: 'user', content: 'hi' }], maxTokens: 500 }, 8000).shortened, undefined, 'small requests are untouched');
+
+  run('UPDATE providers SET enabled = 0');
+  const id = Number(run('INSERT INTO providers (preset, name, kind, base_url, api_key, model, priority, created_at) VALUES (?,?,?,?,?,?,?,?)', 'groq', 'Groq tiny', 'openai', baseUrl, encrypt('tiny'), 'llama-3.1-8b-instant', -1, now()).lastInsertRowid);
+  reply = '{"reply": "ok"}';
+  const out = await complete({ system: big.system, messages: big.messages, maxTokens: 1024 }, { purpose: 'analyze' });
+  assert.equal(out.text, '{"reply": "ok"}');
+  const row = get('SELECT state FROM providers WHERE id = ?', id);
+  assert.equal(JSON.parse(row.state).tpm, 2000, 'the limit from the error is remembered');
+  assert.equal(listProviders().map(publicProvider).find((p) => p.id === id).status, 'ready');
+  // The next big request is shortened before sending: no second 413.
+  const before = calls.length;
+  await complete({ system: big.system, messages: big.messages, maxTokens: 1024 }, { purpose: 'analyze' });
+  assert.equal(calls.length, before + 1, 'fitted on the first try');
+  run('DELETE FROM providers WHERE id = ?', id);
+  run('UPDATE providers SET enabled = 1');
+});
+
+test('reading a chat for analysis sends the conversation, not the product catalogue', async () => {
+  const { decide, leanSystem } = await import('../src/agent/brain.js');
+  const { getSettings, saveSettings } = await import('../src/core.js');
+  saveSettings({ business: { catalog: Array.from({ length: 40 }, (_, i) => `- Product ${i} — Rs ${i}00 — long description — https://x/p${i}`).join('\n') } });
+  assert.ok(leanSystem(getSettings()).length < 1500, 'a short instruction');
+  reply = JSON.stringify({ stage: 'interested', summary: 'Asked the price', should_followup: false, message: '', reason: '' });
+  const chat = get("SELECT id FROM chats WHERE jid = '444@s.whatsapp.net'");
+  const d = await decide(chat.id, 'analyze', { lean: true });
+  assert.equal(d.stage, 'interested');
+  const sent = calls.at(-1).body;
+  assert.doesNotMatch(sent.messages[0].content, /Product 7 /, 'no catalogue in the instructions');
+  assert.match(JSON.stringify(sent.messages), /website package/, 'the conversation itself is there');
+  assert.equal(sent.max_tokens, 400);
+  saveSettings({ business: { catalog: '' } });
 });

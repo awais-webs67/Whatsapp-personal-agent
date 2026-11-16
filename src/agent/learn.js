@@ -9,7 +9,7 @@ import { readSite, formatProducts } from './website.js';
 
 export const learning = { running: false, total: 0, done: 0, chats: 0, error: null, finishedAt: null };
 
-const CHUNK_CHARS = 12000;
+const CHUNK_CHARS = 7000;
 const EXTRACT = `You are studying WhatsApp conversations between a business owner ("Me") and people who messaged them ("Them").
 Extract only what the conversations actually show. Do not invent anything.
 Return ONLY a JSON object:
@@ -73,7 +73,7 @@ export function formatLearned(n) {
 }
 
 async function ask(system, content) {
-  const out = await complete({ system, messages: [{ role: 'user', content }], maxTokens: 3000 }, { purpose: 'learn' });
+  const out = await complete({ system, messages: [{ role: 'user', content }], maxTokens: 1800 }, { purpose: 'learn' });
   const json = extractJson(out.text);
   if (!json) throw new Error('Model did not return valid JSON');
   return normalise(json);

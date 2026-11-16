@@ -155,7 +155,7 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
     for (const chat of chats) {
       if (campaign.cancel) break;
       try {
-        const d = await decide(chat.id, 'analyze', { instruction });
+        const d = await decide(chat.id, 'analyze', { instruction, lean: analyzeOnly });
         update('chats', chat.id, { stage: d.stage, summary: d.summary, analyzed_at: now() }, ['stage', 'summary', 'analyzed_at']);
         campaign.stages[d.stage] = (campaign.stages[d.stage] || 0) + 1;
         if (analyzeOnly) { campaign.done++; emit('campaign', campaign); if (taskId) emit('tasks'); await sleep(rand(300, 800)); continue; }
