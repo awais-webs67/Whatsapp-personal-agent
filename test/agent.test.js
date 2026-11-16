@@ -228,7 +228,7 @@ test('owner command: counts, asks nothing extra when told to send, and schedules
   const out = await runCommand('last 30 din ki chats ko har 5 minute baad follow-up bhejo, pooche baghair');
   assert.deepEqual(out.steps.map((s) => s.action), ['count_targets', 'start_followups']);
   assert.ok(out.steps[0].result.people >= 2);
-  assert.equal(out.reply, 'Started: messages go out every 5 minutes.');
+  assert.match(out.reply, /^Started: messages go out every 5 minutes\.\n📋 Task #\d+ started: reading \d+ chats, one message every 5 min, sends automatically/, 'the app adds what really happened');
   await until(() => !followups.campaign.running);
   const queued = all("SELECT f.due_at, c.stage, c.jid FROM followups f JOIN chats c ON c.id = f.chat_id WHERE f.status = 'approved' ORDER BY f.due_at");
   assert.ok(queued.length >= 2, 'batch queued for sending');
@@ -245,7 +245,7 @@ test('owner command: remember adds a standing instruction the agent sees', async
   const { getSettings } = await import('../src/core.js');
   cmdReplies = [JSON.stringify({ action: 'remember', args: { text: '10% off this week' } }), JSON.stringify({ reply: 'Yaad rakh liya.' })];
   const out = await runCommand('yaad rakho is hafte 10% discount hai');
-  assert.equal(out.reply, 'Yaad rakh liya.');
+  assert.equal(out.reply, 'Yaad rakh liya.\n📝 Saved: 10% off this week');
   assert.match(buildSystem(getSettings(), { stage: 'new' }, 'reply'), /10% off this week/);
 });
 
@@ -521,4 +521,34 @@ test('tasks: schedule times', async () => {
   assert.equal(nextRun({ type: 'once' }, from, { ranBefore: true }), null);
   assert.throws(() => normaliseSchedule({ type: 'daily', time: 'morning' }));
   assert.throws(() => normaliseSchedule({ type: 'every', minutes: 0 }));
+});
+
+test('"OK, I am on it" without doing anything is not accepted', async () => {
+  const { runCommand } = await import('../src/agent/commander.js');
+  cmdReplies = [JSON.stringify({ reply: 'Ok, main kaam kar raha hun.' }), JSON.stringify({ reply: 'Theek hai, ho gaya.' }), JSON.stringify({ reply: 'Ok ji.' }), JSON.stringify({ reply: 'Kar raha hun.' })];
+  const out = await runCommand('pichle 5 din walon ko follow up bhejo');
+  assert.equal(out.steps.length, 0);
+  assert.match(out.reply, /^I could not start this, so nothing was sent/);
+  cmdReplies = [JSON.stringify({ reply: 'Pichle hafte 12 log aaye.' })];
+  assert.equal((await runCommand('kitne log aaye?')).reply, 'Pichle hafte 12 log aaye.', 'plain questions are answered normally');
+});
+
+test('the agent says why queued messages are not going out', async () => {
+  const { whyNotSending } = await import('../src/agent/followups.js');
+  const tasks = await import('../src/agent/tasks.js');
+  const { saveSettings } = await import('../src/core.js');
+  const id = tasks.createTask({ kind: 'batch', title: 'Night batch', instruction: 'x' });
+  const chat = get("SELECT id FROM chats WHERE jid = '111@s.whatsapp.net'");
+  run("INSERT INTO followups (chat_id, kind, text, reason, status, due_at, task_id, created_at) VALUES (?, 'campaign', 'Night msg', '', 'approved', ?, ?, ?)", chat.id, now() - 1000, id, now());
+  saveSettings({ followup: { quietStart: 0, quietEnd: 24 } }); // quiet all day
+  assert.match(whyNotSending(id), /^Quiet hours \(0:00 to 24:00/);
+  const n = sent.length;
+  await followups._tick();
+  assert.equal(sent.length, n, 'nothing goes out in quiet hours');
+  run('UPDATE tasks SET ignore_quiet = 1 WHERE id = ?', id);
+  assert.equal(whyNotSending(id), null);
+  await followups._tick();
+  assert.equal(sent.at(-1).text, 'Night msg', 'a task allowed to run at night sends');
+  saveSettings({ followup: { quietStart: 0, quietEnd: 0 } });
+  tasks.controlTask(id, 'remove');
 });

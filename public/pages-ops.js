@@ -58,7 +58,14 @@ export function followups() {
         h('div.row', {}, editable ? [h('button.btn.sm', { onclick: save('skipped') }, 'Skip'), st.tab === 'pending' ? h('button.btn.sm.primary', { onclick: save('approved', 'Queued') }, 'Approve') : h('button.btn.sm', { onclick: save('pending') }, 'Hold')] : h('span.muted', {}, f.sent_at ? rel(f.sent_at) : '')));
     }));
   }
-  const load = async () => { st.rows = await GET(`/api/followups?status=${st.tab}`); drawList(); };
+  const load = async () => {
+    st.rows = await GET(`/api/followups?status=${st.tab}`);
+    drawList();
+    if (st.tab === 'approved' && st.rows.length) {
+      const { reason } = await GET('/api/sending-status');
+      if (reason) listBox.prepend(h('div.note.warn', { style: 'margin:12px' }, h('b', {}, 'Not sending right now. '), reason));
+    }
+  };
   live.on('followups', () => load().catch(() => {}));
   live.on('campaign', (c) => { st.campaign = c; drawCampaign(); });
   drawTabs();

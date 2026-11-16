@@ -54,14 +54,15 @@ async function sendApproved() {
   sending = true;
   try {
     const s = getSettings().followup;
-    if (isQuiet(hourIn(s.timezone), s.quietStart, s.quietEnd)) return;
-    const accounts = all(`SELECT DISTINCT c.account_id id FROM followups f JOIN chats c ON c.id = f.chat_id WHERE f.status = 'approved' AND f.due_at <= ? AND ${TASK_ACTIVE}`, now());
+    // In quiet hours only tasks the owner explicitly allowed to run at night may send.
+    const quietOk = isQuiet(hourIn(s.timezone), s.quietStart, s.quietEnd) ? ' AND f.task_id IN (SELECT id FROM tasks WHERE ignore_quiet = 1)' : '';
+    const accounts = all(`SELECT DISTINCT c.account_id id FROM followups f JOIN chats c ON c.id = f.chat_id WHERE f.status = 'approved' AND f.due_at <= ? AND ${TASK_ACTIVE}${quietOk}`, now());
     for (const { id: accountId } of accounts) {
       if ((nextSlot.get(accountId) || 0) > now()) continue;
       if (wa.statusOf(accountId).state !== 'connected') continue;
       const sentToday = get("SELECT COUNT(*) n FROM followups f JOIN chats c ON c.id = f.chat_id WHERE c.account_id = ? AND f.status = 'sent' AND f.sent_at > ?", accountId, now() - 86_400_000).n;
       if (sentToday >= s.dailyCap) continue;
-      const f = get(`SELECT f.* FROM followups f JOIN chats c ON c.id = f.chat_id WHERE c.account_id = ? AND f.status = 'approved' AND f.due_at <= ? AND ${TASK_ACTIVE} ORDER BY f.due_at, f.id LIMIT 1`, accountId, now());
+      const f = get(`SELECT f.* FROM followups f JOIN chats c ON c.id = f.chat_id WHERE c.account_id = ? AND f.status = 'approved' AND f.due_at <= ? AND ${TASK_ACTIVE}${quietOk} ORDER BY f.due_at, f.id LIMIT 1`, accountId, now());
       if (!f) continue;
       nextSlot.set(accountId, now() + rand(s.gapMinSec, s.gapMaxSec) * 1000);
       const chat = get('SELECT * FROM chats WHERE id = ?', f.chat_id);
@@ -97,6 +98,36 @@ async function sendApproved() {
  *  intervalMinutes  spacing between messages (each one is scheduled, with a little jitter)
  *  stages           only these stages (purchased chats are included only when listed here)
  */
+/**
+ * Why queued follow-ups of a task (or of everything, when taskId is null) are not going out right now.
+ * Returns a short sentence, or null when they are on their way.
+ */
+export function whyNotSending(taskId = null) {
+  const s = getSettings().followup;
+  const where = taskId ? 'f.task_id = ?' : '1 = 1';
+  const args = taskId ? [taskId] : [];
+  const queued = all(`SELECT f.due_at, c.account_id FROM followups f JOIN chats c ON c.id = f.chat_id WHERE ${where} AND f.status = 'approved'`, ...args);
+  if (!queued.length) {
+    const drafts = get(`SELECT COUNT(*) n FROM followups f WHERE ${where} AND f.status = 'pending'`, ...args).n;
+    return drafts ? `${drafts} message${drafts === 1 ? ' is' : 's are'} waiting for your approval on the Follow-ups page.` : null;
+  }
+  if (taskId && get('SELECT status FROM tasks WHERE id = ?', taskId)?.status === 'paused') return 'Paused.';
+  for (const accountId of [...new Set(queued.map((q) => q.account_id))]) {
+    if (wa.statusOf(accountId).state !== 'connected') {
+      const name = get('SELECT name FROM accounts WHERE id = ?', accountId)?.name || 'The WhatsApp number';
+      return `"${name}" is not connected, so nothing can be sent. Open Numbers and link it.`;
+    }
+    const sentToday = get("SELECT COUNT(*) n FROM followups f JOIN chats c ON c.id = f.chat_id WHERE c.account_id = ? AND f.status = 'sent' AND f.sent_at > ?", accountId, now() - 86_400_000).n;
+    if (sentToday >= s.dailyCap) return `The daily limit of ${s.dailyCap} follow-ups per number is reached. Raise it in Settings or wait.`;
+  }
+  const ignore = taskId && get('SELECT ignore_quiet FROM tasks WHERE id = ?', taskId)?.ignore_quiet;
+  if (!ignore && isQuiet(hourIn(s.timezone), s.quietStart, s.quietEnd)) {
+    return `Quiet hours (${s.quietStart}:00 to ${s.quietEnd}:00, ${s.timezone}): sending starts at ${s.quietEnd}:00. Change the hours in Settings, or tell the agent to send at night anyway.`;
+  }
+  const next = Math.min(...queued.map((q) => q.due_at));
+  return next > now() ? null : null;
+}
+
 export async function runCampaign({ accountId = null, sinceDays = 90, limit = 200, reanalyze = false, instruction = '', autoApprove = false, intervalMinutes = 0, stages = null, taskId = null } = {}) {
   if (campaign.running) throw new Error('A review is already running');
   const since = now() - sinceDays * 86_400_000;
@@ -111,7 +142,7 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
       ORDER BY c.last_in_at DESC LIMIT ?4`, accountId, since, reanalyze || instruction ? 1 : 0, limit, stages?.length ? `,${stages.join(',')},` : '');
   const gap = Math.max(0, Number(intervalMinutes) || 0) * 60_000;
   let nextDue = now();
-  Object.assign(campaign, { taskId, running: true, total: chats.length, done: 0, drafted: 0, failed: 0, cancel: false, startedAt: now(), error: null });
+  Object.assign(campaign, { taskId, running: true, total: chats.length, done: 0, drafted: 0, skipped: 0, skipReasons: [], failed: 0, cancel: false, startedAt: now(), error: null });
   emit('campaign', campaign);
   log('info', 'campaign', `Reviewing ${chats.length} past conversations`);
   (async () => {
@@ -120,6 +151,7 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
       try {
         const d = await decide(chat.id, 'analyze', { instruction });
         update('chats', chat.id, { stage: d.stage, summary: d.summary, analyzed_at: now() }, ['stage', 'summary', 'analyzed_at']);
+        if (d.skip) { campaign.skipped++; if (d.reason && campaign.skipReasons.length < 3) campaign.skipReasons.push(`${chat.name || chat.phone || 'someone'}: ${d.reason}`); }
         if (!d.skip) {
           queue(chat.id, 'campaign', d.message, d.reason, autoApprove ? 'approved' : 'pending', nextDue, taskId);
           nextDue = Math.max(nextDue, now()) + gap * rand(0.8, 1.2);
@@ -137,7 +169,11 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
     }
     campaign.running = false;
     emit('campaign', campaign);
-    if (taskId) emit('tasks');
+    if (taskId) {
+      const summary = `Read ${campaign.done} chat${campaign.done === 1 ? '' : 's'}: ${campaign.drafted} message${campaign.drafted === 1 ? '' : 's'} ${autoApprove ? 'queued' : 'drafted for approval'}, ${campaign.skipped} skipped${campaign.failed ? `, ${campaign.failed} failed (${campaign.error})` : ''}.${campaign.skipReasons.length ? ` Skipped for example: ${campaign.skipReasons.join(' | ')}` : ''}`;
+      run('UPDATE tasks SET last_result = ? WHERE id = ?', summary.slice(0, 1000), taskId);
+      emit('tasks');
+    }
     log('info', 'campaign', `Review finished: ${campaign.done} read, ${campaign.drafted} follow-ups drafted, ${campaign.failed} failed`);
   })();
   return campaign;

@@ -2,7 +2,7 @@ import { h, set, GET, POST, PATCH, act, toast, modal, field, select, rel, num } 
 import { live } from './state.js';
 
 const STATUS = { active: ['Running', 'hot'], paused: ['Paused', 'warn'], done: ['Done', 'ok'], failed: ['Failed', 'bad'] };
-const when = (ts) => (ts ? `${new Date(ts).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })} (${rel(ts)})` : '—');
+const when = (ts) => (!ts ? '—' : ts <= Date.now() + 30_000 ? 'Due now' : `${new Date(ts).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })} (${rel(ts)})`);
 
 /** Everything the agent has been asked to do, with progress and controls. */
 export function tasks() {
@@ -26,6 +26,7 @@ export function tasks() {
           t.kind === 'scheduled' && t.status === 'done' ? ctl('run', 'Run again') : null,
           ctl('remove', 'Remove', '.ghost.danger'))),
       h('div.pad.stack', {},
+        t.waiting ? h('div.note.warn', {}, h('b', {}, 'Not sending right now. '), t.waiting) : null,
         h('div.muted', { dir: 'auto' }, t.instruction),
         h('div.grid3', {},
           h('div.kv', {}, 'Schedule', h('b', {}, t.scheduleText)),

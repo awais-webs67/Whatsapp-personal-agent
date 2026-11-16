@@ -7,7 +7,7 @@ import { complete } from '../llm/router.js';
 import { toolCallToJson } from '../llm/client.js';
 import * as wa from '../wa/manager.js';
 import { STAGES, extractJson } from './brain.js';
-import { runCampaign, campaign } from './followups.js';
+import { runCampaign, campaign, whyNotSending } from './followups.js';
 import { createTask, listTasks, taskView, controlTask, setTaskRunner, setCampaign } from './tasks.js';
 import { humanSend } from './pipeline.js';
 import { learnFromChats, learnFromWebsite, learnFromProfile } from './learn.js';
@@ -70,15 +70,16 @@ const TOOLS = {
     run: (a) => { const t = targets(a); return { people: t.length, examples: t.slice(0, 5).map(title) }; },
   },
   start_followups: {
-    doc: 'start_followups {"days": 5, "stages": [], "instruction": "what to say / who it is for", "interval_minutes": 5, "limit": 100, "send": true} - read each matching chat, write a personal message following the instruction, and schedule them one by one with the interval. "send": true queues them to go out automatically; false leaves them as drafts for the owner to approve.',
+    doc: 'start_followups {"days": 5, "stages": [], "instruction": "what to say / who it is for", "interval_minutes": 5, "limit": 100, "send": true, "ignore_quiet_hours": false} - read each matching chat, write a personal message following the instruction, and schedule them one by one with the interval. "send": true queues them to go out automatically; false leaves them as drafts for the owner to approve. Set "ignore_quiet_hours": true only if the owner says to send at night too.',
     run: async (a) => {
       const t = targets(a);
       if (!t.length) return { started: false, reason: 'No chats match' };
       const s = getSettings().followup;
       const interval = Math.max(1, Number(a.interval_minutes) || 5);
-      const taskId = createTask({ kind: 'batch', title: `Follow-ups: ${String(a.instruction || 'quiet leads').slice(0, 80)}`, instruction: `Last ${days(a.days)} days${stageList(a.stages).length ? `, stages ${stageList(a.stages).join(', ')}` : ''}, every ${interval} min, ${a.send ? 'sends automatically' : 'drafts for approval'}. ${a.instruction || ''}`.trim() });
+      const taskId = createTask({ kind: 'batch', ignoreQuiet: !!a.ignore_quiet_hours, title: `Follow-ups: ${String(a.instruction || 'quiet leads').slice(0, 80)}`, instruction: `Last ${days(a.days)} days${stageList(a.stages).length ? `, stages ${stageList(a.stages).join(', ')}` : ''}, every ${interval} min, ${a.send ? 'sends automatically' : 'drafts for approval'}. ${a.instruction || ''}`.trim() });
       await runCampaign({ taskId, sinceDays: days(a.days), limit: Math.min(500, Number(a.limit) || 100), reanalyze: true, instruction: String(a.instruction || '').slice(0, 600), autoApprove: !!a.send, intervalMinutes: interval, stages: stageList(a.stages) });
-      return { started: true, task_id: taskId, chats_being_read: Math.min(t.length, Number(a.limit) || 100), interval_minutes: interval, mode: a.send ? 'sends automatically' : 'drafts wait for approval',
+      if (!campaign.total) run("UPDATE tasks SET status = 'removed' WHERE id = ?", taskId); // nothing to do: no empty task left behind
+      return { started: campaign.total > 0, ...(campaign.total ? {} : { reason: 'every matching chat already has a follow-up waiting, or has too few messages to follow up on' }), task_id: taskId, chats_being_read: campaign.total, interval_minutes: interval, mode: a.send ? 'sends automatically' : 'drafts wait for approval',
         limits: `at most ${s.dailyCap} per number per day; nothing is sent between ${s.quietStart}:00 and ${s.quietEnd}:00 (${s.timezone}); people who would not benefit are skipped` };
     },
   },
@@ -181,6 +182,34 @@ You get the result back and can then take another action or reply. At most ${MAX
 }
 
 /** Run one owner request through the tool loop. */
+// The owner asked for something to be done (not just a question).
+const ACTION_ASK = /bhej|send|follow|remind|yaad|confirm|schedule|har \d|every|daily|roz|start|shuru|pause|roko|band kar|remove|hata|message|msg|offer/i;
+// The reply claims work is happening.
+const CLAIMS_WORK = /kar raha|kar rahi|kar raha hun|working|on it|started|shuru|ho gaya|done|bhej (diya|di|raha|rahi|deta|dunga)|sending|will send|bhejta|bhejun|scheduled|set up|queued|kar diya|kar deta|theek hai|ok\b|okay/i;
+
+/** What really happened, written by the app (not the model), so the owner can trust it. */
+function facts(steps) {
+  const out = [];
+  for (const s of steps) {
+    const r = s.result || {};
+    if (r.error) { out.push(`⚠️ ${s.action.replace(/_/g, ' ')} failed: ${r.error}`); continue; }
+    if (s.action === 'start_followups') {
+      if (!r.started) out.push(`⚠️ Nothing started: ${r.reason || 'no chats matched'}.`);
+      else {
+        const why = whyNotSending(r.task_id);
+        out.push(`📋 Task #${r.task_id} started: reading ${r.chats_being_read} chat${r.chats_being_read === 1 ? '' : 's'}, one message every ${r.interval_minutes} min, ${r.mode}. Progress is on the Tasks page.${why ? `\n⚠️ Not sending yet: ${why}` : ''}`);
+      }
+    }
+    if (s.action === 'schedule_task') out.push(`⏰ Task #${r.task_id}: ${r.schedule}${r.first_run ? `, first run ${new Date(r.first_run).toLocaleString('en-GB', { timeZone: getSettings().followup.timezone, dateStyle: 'medium', timeStyle: 'short' })}` : ''}.`);
+    if (s.action === 'send_message' && r.sent_to) out.push(`✉️ Sent to ${r.sent_to}.`);
+    if (['pause_task', 'resume_task', 'remove_task'].includes(s.action)) out.push(`Task #${s.args.id}: ${r.status}.`);
+    if (s.action === 'stop_followups') out.push(`⏹ ${r.cancelled} queued message${r.cancelled === 1 ? '' : 's'} cancelled.`);
+    if (s.action === 'remember') out.push(`📝 Saved: ${r.remembered}`);
+  }
+  return out;
+}
+const withFacts = (reply, steps) => [reply, ...facts(steps)].filter(Boolean).join('\n');
+
 export async function runCommand(text, history = [], { scheduled = false } = {}) {
   const messages = [...history, { role: 'user', content: text }];
   const steps = [];
@@ -201,7 +230,19 @@ export async function runCommand(text, history = [], { scheduled = false } = {})
       }
       return { reply: 'The model kept answering in a form I could not use. Try again, or give Commands a larger model on the Models page.', steps };
     }
-    if (!obj.action) return { reply: String(obj.reply).trim(), steps };
+    if (!obj.action) {
+      // Small models like to say "OK, I'm on it" without doing anything. Do not let that through.
+      if (!steps.length && ACTION_ASK.test(text) && CLAIMS_WORK.test(obj.reply) && corrections++ < 3) {
+        messages.push({ role: 'assistant', content: JSON.stringify({ reply: obj.reply }) });
+        messages.push({ role: 'user', content: 'You have not taken any action yet, so nothing has happened. Take the action now (for example start_followups, schedule_task or send_message), or reply honestly that you cannot and why.' });
+        i--;
+        continue;
+      }
+      if (!steps.length && ACTION_ASK.test(text) && CLAIMS_WORK.test(obj.reply)) {
+        return { reply: 'I could not start this, so nothing was sent. Try saying it like: "pichle 5 din ke interested logon ko har 5 minute baad follow-up bhejo".', steps };
+      }
+      return { reply: withFacts(String(obj.reply).trim(), steps), steps };
+    }
     const tool = TOOLS[obj.action];
     let result;
     try {
@@ -214,7 +255,7 @@ export async function runCommand(text, history = [], { scheduled = false } = {})
     messages.push({ role: 'assistant', content: JSON.stringify({ action: obj.action, args: obj.args || {} }) });
     messages.push({ role: 'user', content: `[result of ${obj.action}] ${JSON.stringify(result).slice(0, 2000)}${i === MAX_STEPS - 1 ? '\nThat was the last tool you may use. Reply to the owner now.' : ''}` });
   }
-  return { reply: 'I used every step I am allowed for one request. Here is what happened so far; tell me how to continue.', steps };
+  return { reply: withFacts('I used every step I am allowed for one request. Here is what actually happened:', steps), steps };
 }
 
 let queue = Promise.resolve();
@@ -240,7 +281,7 @@ export function handleCommand(text, { chatId = null, scheduled = false, label = 
 }
 
 export function startCommander() {
-  setCampaign(campaign);
+  setCampaign(campaign, whyNotSending);
   setTaskRunner((t) => handleCommand(t.instruction, { scheduled: true, label: `⏰ Task #${t.id}: ${t.title}` }));
   wa.setHandlers({ onCommand: (chatId, text) => { if (getSettings().commandsViaWhatsApp) handleCommand(text, { chatId }); } });
 }

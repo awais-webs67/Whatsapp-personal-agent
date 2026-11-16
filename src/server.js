@@ -13,7 +13,7 @@ import { chooseModel } from './llm/client.js';
 import * as wa from './wa/manager.js';
 import { STAGES, decide, buildSystem } from './agent/brain.js';
 import { startPipeline, onOwner, eligibility } from './agent/pipeline.js';
-import { startFollowups, runCampaign, campaign } from './agent/followups.js';
+import { startFollowups, runCampaign, campaign, whyNotSending } from './agent/followups.js';
 import { learnFromChats, learnFromWebsite, learnFromProfile, learning } from './agent/learn.js';
 import { importKnowledgeFiles } from './agent/knowledge-files.js';
 import { handleCommand, startCommander } from './agent/commander.js';
@@ -401,6 +401,7 @@ app.post('/api/followups/bulk', wrap((req) => {
   return { ok: true };
 }));
 app.get('/api/campaign', wrap(() => campaign));
+app.get('/api/sending-status', wrap(() => ({ reason: whyNotSending(null) })));
 app.post('/api/campaign', wrap((req) => {
   if (req.body.cancel) { campaign.cancel = true; return campaign; }
   return runCampaign({

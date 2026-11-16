@@ -9,7 +9,8 @@ export const STATUSES = ['active', 'paused', 'done', 'failed', 'removed'];
 let runner = null; // set by the commander: (task) => Promise<{ reply }>
 export const setTaskRunner = (fn) => { runner = fn; };
 let campaignRef = null; // the follow-up batch reader, to report and stop it
-export const setCampaign = (c) => { campaignRef = c; };
+let whyRef = () => null; // explains why queued messages are not going out
+export const setCampaign = (c, why) => { campaignRef = c; if (why) whyRef = why; };
 
 const tzParts = (tz, d = new Date()) => {
   try {
@@ -51,12 +52,12 @@ export function describeSchedule(s) {
   return 'Unknown schedule';
 }
 
-export function createTask({ title, instruction, kind = 'scheduled', schedule = { type: 'once' } }) {
+export function createTask({ title, instruction, kind = 'scheduled', schedule = { type: 'once' }, ignoreQuiet = false }) {
   const text = String(instruction || '').trim();
   if (!text) throw new Error('Describe what the task should do');
   const sched = kind === 'batch' ? null : normaliseSchedule(schedule);
-  const { lastInsertRowid } = run('INSERT INTO tasks (title, instruction, kind, schedule, status, next_run_at, runs, created_at) VALUES (?,?,?,?,?,?,?,?)',
-    String(title || text).slice(0, 120), text.slice(0, 1000), kind, JSON.stringify(sched), 'active', kind === 'batch' ? null : nextRun(sched), 0, now());
+  const { lastInsertRowid } = run('INSERT INTO tasks (title, instruction, kind, schedule, status, next_run_at, runs, ignore_quiet, created_at) VALUES (?,?,?,?,?,?,?,?,?)',
+    String(title || text).slice(0, 120), text.slice(0, 1000), kind, JSON.stringify(sched), 'active', kind === 'batch' ? null : nextRun(sched), 0, ignoreQuiet ? 1 : 0, now());
   const id = Number(lastInsertRowid);
   log('info', 'tasks', `Task #${id} created: ${String(title || text).slice(0, 80)}${sched ? ` (${describeSchedule(sched)})` : ''}`);
   emit('tasks');
@@ -84,7 +85,7 @@ export function taskView(t) {
     const counts = Object.fromEntries(all('SELECT status, COUNT(*) n FROM followups WHERE task_id = ? GROUP BY status', t.id).map((r) => [r.status, r.n]));
     const reading = campaignRef?.taskId === t.id && campaignRef.running ? { done: campaignRef.done, total: campaignRef.total } : null;
     const nextDue = get("SELECT MIN(due_at) d FROM followups WHERE task_id = ? AND status = 'approved'", t.id).d;
-    Object.assign(view, { progress: { reading, drafts: counts.pending || 0, queued: counts.approved || 0, sent: counts.sent || 0, skipped: counts.skipped || 0, failed: counts.failed || 0 }, next_run_at: t.status === 'active' ? nextDue : null });
+    Object.assign(view, { waiting: t.status === 'active' && !reading ? whyRef(t.id) : null, progress: { reading, drafts: counts.pending || 0, queued: counts.approved || 0, sent: counts.sent || 0, skipped: counts.skipped || 0, failed: counts.failed || 0 }, next_run_at: t.status === 'active' ? nextDue : null });
   }
   return view;
 }

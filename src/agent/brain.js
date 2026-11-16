@@ -125,7 +125,7 @@ export function extractJson(text) {
 const cleanText = (s) => String(s ?? '').replace(/\*\*(.+?)\*\*/g, '$1').trim().slice(0, 1200);
 const cleanStage = (s, fallback) => (STAGES.includes(s) ? s : fallback);
 
-export function parseDecision(text, mode, chat) {
+export function parseDecision(text, mode, chat, { instructed = false } = {}) {
   const obj = extractJson(text);
   if (!obj) {
     // A plain-text answer is still a usable reply; half-broken JSON is not something to send a customer.
@@ -143,7 +143,7 @@ export function parseDecision(text, mode, chat) {
     return { messages, stage, summary, handoff: !!obj.handoff, handoffReason: cleanText(obj.handoff_reason).slice(0, 200), followupHours: hours > 0 && hours <= 24 * 30 ? hours : null };
   }
   const message = cleanText(obj.message);
-  const skip = mode === 'followup' ? !!obj.skip || !message : !obj.should_followup || !message;
+  const skip = mode === 'followup' ? !!obj.skip || !message : instructed ? obj.should_followup === false || !message : !obj.should_followup || !message;
   return { skip, message, stage, summary, reason: cleanText(obj.reason).slice(0, 300) };
 }
 
@@ -157,7 +157,7 @@ export async function decide(chatId, mode = 'reply', { turns = null, chatOverrid
   if (!chat) throw new Error('Chat not found');
   const messages = turns || buildTurns(chatId, mode === 'analyze' ? Math.max(40, settings.llm.historyMessages) : settings.llm.historyMessages);
   if (mode !== 'reply') {
-    messages.push({ role: 'user', content: `[Instruction from the business owner, not from the customer] ${mode === 'followup' ? `The customer has been quiet since ${ago(chat.last_in_at)}. This would be follow-up number ${(chat.followup_count || 0) + 1}.` : 'Review the conversation above.'}${instruction ? ` For this batch the owner asked: "${instruction}". Let that decide who gets a message and what it says (should_followup true whenever the owner's request applies to this person), while keeping every hard rule.` : ''} Respond with the JSON object described in your instructions.` });
+    messages.push({ role: 'user', content: `[Instruction from the business owner, not from the customer] ${mode === 'followup' ? `The customer has been quiet since ${ago(chat.last_in_at)}. This would be follow-up number ${(chat.followup_count || 0) + 1}.` : 'Review the conversation above.'}${instruction ? ` For this batch the owner asked: "${instruction}". This is an order from the owner: set should_followup to true and write the message for everyone the request applies to. Set it to false only if this person already bought, refused, asked not to be contacted, or clearly does not fit the request. Keep every hard rule.` : ''} Respond with the JSON object described in your instructions.` });
   }
   // What the conversation is about decides which products and answers go into the instructions.
   const recent = messages.filter((m) => m.role === 'user').slice(mode === 'reply' ? -4 : -12).map((m) => m.content).join(' ');
@@ -166,7 +166,7 @@ export async function decide(chatId, mode = 'reply', { turns = null, chatOverrid
   for (let attempt = 0; attempt < 3; attempt++) {
     const out = await complete({ system, messages }, { purpose: mode });
     try {
-      return { ...parseDecision(out.text, mode, chat), provider: out.providerName, model: out.model, latencyMs: out.latencyMs, hops: out.hops, usage: out.usage };
+      return { ...parseDecision(out.text, mode, chat, { instructed: !!instruction }), provider: out.providerName, model: out.model, latencyMs: out.latencyMs, hops: out.hops, usage: out.usage };
     } catch (e) {
       lastErr = e; // one retry: a second sample usually fixes malformed JSON
     }
