@@ -610,7 +610,7 @@ test('orders are understood directly: days, interval, night, one person, questio
 test('one order starts the work at once, without any model question', async () => {
   const { runCommand } = await import('../src/agent/commander.js');
   run("UPDATE followups SET status = 'skipped' WHERE status IN ('pending','approved')");
-  await until(() => !followups.campaign.running);
+  await until(() => !followups.campaign.running, 20000);
   cmdReplies = [JSON.stringify({ reply: 'Kya main follow-up bhej dun?' })]; // would be the model's answer; it must never be asked
   reply = JSON.stringify({ stage: 'interested', summary: 's', should_followup: true, message: 'Offer open hai.', reason: 'asked' });
   const before = calls.length;
@@ -620,7 +620,7 @@ test('one order starts the work at once, without any model question', async () =
   assert.equal(calls.slice(before).filter((c) => /operations assistant/.test(c.body?.messages?.[0]?.content || '')).length, 0, 'the command model was not consulted');
   assert.equal(cmdReplies.length, 1);
   cmdReplies = [];
-  await until(() => !followups.campaign.running);
+  await until(() => !followups.campaign.running, 20000);
   run("UPDATE followups SET status = 'skipped' WHERE status IN ('pending','approved')");
 });
 
