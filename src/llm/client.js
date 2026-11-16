@@ -140,6 +140,9 @@ async function chatOpenAI(p, { system, messages, maxTokens, timeoutMs, fast }) {
   // Some models answer through the function-calling channel even when none was offered.
   const call = msg.tool_calls?.[0]?.function || msg.function_call;
   if (!text && call?.name) text = toolCallToJson(JSON.stringify({ name: call.name, arguments: call.arguments }));
+  if (choice?.finish_reason === 'length') {
+    throw new LLMError('empty', `Model ran out of tokens before finishing its answer (limit ${maxTokens})`);
+  }
   if (!text) {
     throw new LLMError('empty', choice?.finish_reason === 'length'
       ? 'Model ran out of tokens before answering — raise "Max tokens" in Settings'

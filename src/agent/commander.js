@@ -260,27 +260,54 @@ export async function runCommand(text, history = [], { scheduled = false } = {})
 
 let queue = Promise.resolve();
 /** Handle a command from the dashboard or from the owner's own WhatsApp chat; requests run one at a time. */
-export function handleCommand(text, { chatId = null, scheduled = false, label = null } = {}) {
+// ---------- conversations ----------
+/** A fixed conversation for WhatsApp self-chat commands or scheduled-task runs, created on first use. */
+function fixedThread(kind, title) {
+  const t = get('SELECT id FROM command_threads WHERE kind = ? ORDER BY id LIMIT 1', kind);
+  if (t) return t.id;
+  return Number(run('INSERT INTO command_threads (title, kind, created_at, updated_at) VALUES (?,?,?,?)', title, kind, now(), now()).lastInsertRowid);
+}
+export function newThread(title = 'New chat') {
+  return Number(run("INSERT INTO command_threads (title, kind, created_at, updated_at) VALUES (?, 'chat', ?, ?)", title, now(), now()).lastInsertRowid);
+}
+/** Messages from before conversations existed go into one "Earlier" conversation. */
+export function adoptLooseCommands() {
+  if (!get('SELECT 1 x FROM commands WHERE thread_id IS NULL LIMIT 1')) return;
+  const id = newThread('Earlier');
+  run('UPDATE commands SET thread_id = ? WHERE thread_id IS NULL', id);
+}
+export const listThreads = () => all(`SELECT t.*, (SELECT COUNT(*) FROM commands c WHERE c.thread_id = t.id) messages,
+  (SELECT text FROM commands c WHERE c.thread_id = t.id ORDER BY c.id DESC LIMIT 1) last_text FROM command_threads t ORDER BY t.updated_at DESC LIMIT 200`);
+
+export function handleCommand(text, { chatId = null, scheduled = false, label = null, threadId = null } = {}) {
+  const thread = threadId || (chatId ? fixedThread('whatsapp', 'WhatsApp (Message yourself)') : scheduled ? fixedThread('tasks', 'Scheduled tasks') : newThread());
   const job = queue.then(async () => {
-    const history = all("SELECT role, text FROM (SELECT * FROM commands ORDER BY id DESC LIMIT 6) ORDER BY id").map((r) => ({ role: r.role === 'owner' ? 'user' : 'assistant', content: r.role === 'owner' ? clip(r.text, 300) : JSON.stringify({ reply: clip(r.text, 300) }) }));
-    run('INSERT INTO commands (role, text, ts) VALUES (?,?,?)', 'owner', label || text, now());
-    emit('command');
+    // The agent remembers this conversation (and only this one).
+    const history = scheduled ? [] : all('SELECT role, text FROM (SELECT * FROM commands WHERE thread_id = ? ORDER BY id DESC LIMIT 10) ORDER BY id', thread)
+      .map((r) => ({ role: r.role === 'owner' ? 'user' : 'assistant', content: r.role === 'owner' ? clip(r.text, 300) : JSON.stringify({ reply: clip(r.text, 300) }) }));
+    run('INSERT INTO commands (role, text, thread_id, ts) VALUES (?,?,?,?)', 'owner', label || text, thread, now());
+    const t = get('SELECT title, kind FROM command_threads WHERE id = ?', thread);
+    if (t?.kind === 'chat' && t.title === 'New chat') run('UPDATE command_threads SET title = ? WHERE id = ?', clip(text, 60), thread);
+    run('UPDATE command_threads SET updated_at = ? WHERE id = ?', now(), thread);
+    emit('command', { thread });
     let out;
     try {
-      out = await runCommand(text, scheduled ? [] : history, { scheduled });
+      out = await runCommand(text, history, { scheduled });
     } catch (e) {
       out = { reply: `I could not do that: ${e.message}`, steps: [] };
     }
-    run('INSERT INTO commands (role, text, steps, ts) VALUES (?,?,?,?)', 'agent', out.reply, JSON.stringify(out.steps), now());
-    emit('command');
+    run('INSERT INTO commands (role, text, steps, thread_id, ts) VALUES (?,?,?,?,?)', 'agent', out.reply, JSON.stringify(out.steps), thread, now());
+    run('UPDATE command_threads SET updated_at = ? WHERE id = ?', now(), thread);
+    emit('command', { thread });
     if (chatId) await wa.sendText(chatId, out.reply, 'ai').catch((e) => log('error', 'command', `Could not answer in WhatsApp: ${e.message}`));
-    return out;
+    return { ...out, thread };
   });
   queue = job.catch(() => {});
   return job;
 }
 
 export function startCommander() {
+  adoptLooseCommands();
   setCampaign(campaign, whyNotSending);
   setTaskRunner((t) => handleCommand(t.instruction, { scheduled: true, label: `⏰ Task #${t.id}: ${t.title}` }));
   wa.setHandlers({ onCommand: (chatId, text) => { if (getSettings().commandsViaWhatsApp) handleCommand(text, { chatId }); } });

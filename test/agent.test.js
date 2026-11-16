@@ -51,6 +51,11 @@ const server = http.createServer((req, res) => {
         { 'x-ratelimit-remaining-tokens': String(budget.left), 'x-ratelimit-limit-tokens': '3000', 'x-ratelimit-reset-tokens': `${((budget.resetAt - nowMs) / 1000).toFixed(2)}s` });
     }
     if (key === 'geo') return send(403, { error: { message: 'Access denied. Please check your network settings.' } });
+    if (key === 'short') {
+      const mt = JSON.parse(body).max_tokens;
+      if (mt < 1000) return send(200, { model: 'small', choices: [{ message: { content: '{"reply": "Pichle 5 din mein' }, finish_reason: 'length' }] });
+      return send(200, { model: 'small', choices: [{ message: { content: `{"reply": "done with ${mt}"}` }, finish_reason: 'stop' }] });
+    }
     if (key === 'groqtool') return send(400, { error: { message: 'Tool choice is none, but model called a tool', type: 'invalid_request_error', code: 'tool_use_failed', failed_generation: '<function=stats>{"days": 5}</function>' } });
     if (req.url.endsWith('/models')) return send(200, { data: [{ id: 'whisper-large-v3' }, { id: 'llama-3.1-8b-instant' }, { id: 'llama-4-70b-versatile' }, { id: 'openai/gpt-oss-120b' }] });
     if (key === 'retired' && calls.at(-1).body?.model === 'llama-3.3-70b-versatile') return send(404, { error: { message: 'The model `llama-3.3-70b-versatile` does not exist or you do not have access to it.', type: 'invalid_request_error', code: 'model_not_found' } });
@@ -551,4 +556,33 @@ test('the agent says why queued messages are not going out', async () => {
   assert.equal(sent.at(-1).text, 'Night msg', 'a task allowed to run at night sends');
   saveSettings({ followup: { quietStart: 0, quietEnd: 0 } });
   tasks.controlTask(id, 'remove');
+});
+
+test('an answer cut off by the token limit is retried with more room', async () => {
+  run('UPDATE providers SET enabled = 0');
+  const id = Number(run('INSERT INTO providers (preset, name, kind, base_url, api_key, model, priority, created_at) VALUES (?,?,?,?,?,?,?,?)', 'groq', 'Groq short', 'openai', baseUrl, encrypt('short'), 'llama-3.1-8b-instant', -1, now()).lastInsertRowid);
+  const out = await complete({ messages: [{ role: 'user', content: 'haal?' }], maxTokens: 450 }, { purpose: 'command' });
+  assert.equal(out.text, '{"reply": "done with 1350"}', 'retried with three times the room');
+  run('DELETE FROM providers WHERE id = ?', id);
+  run('UPDATE providers SET enabled = 1');
+});
+
+test('command conversations are saved separately and each remembers its own history', async () => {
+  const { handleCommand, listThreads, newThread } = await import('../src/agent/commander.js');
+  const a = newThread();
+  const b = newThread();
+  cmdReplies = [JSON.stringify({ reply: 'Noted: Canva.' })];
+  await handleCommand('Mera focus Canva Pro par hai', { threadId: a });
+  cmdReplies = [JSON.stringify({ reply: 'Noted: Figma.' })];
+  await handleCommand('Mera focus Figma par hai', { threadId: b });
+  cmdReplies = [JSON.stringify({ reply: 'Canva Pro.' })];
+  await handleCommand('Mera focus kis par tha?', { threadId: a });
+  const asked = calls.filter((c) => /operations assistant/.test(c.body?.messages?.[0]?.content || '')).at(-1).body.messages.map((m) => m.content).join(' | ');
+  assert.match(asked, /Canva Pro par hai/, 'remembers this conversation');
+  assert.doesNotMatch(asked, /Figma par hai/, 'not another one');
+  const threads = listThreads();
+  const ta = threads.find((t) => t.id === a);
+  assert.equal(ta.title, 'Mera focus Canva Pro par hai', 'named after its first message');
+  assert.equal(ta.messages, 4);
+  assert.ok(threads.some((t) => t.kind === 'whatsapp'), 'WhatsApp self-chat commands have their own conversation');
 });

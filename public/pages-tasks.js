@@ -12,32 +12,57 @@ export function tasks() {
       h('button.btn.primary', { onclick: newTask }, 'New task')),
     box);
 
+  /** Where a task is, as one bar plus a sentence: what is happening and what comes next. */
+  function progressOf(t) {
+    if (t.kind === 'batch') {
+      const p = t.progress || {};
+      const toSend = p.sent + p.queued;
+      if (p.reading) {
+        return { step: 1, pct: p.reading.total ? (p.reading.done / p.reading.total) * 100 : 0, label: `Reading chats and writing messages: ${num(p.reading.done)} of ${num(p.reading.total)}` };
+      }
+      if (t.status === 'done') return { step: 3, pct: 100, label: t.last_result || `${num(p.sent)} sent` };
+      if (!toSend && p.drafts) return { step: 2, pct: 0, label: `${num(p.drafts)} message${p.drafts === 1 ? '' : 's'} written, waiting for your approval` };
+      return {
+        step: toSend ? 3 : 2,
+        pct: toSend ? (p.sent / toSend) * 100 : 0,
+        label: toSend ? `${num(p.sent)} of ${num(toSend)} sent${p.queued && t.status === 'active' && t.next_run_at ? ` · next ${t.next_run_at <= Date.now() + 30_000 ? 'now' : rel(t.next_run_at)}` : ''}` : 'Nothing to send',
+      };
+    }
+    const s = t.schedule || {};
+    if (t.status === 'done' || t.status === 'failed') return { pct: 100, label: `Ran ${num(t.runs)} time${t.runs === 1 ? '' : 's'}${t.last_run_at ? `, last ${rel(t.last_run_at)} ago` : ''}` };
+    if (t.status === 'paused') return { pct: 0, label: 'Paused' };
+    if (!t.next_run_at) return { pct: 100, label: 'Running now…' };
+    const period = s.type === 'every' ? s.minutes * 60_000 : s.type === 'daily' ? 86_400_000 : Math.max(1, t.next_run_at - t.created_at);
+    const left = t.next_run_at - Date.now();
+    return { pct: left <= 0 ? 100 : Math.max(0, Math.min(100, (1 - left / period) * 100)), label: left <= 30_000 ? 'Running now…' : `Next run ${rel(t.next_run_at)} (${new Date(t.next_run_at).toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' })})` };
+  }
+
   function card(t) {
     const [label, tone] = STATUS[t.status] || [t.status, ''];
     const ctl = (action, text, cls = '') => h(`button.btn.sm${cls}`, { onclick: (e) => (action !== 'remove' || confirm(`Remove "${t.title}"?${t.kind === 'batch' ? ' Messages it has not sent yet are cancelled.' : ''}`)) && act(e.target, () => PATCH(`/api/tasks/${t.id}`, { action })) }, text);
+    const pr = progressOf(t);
     const p = t.progress;
-    const total = p ? p.sent + p.queued + p.drafts + p.skipped + p.failed : 0;
-    return h('div.card', {},
-      h('header', {}, h('div.row.wrap', { style: 'gap:8px' }, h('b', { style: 'color:var(--ink);font-size:14.5px' }, t.title), h(`span.pill.${tone}`, {}, t.status === 'active' ? h('i.dia.hot.live') : null, label)),
+    const steps = t.kind === 'batch' ? h('div.tsteps', {}, ['Read chats', 'Write messages', 'Send'].map((name, i) => h(`span${pr.step > i + 1 || t.status === 'done' ? '.done' : pr.step === i + 1 ? '.now' : ''}`, {}, h('i.dia'), name))) : null;
+    return h(`div.card.task.${t.status}`, {},
+      h('div.task-top', {},
+        h('div.grow', {},
+          h('div.row.wrap', { style: 'gap:8px' }, h('b.task-title', { dir: 'auto' }, t.title), h(`span.pill.${tone}`, {}, t.status === 'active' ? h('i.dia.hot.live') : null, label)),
+          h('div.muted', { style: 'font-size:12.5px;margin-top:2px' }, t.kind === 'batch' ? `Follow-up batch · started ${rel(t.created_at)} ago` : t.scheduleText)),
         h('div.row', {},
           t.status === 'active' ? ctl('pause', 'Pause') : null,
           t.status === 'paused' ? ctl('resume', 'Resume', '.primary') : null,
-          t.kind === 'scheduled' && t.status !== 'done' ? ctl('run', 'Run now') : null,
-          t.kind === 'scheduled' && t.status === 'done' ? ctl('run', 'Run again') : null,
+          t.kind === 'scheduled' ? ctl('run', t.status === 'done' || t.status === 'failed' ? 'Run again' : 'Run now') : null,
           ctl('remove', 'Remove', '.ghost.danger'))),
-      h('div.pad.stack', {},
-        t.waiting ? h('div.note.warn', {}, h('b', {}, 'Not sending right now. '), t.waiting) : null,
-        h('div.muted', { dir: 'auto' }, t.instruction),
-        h('div.grid3', {},
-          h('div.kv', {}, 'Schedule', h('b', {}, t.scheduleText)),
-          h('div.kv', {}, t.kind === 'batch' ? 'Next message' : 'Next run', h('b', {}, t.status === 'active' ? when(t.next_run_at) : t.status === 'paused' ? 'Paused' : '—')),
-          h('div.kv', {}, t.kind === 'batch' ? 'Started' : 'Runs so far', h('b', {}, t.kind === 'batch' ? when(t.created_at) : `${num(t.runs)}${t.last_run_at ? `, last ${rel(t.last_run_at)}` : ''}`))),
-        p ? h('div.stack', { style: 'gap:6px' },
-          p.reading ? h('div', {}, h('div.kv', {}, 'Reading chats', h('b', {}, `${num(p.reading.done)} of ${num(p.reading.total)}`)), h('div.bar', {}, h('i', { style: `width:${p.reading.total ? (p.reading.done / p.reading.total) * 100 : 0}%` }))) : null,
-          total ? h('div', {}, h('div.kv', {}, 'Messages', h('b', {}, `${num(p.sent)} sent of ${num(total - p.skipped - p.failed)}`)), h('div.bar', {}, h('i', { style: `width:${total ? (p.sent / Math.max(1, total - p.skipped - p.failed)) * 100 : 0}%` }))) : null,
-          h('div.muted', { style: 'font-size:12.5px' }, [`${num(p.queued)} queued`, p.drafts ? `${num(p.drafts)} waiting for your approval` : null, p.skipped ? `${num(p.skipped)} skipped` : null, p.failed ? `${num(p.failed)} failed` : null].filter(Boolean).join(' · '),
-            p.drafts ? h('a', { href: '#/followups', style: 'margin-left:8px' }, 'Review drafts') : null)) : null,
-        t.last_result ? h('div', {}, h('div.muted', { style: 'font-size:12px' }, 'Last result'), h('div', { dir: 'auto', style: 'color:var(--ink);white-space:pre-wrap' }, t.last_result)) : null));
+      steps,
+      h('div.task-bar', {}, h(`div.bar.big${t.status === 'paused' ? '.paused' : ''}`, {}, h('i', { style: `width:${Math.round(pr.pct)}%` })), h('div.row', { style: 'justify-content:space-between;margin-top:6px' }, h('span', { dir: 'auto' }, pr.label), h('b', {}, `${Math.round(pr.pct)}%`))),
+      t.waiting ? h('div.note.warn', { style: 'margin:0 18px 14px' }, h('b', {}, 'Not sending right now. '), t.waiting) : null,
+      p && (p.drafts || p.skipped || p.failed) ? h('div.muted', { style: 'font-size:12.5px;padding:0 18px 12px' }, [p.drafts ? `${num(p.drafts)} waiting for approval` : null, p.skipped ? `${num(p.skipped)} skipped` : null, p.failed ? `${num(p.failed)} failed` : null].filter(Boolean).join(' · '),
+        p.drafts ? h('a', { href: '#/followups', style: 'margin-left:8px' }, 'Review drafts') : null) : null,
+      h('details.task-more', {}, h('summary', {}, 'Details'),
+        h('div.stack', { style: 'gap:8px;padding-top:8px' },
+          h('div', { dir: 'auto' }, h('span.muted', {}, 'Task: '), t.instruction),
+          t.kind === 'scheduled' ? h('div', {}, h('span.muted', {}, 'Runs so far: '), `${num(t.runs)}${t.last_run_at ? `, last ${rel(t.last_run_at)} ago` : ''}`) : null,
+          t.last_result ? h('div', { dir: 'auto', style: 'white-space:pre-wrap' }, h('span.muted', {}, 'Last result: '), t.last_result) : null)));
   }
 
   function draw(list) {

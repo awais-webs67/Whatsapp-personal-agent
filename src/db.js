@@ -125,6 +125,14 @@ CREATE TABLE IF NOT EXISTS tasks (
   created_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS command_threads (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'chat',  -- chat | whatsapp | tasks
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS commands (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   role TEXT NOT NULL,               -- owner | agent
@@ -134,7 +142,7 @@ CREATE TABLE IF NOT EXISTS commands (
 );
 `);
 // Additive migrations for databases created by earlier versions.
-for (const sql of ['ALTER TABLE accounts ADD COLUMN self_jid TEXT', "ALTER TABLE providers ADD COLUMN use_for TEXT NOT NULL DEFAULT 'all'", 'ALTER TABLE followups ADD COLUMN task_id INTEGER', 'ALTER TABLE tasks ADD COLUMN ignore_quiet INTEGER NOT NULL DEFAULT 0']) {
+for (const sql of ['ALTER TABLE accounts ADD COLUMN self_jid TEXT', "ALTER TABLE providers ADD COLUMN use_for TEXT NOT NULL DEFAULT 'all'", 'ALTER TABLE followups ADD COLUMN task_id INTEGER', 'ALTER TABLE tasks ADD COLUMN ignore_quiet INTEGER NOT NULL DEFAULT 0', 'ALTER TABLE commands ADD COLUMN thread_id INTEGER']) {
   try { db.exec(sql); } catch { /* column already exists */ }
 }
 

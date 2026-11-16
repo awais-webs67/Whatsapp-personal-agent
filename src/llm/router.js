@@ -95,12 +95,15 @@ export async function callProvider(row, req, { purpose = 'reply' } = {}) {
   const timeoutMs = (live ? s.timeoutSec : Math.max(s.timeoutSec, 90)) * 1000;
   const maxTokens = outputBudget(row.model, req.maxTokens, purpose, s.maxTokens);
   await waitForBudget(row, { ...req, maxTokens }, live ? 30_000 : 65_000);
-  const once = (r) => chat(hydrate(r), { timeoutMs, fast: purpose === 'reply', ...req, maxTokens: outputBudget(r.model, req.maxTokens, purpose, s.maxTokens) });
+  let room = 1; // grows when the model runs out of tokens
+  const once = (r) => chat(hydrate(r), { timeoutMs, fast: purpose === 'reply', ...req, maxTokens: Math.min(8192, outputBudget(r.model, req.maxTokens, purpose, s.maxTokens) * room) });
   // Small models now and then return an empty answer; a second sample almost always works.
   const call = async (r) => {
     for (let attempt = 0; ; attempt++) {
       try { return await once(r); } catch (e) {
-        if (attempt >= 2 || !(e instanceof LLMError) || e.kind !== 'empty' || /ran out of tokens/.test(e.message)) throw e;
+        if (attempt >= 2 || !(e instanceof LLMError) || e.kind !== 'empty') throw e;
+        // Cut off mid-answer: try again with more room (thinking models in particular need it).
+        if (/ran out of tokens/.test(e.message)) room *= 3;
       }
     }
   };
@@ -214,8 +217,11 @@ async function completeOnce(req, purpose) {
   }
   const why = { rate_limited: 'rate limited', quota_exhausted: 'quota used up', invalid_key: 'API key rejected', daily_limit: 'daily cap reached', provider_down: 'provider down', unreachable: 'not reachable from this server', cooldown: 'cooling down', model_missing: 'model not found (pick another on the Models page)' };
   const detail = hops.map((h) => `${h.provider}: ${h.skipped ? why[h.skipped] || h.skipped : h.message || h.error}`).join('; ');
-  const weak = hops.some((h) => h.error === 'empty' || h.error === 'bad_request');
-  const tip = weak && purpose !== 'reply'
+  const weak = hops.some((h) => (h.error === 'empty' && !/ran out of tokens/.test(h.message || '')) || h.error === 'bad_request');
+  const cut = hops.some((h) => /ran out of tokens/.test(h.message || ''));
+  const tip = cut
+    ? ' Even with extra room the model did not finish. Pick a non-thinking model for commands, or raise "Max tokens per reply" in Settings.'
+    : weak && purpose !== 'reply'
     ? ' The model gave an unusable answer. Small models (8B) struggle with multi-step commands: add a larger model and set "Use this model for" to "Commands, learning and reviews only" on the Models page.'
     : chain.filter((r) => r.enabled).length < 2 ? ' Add a second model from another provider so one can cover when the other fails.' : '';
   throw new LLMError('quota', `No model could answer. ${detail}.${tip}`);

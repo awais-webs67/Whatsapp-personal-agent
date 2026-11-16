@@ -292,3 +292,31 @@ label.f { align-content: start; }
 .msg, textarea, .chatrow p { unicode-bidi: plaintext; }
 .msg:dir(rtl), textarea:dir(rtl), .chatrow p:dir(rtl) { font-family: "Noto Nastaliq Urdu", "Jameel Noori Nastaleeq", var(--sans); line-height: 2.1; }
 .msg:dir(rtl) small { direction: ltr; text-align: right; font-family: var(--sans); line-height: 1.5; }
+/* Command: conversations on the left, the open one on the right */
+.inbox.cmd { grid-template-columns: 300px minmax(0, 1fr); }
+.inbox.cmd .list-head h1 { font: 400 30px/1 var(--display); color: var(--ink); }
+.inbox.cmd .chatrow .tags { visibility: hidden; }
+.inbox.cmd .chatrow:hover .tags, .inbox.cmd .chatrow.on .tags, .inbox.cmd .chatrow:focus-within .tags { visibility: visible; }
+@media (max-width: 1100px) { .inbox.cmd { grid-template-columns: 260px minmax(0, 1fr); } }
+@media (max-width: 760px) { .inbox.cmd { grid-template-columns: minmax(0, 1fr); } }
+/* Tasks */
+.task-top { display: flex; gap: 14px; align-items: flex-start; padding: 16px 18px 10px; flex-wrap: wrap; }
+.task-title { color: var(--ink); font-size: 15px; }
+.task-bar { padding: 4px 18px 14px; font-size: 13px; color: var(--slate); }
+.task-bar b { color: var(--ink); font-variant-numeric: tabular-nums; }
+.bar.big { height: 10px; border-radius: 2px; }
+.bar.big i { background: var(--orange); }
+.task.done .bar.big i { background: var(--success); }
+.task.failed .bar.big i { background: var(--danger); }
+.bar.big.paused i { background: var(--line-strong); }
+.tsteps { display: flex; gap: 18px; padding: 0 18px 10px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+.tsteps span { display: inline-flex; align-items: center; gap: 6px; }
+.tsteps .now { color: var(--orange-text); font-weight: 600; } .tsteps .now .dia { background: var(--orange); }
+.tsteps .done { color: var(--success); } .tsteps .done .dia { background: var(--success); }
+.task-more { border-top: 1px solid var(--line); padding: 10px 18px; font-size: 13px; }
+.task-more summary { cursor: pointer; color: var(--slate); font-weight: 600; font-size: 12.5px; }
+.task-top > .grow { min-width: min(100%, 260px); }
+@media (max-width: 760px) {
+  .inbox.cmd .thread-head .muted { display: none; }
+  .task-top > .row { width: 100%; }
+}

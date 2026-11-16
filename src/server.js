@@ -16,7 +16,7 @@ import { startPipeline, onOwner, eligibility } from './agent/pipeline.js';
 import { startFollowups, runCampaign, campaign, whyNotSending } from './agent/followups.js';
 import { learnFromChats, learnFromWebsite, learnFromProfile, learning } from './agent/learn.js';
 import { importKnowledgeFiles } from './agent/knowledge-files.js';
-import { handleCommand, startCommander } from './agent/commander.js';
+import { handleCommand, startCommander, listThreads, newThread } from './agent/commander.js';
 import { listTasks, createTask, controlTask, startTasks } from './agent/tasks.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -355,13 +355,27 @@ app.post('/api/tasks', wrap((req) => ({ id: createTask({ kind: 'scheduled', titl
 app.patch('/api/tasks/:id', wrap((req) => controlTask(Number(req.params.id), String(req.body.action || ''))));
 
 // ---------- owner commands ----------
-app.get('/api/commands', wrap(() => all('SELECT * FROM (SELECT * FROM commands ORDER BY id DESC LIMIT 100) ORDER BY id').map((c) => ({ ...c, steps: parse(c.steps, []) }))));
+app.get('/api/commands/threads', wrap(() => listThreads()));
+app.post('/api/commands/threads', wrap(() => ({ id: newThread() })));
+app.patch('/api/commands/threads/:id', wrap((req) => {
+  const title = String(req.body.title || '').trim().slice(0, 80);
+  if (!title) throw bad('Give the chat a name');
+  run('UPDATE command_threads SET title = ? WHERE id = ?', title, Number(req.params.id));
+  return { ok: true };
+}));
+app.delete('/api/commands/threads/:id', wrap((req) => {
+  run('DELETE FROM commands WHERE thread_id = ?', Number(req.params.id));
+  run('DELETE FROM command_threads WHERE id = ?', Number(req.params.id));
+  return { ok: true };
+}));
+app.get('/api/commands', wrap((req) => all('SELECT * FROM (SELECT * FROM commands WHERE thread_id = ? ORDER BY id DESC LIMIT 300) ORDER BY id', Number(req.query.thread) || 0).map((c) => ({ ...c, steps: parse(c.steps, []) }))));
 app.post('/api/commands', wrap(async (req) => {
   const text = String(req.body.text || '').trim();
   if (!text) throw bad('Write a command first');
-  return handleCommand(text.slice(0, 2000));
+  const thread = Number(req.body.thread) || null;
+  if (thread && !get('SELECT 1 x FROM command_threads WHERE id = ?', thread)) throw bad('That chat was deleted', 404);
+  return handleCommand(text.slice(0, 2000), { threadId: thread });
 }));
-app.delete('/api/commands', wrap(() => { run('DELETE FROM commands'); return { ok: true }; }));
 app.post('/api/learn', wrap((req) => learnFromChats({ accountId: req.body.accountId ? Number(req.body.accountId) : null, maxChats: Math.min(1000, Math.max(1, Number(req.body.maxChats) || 150)) })));
 app.put('/api/settings', wrap((req) => {
   const s = saveSettings(req.body || {});
