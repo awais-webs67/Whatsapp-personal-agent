@@ -4,6 +4,7 @@ import { all, get, run, now, update } from '../db.js';
 import { getSettings, log, emit, sleep, rand, hourIn, isQuiet } from '../core.js';
 import * as wa from '../wa/manager.js';
 import { decide, CLOSED } from './brain.js';
+import { learnFromChats } from './learn.js';
 import { eligibility, humanSend, scheduleNextFollowup } from './pipeline.js';
 
 const nextSlot = new Map(); // accountId -> earliest time the next proactive message may go out
@@ -128,10 +129,15 @@ export function whyNotSending(taskId = null) {
   return next > now() ? null : null;
 }
 
-export async function runCampaign({ accountId = null, sinceDays = 90, limit = 200, reanalyze = false, instruction = '', autoApprove = false, intervalMinutes = 0, stages = null, taskId = null } = {}) {
-  if (campaign.running) throw new Error('A review is already running');
+export async function runCampaign({ accountId = null, sinceDays = 90, limit = 200, reanalyze = false, instruction = '', autoApprove = false, intervalMinutes = 0, stages = null, taskId = null, analyzeOnly = false } = {}) {
+  if (campaign.running) throw new Error('Another batch is still reading chats. Wait for it to finish, or remove it on the Tasks page.');
   const since = now() - sinceDays * 86_400_000;
-  const chats = all(`SELECT c.* FROM chats c
+  // Analysis reads every customer chat in the period (buyers included); it sends nothing.
+  const chats = analyzeOnly ? all(`SELECT c.* FROM chats c
+      WHERE (?1 IS NULL OR c.account_id = ?1) AND c.last_in_at >= ?2
+        AND c.jid != COALESCE((SELECT a.self_jid FROM accounts a WHERE a.id = c.account_id), '')
+        AND (SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.id AND m.from_me = 0) >= 1
+      ORDER BY c.last_in_at DESC LIMIT ?3`, accountId, since, limit) : all(`SELECT c.* FROM chats c
       WHERE (?1 IS NULL OR c.account_id = ?1) AND c.last_in_at >= ?2 AND c.stage != 'opted_out'
         AND (?5 != '' OR c.stage != 'purchased') AND (?5 = '' OR instr(?5, ',' || c.stage || ',') > 0)
         AND c.jid != COALESCE((SELECT a.self_jid FROM accounts a WHERE a.id = c.account_id), '')
@@ -142,7 +148,7 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
       ORDER BY c.last_in_at DESC LIMIT ?4`, accountId, since, reanalyze || instruction ? 1 : 0, limit, stages?.length ? `,${stages.join(',')},` : '');
   const gap = Math.max(0, Number(intervalMinutes) || 0) * 60_000;
   let nextDue = now();
-  Object.assign(campaign, { taskId, running: true, total: chats.length, done: 0, drafted: 0, skipped: 0, skipReasons: [], failed: 0, cancel: false, startedAt: now(), error: null });
+  Object.assign(campaign, { taskId, analyzeOnly, stages: {}, running: true, total: chats.length, done: 0, drafted: 0, skipped: 0, skipReasons: [], failed: 0, cancel: false, startedAt: now(), error: null });
   emit('campaign', campaign);
   log('info', 'campaign', `Reviewing ${chats.length} past conversations`);
   (async () => {
@@ -151,6 +157,8 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
       try {
         const d = await decide(chat.id, 'analyze', { instruction });
         update('chats', chat.id, { stage: d.stage, summary: d.summary, analyzed_at: now() }, ['stage', 'summary', 'analyzed_at']);
+        campaign.stages[d.stage] = (campaign.stages[d.stage] || 0) + 1;
+        if (analyzeOnly) { campaign.done++; emit('campaign', campaign); if (taskId) emit('tasks'); await sleep(rand(300, 800)); continue; }
         if (d.skip) { campaign.skipped++; if (d.reason && campaign.skipReasons.length < 3) campaign.skipReasons.push(`${chat.name || chat.phone || 'someone'}: ${d.reason}`); }
         if (!d.skip) {
           queue(chat.id, 'campaign', d.message, d.reason, autoApprove ? 'approved' : 'pending', nextDue, taskId);
@@ -169,7 +177,13 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
     }
     campaign.running = false;
     emit('campaign', campaign);
-    if (taskId) {
+    if (taskId && analyzeOnly) {
+      const mix = Object.entries(campaign.stages).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${n} ${k.replace('_', ' ')}`).join(', ');
+      let learned = '';
+      try { const l = await learnFromChats({}); learned = ` Now learning your offers, prices and tone from ${l.chats} conversations you answered yourself; the result appears on the Knowledge page.`; } catch (e) { learned = ` Could not learn from them: ${e.message}`; }
+      run('UPDATE tasks SET last_result = ? WHERE id = ?', `Read ${campaign.done} chat${campaign.done === 1 ? '' : 's'}${mix ? `: ${mix}` : ''}${campaign.failed ? `; ${campaign.failed} failed (${campaign.error})` : ''}.${learned}`.slice(0, 1000), taskId);
+      emit('tasks');
+    } else if (taskId) {
       const summary = `Read ${campaign.done} chat${campaign.done === 1 ? '' : 's'}: ${campaign.drafted} message${campaign.drafted === 1 ? '' : 's'} ${autoApprove ? 'queued' : 'drafted for approval'}, ${campaign.skipped} skipped${campaign.failed ? `, ${campaign.failed} failed (${campaign.error})` : ''}.${campaign.skipReasons.length ? ` Skipped for example: ${campaign.skipReasons.join(' | ')}` : ''}`;
       run('UPDATE tasks SET last_result = ? WHERE id = ?', summary.slice(0, 1000), taskId);
       emit('tasks');

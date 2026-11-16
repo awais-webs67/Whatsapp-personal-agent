@@ -9,6 +9,7 @@ import * as wa from '../wa/manager.js';
 import { STAGES, extractJson } from './brain.js';
 import { runCampaign, campaign, whyNotSending } from './followups.js';
 import { createTask, listTasks, taskView, controlTask, setTaskRunner, setCampaign } from './tasks.js';
+import { quickIntent, ASKS_PERMISSION } from './intent.js';
 import { humanSend } from './pipeline.js';
 import { learnFromChats, learnFromWebsite, learnFromProfile } from './learn.js';
 
@@ -99,6 +100,15 @@ const TOOLS = {
   pause_task: { doc: 'pause_task {"id": 3}', run: ({ id }) => ({ status: controlTask(id, 'pause').status }) },
   resume_task: { doc: 'resume_task {"id": 3}', run: ({ id }) => ({ status: controlTask(id, 'resume').status }) },
   remove_task: { doc: 'remove_task {"id": 3} - stop it and cancel its queued messages.', run: ({ id }) => ({ status: controlTask(id, 'remove').status }) },
+  analyse_chats: {
+    doc: 'analyse_chats {"days": 90} - read every customer chat of the period in full, record each one\'s stage and summary, then learn the owner\'s offers, prices and tone from them. Sends nothing.',
+    run: async (a) => {
+      const taskId = createTask({ kind: 'analysis', title: `Read and learn from chats (last ${days(a.days, 90)} days)`, instruction: 'Read every customer chat, record its stage and summary, then learn offers, prices and tone from the chats the owner answered.' });
+      await runCampaign({ taskId, analyzeOnly: true, sinceDays: days(a.days, 90), limit: Math.min(1000, Number(a.limit) || 300) });
+      if (!campaign.total) run("UPDATE tasks SET status = 'removed' WHERE id = ?", taskId);
+      return campaign.total ? { started: true, task_id: taskId, chats_being_read: campaign.total } : { started: false, reason: 'no customer chats are stored for that period yet. Link a WhatsApp number and let its history sync' };
+    },
+  },
   stop_followups: {
     doc: 'stop_followups {} - stop the running batch and cancel everything queued to send.',
     run: () => {
@@ -174,7 +184,7 @@ Reply with ONLY one JSON object each turn, as plain text (no function-calling sy
 You get the result back and can then take another action or reply. At most ${MAX_STEPS} actions per request.
 
 ## Rules
-- Before a batch that sends automatically ("send": true), take count_targets and tell the owner how many people it reaches, what the message is about and the interval, then wait for their yes. Skip the question only when the owner's message already said to send without asking, or is itself the yes to your earlier question.
+- The owner's message is the go-ahead. Never ask "should I?", "kya main kar dun?" or for confirmation: take the action in the same turn, using sensible defaults for anything not said (last 7 days, one message every 5 minutes, "send": true). Ask a question only when you truly cannot act, for example a time is missing for a daily task or a named customer cannot be found.
 - Never promise the owner something an action result did not confirm. Report what the tool result says, including limits.
 - Batches skip people who bought or opted out unless the owner asks for a stage by name; people who asked not to be contacted are never messaged.
 - "Every N minutes" means interval_minutes N. Only use the actions listed above.
@@ -200,6 +210,7 @@ function facts(steps) {
         out.push(`📋 Task #${r.task_id} started: reading ${r.chats_being_read} chat${r.chats_being_read === 1 ? '' : 's'}, one message every ${r.interval_minutes} min, ${r.mode}. Progress is on the Tasks page.${why ? `\n⚠️ Not sending yet: ${why}` : ''}`);
       }
     }
+    if (s.action === 'analyse_chats') out.push(r.started ? `📋 Task #${r.task_id} started: reading ${r.chats_being_read} chat${r.chats_being_read === 1 ? '' : 's'} in full, then learning from them. Progress is on the Tasks page.` : `⚠️ Nothing started: ${r.reason}.`);
     if (s.action === 'schedule_task') out.push(`⏰ Task #${r.task_id}: ${r.schedule}${r.first_run ? `, first run ${new Date(r.first_run).toLocaleString('en-GB', { timeZone: getSettings().followup.timezone, dateStyle: 'medium', timeStyle: 'short' })}` : ''}.`);
     if (s.action === 'send_message' && r.sent_to) out.push(`✉️ Sent to ${r.sent_to}.`);
     if (['pause_task', 'resume_task', 'remove_task'].includes(s.action)) out.push(`Task #${s.args.id}: ${r.status}.`);
@@ -211,6 +222,16 @@ function facts(steps) {
 const withFacts = (reply, steps) => [reply, ...facts(steps)].filter(Boolean).join('\n');
 
 export async function runCommand(text, history = [], { scheduled = false } = {}) {
+  // Orders the app understands by itself run straight away: no model, no "should I?".
+  const quick = quickIntent(text, { scheduled });
+  if (quick && TOOLS[quick.action]) {
+    let result;
+    try { result = await TOOLS[quick.action].run(quick.args); } catch (e) { result = { error: e.message }; }
+    log('info', 'command', `${quick.action} ${JSON.stringify(quick.args).slice(0, 200)}`);
+    const steps = [{ action: quick.action, args: quick.args, result }];
+    const ok = !result?.error && result?.started !== false;
+    return { reply: withFacts(ok ? 'Theek hai, shuru kar diya.' : 'Yeh shuru nahi ho saka.', steps), steps };
+  }
   const messages = [...history, { role: 'user', content: text }];
   const steps = [];
   let corrections = 0;
@@ -231,6 +252,13 @@ export async function runCommand(text, history = [], { scheduled = false } = {})
       return { reply: 'The model kept answering in a form I could not use. Try again, or give Commands a larger model on the Models page.', steps };
     }
     if (!obj.action) {
+      // The owner already gave the order; asking "should I?" again is not an answer.
+      if (!steps.length && ACTION_ASK.test(text) && ASKS_PERMISSION.test(obj.reply) && corrections++ < 3) {
+        messages.push({ role: 'assistant', content: JSON.stringify({ reply: obj.reply }) });
+        messages.push({ role: 'user', content: 'Yes. I already told you to do it; do not ask again. Take the action now with sensible defaults (last 7 days, every 5 minutes, send true).' });
+        i--;
+        continue;
+      }
       // Small models like to say "OK, I'm on it" without doing anything. Do not let that through.
       if (!steps.length && ACTION_ASK.test(text) && CLAIMS_WORK.test(obj.reply) && corrections++ < 3) {
         messages.push({ role: 'assistant', content: JSON.stringify({ reply: obj.reply }) });

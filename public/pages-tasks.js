@@ -14,6 +14,11 @@ export function tasks() {
 
   /** Where a task is, as one bar plus a sentence: what is happening and what comes next. */
   function progressOf(t) {
+    if (t.kind === 'analysis') {
+      const r = t.progress?.reading;
+      if (r) return { step: 1, pct: r.total ? (r.done / r.total) * 100 : 0, label: `Reading chats in full: ${num(r.done)} of ${num(r.total)}` };
+      return { step: t.status === 'done' ? 3 : 2, pct: 100, label: t.status === 'done' ? 'Finished. See Details for what it found.' : 'Learning from the chats…' };
+    }
     if (t.kind === 'batch') {
       const p = t.progress || {};
       const toSend = p.sent + p.queued;
@@ -42,12 +47,12 @@ export function tasks() {
     const ctl = (action, text, cls = '') => h(`button.btn.sm${cls}`, { onclick: (e) => (action !== 'remove' || confirm(`Remove "${t.title}"?${t.kind === 'batch' ? ' Messages it has not sent yet are cancelled.' : ''}`)) && act(e.target, () => PATCH(`/api/tasks/${t.id}`, { action })) }, text);
     const pr = progressOf(t);
     const p = t.progress;
-    const steps = t.kind === 'batch' ? h('div.tsteps', {}, ['Read chats', 'Write messages', 'Send'].map((name, i) => h(`span${pr.step > i + 1 || t.status === 'done' ? '.done' : pr.step === i + 1 ? '.now' : ''}`, {}, h('i.dia'), name))) : null;
+    const steps = t.kind !== 'scheduled' ? h('div.tsteps', {}, (t.kind === 'analysis' ? ['Read chats', 'Learn from them'] : ['Read chats', 'Write messages', 'Send']).map((name, i) => h(`span${pr.step > i + 1 || t.status === 'done' ? '.done' : pr.step === i + 1 ? '.now' : ''}`, {}, h('i.dia'), name))) : null;
     return h(`div.card.task.${t.status}`, {},
       h('div.task-top', {},
         h('div.grow', {},
           h('div.row.wrap', { style: 'gap:8px' }, h('b.task-title', { dir: 'auto' }, t.title), h(`span.pill.${tone}`, {}, t.status === 'active' ? h('i.dia.hot.live') : null, label)),
-          h('div.muted', { style: 'font-size:12.5px;margin-top:2px' }, t.kind === 'batch' ? `Follow-up batch · started ${rel(t.created_at)} ago` : t.scheduleText)),
+          h('div.muted', { style: 'font-size:12.5px;margin-top:2px' }, t.kind === 'scheduled' ? t.scheduleText : `${t.scheduleText} · started ${rel(t.created_at)} ago`)),
         h('div.row', {},
           t.status === 'active' ? ctl('pause', 'Pause') : null,
           t.status === 'paused' ? ctl('resume', 'Resume', '.primary') : null,

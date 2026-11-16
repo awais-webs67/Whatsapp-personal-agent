@@ -531,7 +531,7 @@ test('tasks: schedule times', async () => {
 test('"OK, I am on it" without doing anything is not accepted', async () => {
   const { runCommand } = await import('../src/agent/commander.js');
   cmdReplies = [JSON.stringify({ reply: 'Ok, main kaam kar raha hun.' }), JSON.stringify({ reply: 'Theek hai, ho gaya.' }), JSON.stringify({ reply: 'Ok ji.' }), JSON.stringify({ reply: 'Kar raha hun.' })];
-  const out = await runCommand('pichle 5 din walon ko follow up bhejo');
+  const out = await runCommand('Ali ko offer wala message bhejo');
   assert.equal(out.steps.length, 0);
   assert.match(out.reply, /^I could not start this, so nothing was sent/);
   cmdReplies = [JSON.stringify({ reply: 'Pichle hafte 12 log aaye.' })];
@@ -585,4 +585,68 @@ test('command conversations are saved separately and each remembers its own hist
   assert.equal(ta.title, 'Mera focus Canva Pro par hai', 'named after its first message');
   assert.equal(ta.messages, 4);
   assert.ok(threads.some((t) => t.kind === 'whatsapp'), 'WhatsApp self-chat commands have their own conversation');
+});
+
+test('orders are understood directly: days, interval, night, one person, questions', async () => {
+  const { quickIntent, parseClock } = await import('../src/agent/intent.js');
+  const a = quickIntent('Pichle 5 din ki chats check karo, jin logon ne purchase nahi kiya unhein har 10 minute baad follow-up bhejo');
+  assert.equal(a.action, 'start_followups');
+  assert.deepEqual([a.args.days, a.args.interval_minutes, a.args.send, a.args.ignore_quiet_hours], [5, 10, true, false]);
+  const b = quickIntent('sab customers ko reminder bhjo raat ko bhi, pichle 2 hafte');
+  assert.deepEqual([b.action, b.args.days, b.args.ignore_quiet_hours], ['start_followups', 14, true]);
+  assert.equal(quickIntent('interested logon ko follow up bhejo').args.stages.join(), 'interested,negotiating');
+  assert.equal(quickIntent('Ali ko reminder bhejo'), null, 'one named person goes to the model, never to everyone');
+  assert.equal(quickIntent('923001234567 ko follow up bhejo'), null);
+  assert.equal(quickIntent('kitne follow-up bheje gaye?'), null, 'questions are not orders');
+  assert.equal(quickIntent('follow ups rok do').action, 'stop_followups');
+  assert.deepEqual(quickIntent('saari chats parho, analysis karo aur un se seekho'), { action: 'analyse_chats', args: { days: 90 } });
+  assert.deepEqual(quickIntent('roz raat 9 baje naye logon ko follow up bhejo').args.daily_at, '21:00');
+  assert.equal(quickIntent('roz raat 9 baje naye logon ko follow up bhejo', { scheduled: true }).action, 'start_followups', 'when the scheduled task runs, it sends instead of scheduling again');
+  assert.equal(parseClock('subah 10:30 baje'), '10:30');
+  assert.equal(parseClock('sham 6 baje'), '18:00');
+  assert.equal(parseClock('5 din'), null);
+});
+
+test('one order starts the work at once, without any model question', async () => {
+  const { runCommand } = await import('../src/agent/commander.js');
+  run("UPDATE followups SET status = 'skipped' WHERE status IN ('pending','approved')");
+  await until(() => !followups.campaign.running);
+  cmdReplies = [JSON.stringify({ reply: 'Kya main follow-up bhej dun?' })]; // would be the model's answer; it must never be asked
+  reply = JSON.stringify({ stage: 'interested', summary: 's', should_followup: true, message: 'Offer open hai.', reason: 'asked' });
+  const before = calls.length;
+  const out = await runCommand('pichle 30 din ke logon ko har 5 minute baad follow up bhejo');
+  assert.equal(out.steps[0].action, 'start_followups');
+  assert.match(out.reply, /^Theek hai, shuru kar diya\.\n📋 Task #\d+ started: reading \d+ chat/);
+  assert.equal(calls.slice(before).filter((c) => /operations assistant/.test(c.body?.messages?.[0]?.content || '')).length, 0, 'the command model was not consulted');
+  assert.equal(cmdReplies.length, 1);
+  cmdReplies = [];
+  await until(() => !followups.campaign.running);
+  run("UPDATE followups SET status = 'skipped' WHERE status IN ('pending','approved')");
+});
+
+test('a model that asks "should I?" is told the owner already said yes', async () => {
+  const { runCommand } = await import('../src/agent/commander.js');
+  cmdReplies = [JSON.stringify({ reply: 'Kya main Ali ko message bhej dun?' }), JSON.stringify({ action: 'remember', args: { text: 'Ali wants a callback' } }), JSON.stringify({ reply: 'Ho gaya.' })];
+  const out = await runCommand('Ali ko offer wala message bhejo');
+  assert.equal(out.steps.length, 1, 'acted after being told not to ask');
+  assert.match(JSON.stringify(calls.filter((c) => /operations assistant/.test(c.body?.messages?.[0]?.content || '')).at(-2).body.messages), /do not ask again/);
+});
+
+test('"read the chats and learn" runs as a task: every chat gets a stage and summary, then learning starts', async () => {
+  const { runCommand } = await import('../src/agent/commander.js');
+  const tasks = await import('../src/agent/tasks.js');
+  await until(() => !followups.campaign.running);
+  reply = JSON.stringify({ stage: 'negotiating', summary: 'Wants a discount on the website package', should_followup: false, message: '', reason: '' });
+  const n = sent.length;
+  const out = await runCommand('saari chats parho, analysis karo aur un se seekho');
+  assert.equal(out.steps[0].action, 'analyse_chats');
+  const id = out.steps[0].result.task_id;
+  await until(() => !followups.campaign.running, 8000);
+  await until(() => /^Read \d+ chats?/.test(tasks.listTasks().find((t) => t.id === id)?.last_result || ''), 8000);
+  const t = tasks.listTasks().find((x) => x.id === id);
+  assert.equal(t.kind, 'analysis');
+  assert.match(t.last_result, /negotiating/);
+  assert.equal(get("SELECT summary FROM chats WHERE jid = '444@s.whatsapp.net'").summary, 'Wants a discount on the website package');
+  assert.equal(sent.length, n, 'analysis sends nothing');
+  assert.equal(get("SELECT COUNT(*) n FROM followups WHERE task_id = ?", id).n, 0);
 });

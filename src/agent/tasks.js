@@ -55,9 +55,9 @@ export function describeSchedule(s) {
 export function createTask({ title, instruction, kind = 'scheduled', schedule = { type: 'once' }, ignoreQuiet = false }) {
   const text = String(instruction || '').trim();
   if (!text) throw new Error('Describe what the task should do');
-  const sched = kind === 'batch' ? null : normaliseSchedule(schedule);
+  const sched = kind !== 'scheduled' ? null : normaliseSchedule(schedule);
   const { lastInsertRowid } = run('INSERT INTO tasks (title, instruction, kind, schedule, status, next_run_at, runs, ignore_quiet, created_at) VALUES (?,?,?,?,?,?,?,?,?)',
-    String(title || text).slice(0, 120), text.slice(0, 1000), kind, JSON.stringify(sched), 'active', kind === 'batch' ? null : nextRun(sched), 0, ignoreQuiet ? 1 : 0, now());
+    String(title || text).slice(0, 120), text.slice(0, 1000), kind, JSON.stringify(sched), 'active', kind !== 'scheduled' ? null : nextRun(sched), 0, ignoreQuiet ? 1 : 0, now());
   const id = Number(lastInsertRowid);
   log('info', 'tasks', `Task #${id} created: ${String(title || text).slice(0, 80)}${sched ? ` (${describeSchedule(sched)})` : ''}`);
   emit('tasks');
@@ -80,8 +80,8 @@ export function normaliseSchedule(s = {}) {
 /** Task with live progress for the dashboard. */
 export function taskView(t) {
   const schedule = parse(t.schedule, null);
-  const view = { ...t, schedule, scheduleText: t.kind === 'batch' ? 'Follow-up batch' : describeSchedule(schedule) };
-  if (t.kind === 'batch') {
+  const view = { ...t, schedule, scheduleText: t.kind === 'batch' ? 'Follow-up batch' : t.kind === 'analysis' ? 'Reading and learning from chats' : describeSchedule(schedule) };
+  if (t.kind !== 'scheduled') {
     const counts = Object.fromEntries(all('SELECT status, COUNT(*) n FROM followups WHERE task_id = ? GROUP BY status', t.id).map((r) => [r.status, r.n]));
     const reading = campaignRef?.taskId === t.id && campaignRef.running ? { done: campaignRef.done, total: campaignRef.total } : null;
     const nextDue = get("SELECT MIN(due_at) d FROM followups WHERE task_id = ? AND status = 'approved'", t.id).d;
@@ -102,10 +102,10 @@ export function controlTask(id, action) {
   } else if (action === 'resume') {
     if (t.status !== 'paused') throw new Error('Only a paused task can be resumed');
     const sched = parse(t.schedule, null);
-    const next = t.kind === 'batch' ? null : t.next_run_at && t.next_run_at > now() ? t.next_run_at : (sched?.type === 'once' ? now() : nextRun(sched));
+    const next = t.kind !== 'scheduled' ? null : t.next_run_at && t.next_run_at > now() ? t.next_run_at : (sched?.type === 'once' ? now() : nextRun(sched));
     update('tasks', t.id, { status: 'active', next_run_at: next }, ['status', 'next_run_at']);
   } else if (action === 'run') {
-    if (t.kind === 'batch') throw new Error('A follow-up batch already runs on its own schedule');
+    if (t.kind !== 'scheduled') throw new Error('This task already runs on its own');
     update('tasks', t.id, { status: 'active', next_run_at: now() }, ['status', 'next_run_at']);
   } else if (action === 'remove') {
     update('tasks', t.id, { status: 'removed', next_run_at: null }, ['status', 'next_run_at']);
@@ -124,12 +124,13 @@ async function tick() {
   ticking = true;
   try {
     // Batches finish once nothing is left to read, approve or send.
-    for (const t of all("SELECT * FROM tasks WHERE kind = 'batch' AND status = 'active'")) {
+    for (const t of all("SELECT * FROM tasks WHERE kind != 'scheduled' AND status = 'active'")) {
       const open = get("SELECT COUNT(*) n FROM followups WHERE task_id = ? AND status IN ('pending','approved')", t.id).n;
       const reading = campaignRef?.taskId === t.id && campaignRef.running;
       if (!open && !reading && now() - t.created_at > 5000) {
         const sent = get("SELECT COUNT(*) n FROM followups WHERE task_id = ? AND status = 'sent'", t.id).n;
-        update('tasks', t.id, { status: 'done', last_result: `${sent} message${sent === 1 ? '' : 's'} sent`, last_run_at: now() }, ['status', 'last_result', 'last_run_at']);
+        const result = t.kind === 'analysis' ? t.last_result || 'Finished' : `${t.last_result ? `${t.last_result} ` : ''}${sent} message${sent === 1 ? '' : 's'} sent.`;
+        update('tasks', t.id, { status: 'done', last_result: result.slice(0, 1000), last_run_at: now() }, ['status', 'last_result', 'last_run_at']);
         emit('tasks');
       }
     }
