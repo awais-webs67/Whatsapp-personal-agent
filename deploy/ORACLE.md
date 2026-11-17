@@ -29,6 +29,9 @@ Instance page → **Subnet** → **Security Lists** → the default list → **A
 In your DNS (Hostinger → Domains → DNS), add an **A record**:
 - Name: `agent` (gives `agent.yourdomain.com`), Points to: the server's public IP.
 
+No domain? Use the free name `sslip.io` gives every IP: for `132.145.104.34` that is `132-145-104-34.sslip.io`.
+Pass it to the setup script instead of a domain and you still get HTTPS. No DNS record needed.
+
 ## 5. Log in and install
 On Windows, open PowerShell; on Mac/Linux, a terminal:
 
