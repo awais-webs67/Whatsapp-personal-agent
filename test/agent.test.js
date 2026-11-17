@@ -25,6 +25,7 @@ let cmdReplies = [];
 let flakyCount = 0;
 let tpmCount = 0;
 let busyCount = 0;
+let flakyBatch = 0;
 const budget = { left: 3000, resetAt: 0 }; // scripted answers for the owner-command prompt
 let reply = JSON.stringify({ messages: ['Hi! The price is 2500.', 'Want me to book it?'], stage: 'interested', summary: 'Asked price', handoff: false });
 const server = http.createServer((req, res) => {
@@ -40,6 +41,7 @@ const server = http.createServer((req, res) => {
     if (key === 'batchonly' && /:batch$/.test(body && JSON.parse(body).model)) return send(404, { error: { message: `${JSON.parse(body).model} cannot be used with the chat/completions endpoint (adapter DeepInfraBatchAdapter).`, code: 404 } });
     if (key === 'busy' && (busyCount = (busyCount || 0) + 1) <= 2) return send(429, { error: { message: 'Provider returned error', code: 429, metadata: { raw: 'rate-limited upstream' } } }, { 'retry-after': '1' });
     if (key === 'orfree' && req.url.endsWith('/models')) return send(200, { data: [{ id: 'meta/llama-3.3-70b:free', context_length: 131072, pricing: { prompt: '0', completion: '0' } }, { id: 'qwen/qwen3-32b:free', context_length: 40000, pricing: { prompt: '0', completion: '0' } }, { id: 'tiny/model-1b:free', context_length: 4000, pricing: { prompt: '0', completion: '0' } }, { id: 'paid/model', context_length: 128000, pricing: { prompt: '0.000001', completion: '0.000002' } }] });
+    if (key === 'flakybatch' && /operations assistant/.test(JSON.parse(body || '{}').messages?.[0]?.content || '') === false && (flakyBatch = (flakyBatch || 0) + 1) === 2) { res.destroy(); return; }
     if (key === 'badkey') return send(401, { error: { message: 'Incorrect API key provided' } });
     if (key === 'flaky' && (flakyCount = (flakyCount || 0) + 1) === 1) return send(200, { model: 'small', choices: [{ message: { content: '' }, finish_reason: 'stop' }] });
     if (key === 'toolcalls') return send(200, { model: 'small', choices: [{ message: { content: null, tool_calls: [{ type: 'function', function: { name: 'stats', arguments: '{"days":3}' } }] }, finish_reason: 'stop' }] });
@@ -846,4 +848,20 @@ test('OpenRouter free models get two other free models to fall back on in the sa
   assert.deepEqual(calls.at(-1).body.models, ['deepseek/deepseek-chat:free', ...fb]);
   run('DELETE FROM providers WHERE id = ?', id);
   run('UPDATE providers SET enabled = 1');
+});
+
+test('a chat that fails in a batch (timeout, dropped connection) is tried again at the end', async () => {
+  const { runCampaign, campaign } = followups;
+  await until(() => !campaign.running, 20000);
+  run("UPDATE followups SET status = 'skipped' WHERE status IN ('pending','approved')");
+  run('UPDATE providers SET enabled = 0');
+  const id = Number(run('INSERT INTO providers (preset, name, kind, base_url, api_key, model, priority, created_at) VALUES (?,?,?,?,?,?,?,?)', 'openrouter', 'Flaky', 'openai', baseUrl, encrypt('flakybatch'), 'm', -1, now()).lastInsertRowid);
+  reply = JSON.stringify({ stage: 'interested', summary: 's', should_followup: true, message: 'Hi again', reason: 'r' });
+  await runCampaign({ sinceDays: 60, limit: 3, reanalyze: true, instruction: 'say hi', autoApprove: false });
+  await until(() => !campaign.running, 30000);
+  assert.equal(campaign.failed, 0, 'the failed chat succeeded on the second go');
+  assert.equal(campaign.drafted, campaign.total);
+  run('DELETE FROM providers WHERE id = ?', id);
+  run('UPDATE providers SET enabled = 1');
+  run("UPDATE followups SET status = 'skipped' WHERE status IN ('pending','approved')");
 });

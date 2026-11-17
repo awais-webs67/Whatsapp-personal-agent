@@ -37,8 +37,8 @@ export const PRESETS = [
     keyUrl: 'https://cloud.sambanova.ai/apis', free: true },
   { id: 'together', name: 'Together AI', kind: 'openai', baseUrl: 'https://api.together.xyz/v1', model: 'meta-llama/Llama-3.3-70B-Instruct-Turbo',
     keyUrl: 'https://api.together.ai/settings/api-keys', free: false },
-  { id: 'ollama', name: 'Ollama (local)', kind: 'openai', baseUrl: 'http://localhost:11434/v1', model: 'llama3.2',
-    keyUrl: '', free: true, noKey: true },
+  { id: 'ollama', name: 'Ollama (local)', kind: 'openai', baseUrl: 'http://localhost:11434/v1', model: 'qwen2.5:7b',
+    keyUrl: 'https://ollama.com/download', free: true, noKey: true, note: 'Runs on your computer · no limits' },
   { id: 'custom', name: 'Custom (OpenAI-compatible)', kind: 'openai', baseUrl: '', model: '', keyUrl: '', free: false },
 ];
 

@@ -94,7 +94,9 @@ export async function callProvider(row, req, { purpose = 'reply' } = {}) {
   const s = getSettings().llm;
   // Live replies use the short timeout from Settings; background work (commands, learning, reviews) can take longer.
   const live = purpose === 'reply' || purpose === 'test';
-  const timeoutMs = (live ? s.timeoutSec : Math.max(s.timeoutSec, 90)) * 1000;
+  // A model on this computer (Ollama, LM Studio) answers slowly without a big GPU: give it time.
+  const local = /^https?:\/\/(localhost|127\.|0\.0\.0\.0|\[::1\]|192\.168\.|10\.)/.test(row.base_url || '');
+  const timeoutMs = (local ? Math.max(s.timeoutSec, 180) : live ? s.timeoutSec : Math.max(s.timeoutSec, 90)) * 1000;
   const maxTokens = outputBudget(row.model, req.maxTokens, purpose, s.maxTokens);
   let room = 1;   // grows when the model runs out of tokens
   let shrink = 1; // shrinks when the provider says the request is too large
@@ -270,7 +272,9 @@ export async function complete(req, { purpose = 'reply' } = {}) {
     try {
       return await completeOnce(req, purpose);
     } catch (e) {
-      const soon = chainFor(purpose).filter((r) => r.enabled && blockedReason(r) === 'rate_limited')
+      // Rate limits, and for background work also short outages and timeouts, clear up on their own.
+      const waitable = live ? ['rate_limited'] : ['rate_limited', 'unreachable', 'provider_down'];
+      const soon = chainFor(purpose).filter((r) => r.enabled && waitable.includes(blockedReason(r)))
         .map((r) => parse(r.state).cooldownUntil).filter(Boolean).sort((a, b) => a - b)[0];
       const wait = soon ? soon - now() + 300 : null;
       if (!(e instanceof LLMError) || wait == null || wait > maxWait || now() + wait > deadline || (live && round >= 1)) throw e;

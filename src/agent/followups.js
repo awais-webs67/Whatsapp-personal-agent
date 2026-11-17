@@ -166,29 +166,43 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
   emit('campaign', campaign);
   log('info', 'campaign', `Reviewing ${chats.length} past conversations`);
   (async () => {
+    // Read one chat; true when it worked.
+    const handle = async (chat) => {
+      const d = await decide(chat.id, 'analyze', { instruction, lean: analyzeOnly, audience });
+      update('chats', chat.id, { stage: d.stage, summary: d.summary, analyzed_at: now() }, ['stage', 'summary', 'analyzed_at']);
+      campaign.stages[d.stage] = (campaign.stages[d.stage] || 0) + 1;
+      if (analyzeOnly) return;
+      if (d.skip) { campaign.skipped++; if (d.reason && campaign.skipReasons.length < 3) campaign.skipReasons.push(`${chat.name || chat.phone || 'someone'}: ${d.reason}`); }
+      else {
+        queue(chat.id, audience === 'buyers' ? 'reminder' : 'campaign', d.message, d.reason, autoApprove ? 'approved' : 'pending', nextDue, taskId);
+        nextDue = Math.max(nextDue, now()) + gap * rand(0.8, 1.2);
+        campaign.drafted++;
+      }
+    };
+    const failedOnce = [];
     for (const chat of chats) {
       if (campaign.cancel) break;
-      try {
-        const d = await decide(chat.id, 'analyze', { instruction, lean: analyzeOnly, audience });
-        update('chats', chat.id, { stage: d.stage, summary: d.summary, analyzed_at: now() }, ['stage', 'summary', 'analyzed_at']);
-        campaign.stages[d.stage] = (campaign.stages[d.stage] || 0) + 1;
-        if (analyzeOnly) { campaign.done++; emit('campaign', campaign); if (taskId) emit('tasks'); await sleep(rand(300, 800)); continue; }
-        if (d.skip) { campaign.skipped++; if (d.reason && campaign.skipReasons.length < 3) campaign.skipReasons.push(`${chat.name || chat.phone || 'someone'}: ${d.reason}`); }
-        if (!d.skip) {
-          queue(chat.id, audience === 'buyers' ? 'reminder' : 'campaign', d.message, d.reason, autoApprove ? 'approved' : 'pending', nextDue, taskId);
-          nextDue = Math.max(nextDue, now()) + gap * rand(0.8, 1.2);
-          campaign.drafted++;
-        }
-      } catch (e) {
-        campaign.failed++;
+      try { await handle(chat); } catch (e) {
+        failedOnce.push(chat);
         campaign.error = e.message;
-        if (/No model could answer|No AI model/.test(e.message)) { campaign.cancel = true; log('error', 'campaign', `Stopped: ${e.message}`); }
+        // Every model refusing several chats in a row: stop instead of burning through the list.
+        if (/No AI model/.test(e.message) || (failedOnce.length >= 4 && failedOnce.length === campaign.done + 1)) { campaign.cancel = true; log('error', 'campaign', `Stopped: ${e.message}`); }
       }
       campaign.done++;
       emit('campaign', campaign);
       if (taskId) emit('tasks');
       await sleep(rand(400, 1200)); // stay gentle on free-tier rate limits
     }
+    // Free models time out or get busy now and then: give the chats that failed one more go after a pause.
+    if (failedOnce.length && !campaign.cancel) {
+      log('info', 'campaign', `${failedOnce.length} chat${failedOnce.length === 1 ? '' : 's'} failed; trying again after a short pause`);
+      await sleep(process.env.NODE_ENV === 'test' ? 50 : 30_000);
+      for (const chat of failedOnce) {
+        if (campaign.cancel) { campaign.failed++; continue; }
+        try { await handle(chat); } catch (e) { campaign.failed++; campaign.error = e.message; }
+        await sleep(rand(800, 1600));
+      }
+    } else campaign.failed += failedOnce.length;
     campaign.running = false;
     emit('campaign', campaign);
     if (taskId && analyzeOnly) {
