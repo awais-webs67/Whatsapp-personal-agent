@@ -1,4 +1,4 @@
-import { h, set, svg, GET, POST, PUT, act, toggle, field } from './ui.js';
+import { h, set, svg, GET, POST, PUT, act, toggle, field, toast } from './ui.js';
 import { S, subs } from './state.js';
 import { overview, inbox } from './pages-main.js';
 import { followups, numbers, models } from './pages-ops.js';
@@ -88,7 +88,20 @@ function shell(me) {
     if (['chat', 'followups', 'campaign', 'tasks'].includes(e.type)) { clearTimeout(badgeTimer); badgeTimer = setTimeout(refreshBadges, 600); }
   };
   refreshBadges().then(route);
+  fixTimezone();
   return el;
+}
+
+/**
+ * Servers usually run on UTC, which would put quiet hours (no messages at night) in the wrong place.
+ * When the agent still uses UTC and this browser is elsewhere, use the browser's time zone.
+ */
+async function fixTimezone() {
+  const here = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const s = await GET('/api/settings').catch(() => null);
+  if (!s || !here || !/^(UTC|Etc\/UTC|Etc\/GMT|GMT)$/i.test(s.followup?.timezone || '') || /^(UTC|Etc\/UTC|Etc\/GMT|GMT)$/i.test(here)) return;
+  await PUT('/api/settings', { followup: { timezone: here } }).catch(() => null);
+  toast(`Time zone set to ${here}: quiet hours and schedules now follow your local time. Change it in Settings.`);
 }
 
 function authScreen(setup, multi) {

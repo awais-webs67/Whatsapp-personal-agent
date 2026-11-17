@@ -278,7 +278,7 @@ export async function complete(req, { purpose = 'reply' } = {}) {
         .map((r) => parse(r.state).cooldownUntil).filter(Boolean).sort((a, b) => a - b)[0];
       const wait = soon ? soon - now() + 300 : null;
       if (!(e instanceof LLMError) || wait == null || wait > maxWait || now() + wait > deadline || (live && round >= 1)) throw e;
-      log('info', 'router', `${purpose}: every model is rate limited for now, trying again in ${Math.ceil(wait / 1000)}s`);
+      log('info', 'router', `${purpose}: every model is busy or at its limit for now, trying again in ${Math.ceil(wait / 1000)}s`);
       await new Promise((r) => setTimeout(r, Math.max(0, wait)));
     }
   }
