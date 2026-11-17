@@ -57,6 +57,10 @@ const server = http.createServer((req, res) => {
       return send(200, { model: 'small', choices: [{ message: { content: reply }, finish_reason: 'stop' }], usage: { prompt_tokens: need, completion_tokens: 5 } },
         { 'x-ratelimit-remaining-tokens': String(budget.left), 'x-ratelimit-limit-tokens': '3000', 'x-ratelimit-reset-tokens': `${((budget.resetAt - nowMs) / 1000).toFixed(2)}s` });
     }
+    if (key === 'cnappid') return send(401, { error: { message: '无效的AppId' } });
+    if (key === 'cnbusy') return send(429, { error: { message: '请求过于频繁，请稍后再试' } });
+    if (key === 'cnbroke') return send(402, { error: { message: '余额不足' } });
+    if (key === 'gone') return send(410, { type: 'about:blank', title: 'Gone', status: 410, detail: "The model 'meta/llama-3.3-70b-instruct' has reached its end of life on 2026-10-01." });
     if (key === 'geo') return send(403, { error: { message: 'Access denied. Please check your network settings.' } });
     if (key === 'short') {
       const mt = JSON.parse(body).max_tokens;
@@ -971,4 +975,13 @@ test('"send the link" price mode: no prices reach the model or the customer, the
   assert.ok(d.messages.every((m) => !/1,760/.test(m)), d.messages.join(' | '));
   assert.ok(d.messages.some((m) => m.includes('https://shop.test/products/chatgpt-plus')));
   saveSettings({ business: { prices: 'quote', shopLink: '', catalog: '' } });
+});
+
+test('Chinese error messages are explained, and a model past its end of life is replaced like a missing one', async () => {
+  const { chat } = await import('../src/llm/client.js');
+  const ask = (key) => chat({ kind: 'openai', baseUrl, apiKey: key, model: 'm' }, { messages: [{ role: 'user', content: 'hi' }] });
+  await assert.rejects(ask('cnappid'), (e) => e.kind === 'auth' && /无效的AppId \(invalid AppId: .*Copy the API key again/.test(e.message));
+  await assert.rejects(ask('cnbusy'), (e) => e.kind === 'rate_limit' && /rate limit/.test(e.message));
+  await assert.rejects(ask('cnbroke'), (e) => e.kind === 'quota');
+  await assert.rejects(ask('gone'), (e) => e.kind === 'model_missing');
 });

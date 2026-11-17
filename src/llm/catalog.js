@@ -31,7 +31,7 @@ export const PRESETS = [
     keyUrl: 'https://console.mistral.ai/api-keys', free: true },
   { id: 'github', name: 'GitHub Models', kind: 'openai', baseUrl: 'https://models.github.ai/inference', model: 'openai/gpt-4o-mini',
     keyUrl: 'https://github.com/settings/tokens', free: true },
-  { id: 'nvidia', name: 'NVIDIA NIM', kind: 'openai', baseUrl: 'https://integrate.api.nvidia.com/v1', model: 'meta/llama-3.3-70b-instruct',
+  { id: 'nvidia', name: 'NVIDIA NIM', kind: 'openai', baseUrl: 'https://integrate.api.nvidia.com/v1', model: 'openai/gpt-oss-20b',
     keyUrl: 'https://build.nvidia.com', free: true },
   { id: 'sambanova', name: 'SambaNova', kind: 'openai', baseUrl: 'https://api.sambanova.ai/v1', model: 'Meta-Llama-3.3-70B-Instruct',
     keyUrl: 'https://cloud.sambanova.ai/apis', free: true },

@@ -15,13 +15,26 @@ export class LLMError extends Error {
 
 const GEO_RE = /check your network settings|access denied|not available in your (country|region|location)|unsupported_country|unsupported (country|region)|region is not supported|country.*not supported/i;
 const CLIENT_RE = /unauthorized client|client (is )?not (allowed|supported|authori[sz]ed)|unsupported client|only (available|supported) (for|in|via) /i;
-const QUOTA_RE = /insufficient[_ ](quota|balance|credit)|exceeded your current quota|quota (has been )?exceeded|out of credits|billing|payment required|daily limit|free tier.*(limit|exhaust)|resource[_ ]exhausted.*(day|quota)/i;
+const QUOTA_RE = /余额不足|额度(已)?(用完|不足|耗尽)|欠费|insufficient[_ ](quota|balance|credit)|exceeded your current quota|quota (has been )?exceeded|out of credits|billing|payment required|daily limit|free tier.*(limit|exhaust)|resource[_ ]exhausted.*(day|quota)/i;
+
+// Chinese providers (LongCat, GLM, Qwen, DeepSeek) often answer in Chinese: say what it means.
+const CN = [
+  [/无效的\s*app\s*id|appid\s*(无效|不存在)/i, 'invalid AppId: the provider does not accept this key. Copy the API key again from its dashboard (the key, not the App ID), check the account is verified and has a key that is switched on, or create a new key'],
+  [/令牌已过期或验证不正确|token\s*(已过期|无效)|鉴权失败|认证失败|api\s*key\s*(无效|错误)/i, 'API key expired or invalid: create a new key and paste it again'],
+  [/余额不足|欠费|额度(已)?(用完|不足|耗尽)/, 'balance or free quota used up'],
+  [/请求过于频繁|频率超(过|限)|限流|速率限制|并发/, 'too many requests right now (rate limit)'],
+  [/模型不存在|模型.*(下线|不可用|不支持)/, 'model not found or no longer offered'],
+];
+export const explainCn = (msg) => { const hit = CN.find(([re]) => re.test(msg)); return hit ? `${msg} (${hit[1]})` : msg; };
 
 function classify(status, body) {
   const text = typeof body === 'string' ? body : JSON.stringify(body ?? '');
+  if (/请求过于频繁|频率超(过|限)|限流|速率限制/.test(text)) return 'rate_limit';
+  if (/余额不足|欠费|额度(已)?(用完|不足|耗尽)/.test(text)) return 'quota';
+  if (/模型不存在|模型.*(下线|不可用|不支持)/.test(text)) return 'model_missing';
   if (status === 400 && /api[ _-]?key|API_KEY_INVALID/i.test(text)) return 'auth'; // Gemini reports a bad key as 400
   // The configured model was renamed, retired, or is not on this account: the router picks a current one.
-  if ((status === 404 || status === 400 || status === 403) && /model[^"]{0,80}(does not exist|not[ _]found|decommission|deprecat|no longer|not supported|do not have access|is not available|unknown)|model_(not_found|decommissioned)|invalid model|cannot be used with the chat\/completions endpoint|not a chat model|does not support chat|not supported (for|on|with) (the )?chat|only (available|supported) (in|on|via) (the )?(v1\/)?(completions|responses|batch)/i.test(text)) return 'model_missing';
+  if ((status === 404 || status === 400 || status === 403 || status === 410) && /model[^"]{0,80}(does not exist|reached (its )?end of life|end[- ]of[- ]life|not[ _]found|decommission|deprecat|no longer|not supported|do not have access|is not available|unknown)|model_(not_found|decommissioned)|invalid model|cannot be used with the chat\/completions endpoint|not a chat model|does not support chat|not supported (for|on|with) (the )?chat|only (available|supported) (in|on|via) (the )?(v1\/)?(completions|responses|batch)/i.test(text)) return 'model_missing';
   // Region / VPN blocks (Groq: "Access denied. Please check your network settings.") are not key problems.
   if (status === 403 && GEO_RE.test(text)) return 'network';
   // Some gateways (AgentRouter) only serve the coding tools they have approved and reject every other app.
@@ -96,7 +109,7 @@ async function fetchJson(url, init, timeoutMs) {
     const geo = res.status === 403 && GEO_RE.test(JSON.stringify(body ?? raw));
     const blocked = (res.status === 401 || res.status === 403) && CLIENT_RE.test(JSON.stringify(body ?? raw));
     const hinted = /try again in ((?:\d+(?:\.\d+)?(?:ms|h|m|s))+)/i.exec(msg)?.[1];
-    const err = new LLMError(classify(res.status, body), `${res.status} ${msg}${geo ? ` ${new URL(url).hostname} is blocking this connection, most likely because of the VPN or country it comes from. Switch the VPN to another country (USA or Europe usually work) or turn it off for this computer.` : ''}${blocked ? ` ${new URL(url).hostname} only accepts requests from the apps it has approved (coding tools), so it cannot be used by this agent. Your key is fine; the provider refuses this app. Use Groq, Gemini or OpenRouter instead.` : ''}`, {
+    const err = new LLMError(classify(res.status, body), `${res.status} ${explainCn(msg)}${geo ? ` ${new URL(url).hostname} is blocking this connection, most likely because of the VPN or country it comes from. Switch the VPN to another country (USA or Europe usually work) or turn it off for this computer.` : ''}${blocked ? ` ${new URL(url).hostname} only accepts requests from the apps it has approved (coding tools), so it cannot be used by this agent. Your key is fine; the provider refuses this app. Use Groq, Gemini or OpenRouter instead.` : ''}`, {
       status: res.status,
       retryAfter: parseDuration(res.headers.get('retry-after')) ?? parseDuration(hinted) ?? parseDuration(res.headers.get('x-ratelimit-reset-tokens')) ?? parseDuration(res.headers.get('x-ratelimit-reset-requests')),
     });
