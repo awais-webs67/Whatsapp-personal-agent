@@ -951,3 +951,24 @@ test('a command typed in a customer chat on WhatsApp is run, hidden from the cus
   assert.equal(get('SELECT COUNT(*) n FROM messages WHERE chat_id = ?', chat.id).n, before + 1);
   run('UPDATE chats SET ai_enabled = NULL, paused_until = NULL WHERE id = ?', chat.id);
 });
+
+test('"send the link" price mode: no prices reach the model or the customer, the product link does', async () => {
+  const { decide, buildSystem } = await import('../src/agent/brain.js');
+  const { getSettings, saveSettings } = await import('../src/core.js');
+  saveSettings({ business: { prices: 'link', shopLink: 'https://shop.test/shop', catalog: '- ChatGPT Plus 1 Month — Rs 1,760 (≈ $5.97 USDT) — in stock — private account — https://shop.test/products/chatgpt-plus' } });
+  const sys = buildSystem(getSettings(), { stage: 'interested' }, 'reply', 'chatgpt price');
+  assert.doesNotMatch(sys, /1,760|5\.97|in stock/);
+  assert.match(sys, /https:\/\/shop\.test\/products\/chatgpt-plus/);
+  assert.match(sys, /Never write a price/);
+  assert.match(sys, /https:\/\/shop\.test\/shop/);
+  // The model still slips a price in: it is asked again, and a price in the second answer is removed.
+  const chat = get("SELECT id FROM chats WHERE jid = '444@s.whatsapp.net'");
+  const prompts = calls.length;
+  reply = JSON.stringify({ messages: ['ChatGPT Plus Rs 1,760 ka hai', 'Link: https://shop.test/products/chatgpt-plus'], stage: 'interested', summary: 'price', handoff: false });
+  const d = await decide(chat.id, 'reply');
+  assert.equal(calls.length - prompts, 2, 'asked again once');
+  assert.match(calls.at(-1).body.messages.at(-1).content, /contained a price/);
+  assert.ok(d.messages.every((m) => !/1,760/.test(m)), d.messages.join(' | '));
+  assert.ok(d.messages.some((m) => m.includes('https://shop.test/products/chatgpt-plus')));
+  saveSettings({ business: { prices: 'quote', shopLink: '', catalog: '' } });
+});

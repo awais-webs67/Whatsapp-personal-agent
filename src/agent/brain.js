@@ -7,6 +7,20 @@ import { focus } from './knowledge.js';
 export const STAGES = ['new', 'engaged', 'interested', 'negotiating', 'purchased', 'not_interested', 'opted_out'];
 export const CLOSED = ['purchased', 'not_interested', 'opted_out'];
 
+// "Send the link" price mode: prices and stock change on the website, so the agent never sees old numbers.
+export const PRICE_RE = /(?:\b(?:rs\.?|pkr|usdt?|inr|aed|sar)\s?\d[\d,]*(?:\.\d+)?|\$\s?\d[\d,]*(?:\.\d+)?|\b\d[\d,]*(?:\.\d+)?\s?(?:rs|pkr|rupees?|rupay|rupaye|usdt|dollars?)\b|(?:\d[\d,]*\s?)?روپ[ےیئ])/i;
+const PRICE_ALL = new RegExp(PRICE_RE.source, 'gi');
+export function withoutPrices(text) {
+  return String(text || '')
+    .replace(/\s*\(≈[^)]*\)/g, '')
+    .replace(PRICE_ALL, '')
+    .replace(/\s[—–]\s(in stock|out of stock|sold out|limited stock)\b/gi, '')
+    .replace(/(\s[—–]\s*){2,}/g, ' — ')
+    .replace(/\s[—–]\s*$/gm, '')
+    .replace(/[ \t]{2,}/g, ' ');
+}
+const linkMode = (b) => b.prices === 'link';
+
 const section = (title, body) => (String(body || '').trim() ? `\n## ${title}\n${String(body).trim()}\n` : '');
 
 function ago(ts) {
@@ -19,17 +33,21 @@ function ago(ts) {
 
 export function buildSystem(settings, chat, mode, query = '') {
   // Token saver: long lists (products, Q&A) are cut to what this conversation is about.
-  const fit = (text) => (settings.llm.tokenSaver === false ? text : focus(text, query));
   const b = settings.business;
+  const fit = (text) => {
+    const out = settings.llm.tokenSaver === false ? text : focus(text, query);
+    return linkMode(b) ? withoutPrices(out) : out;
+  };
+  const plain = (text) => (linkMode(b) ? withoutPrices(text) : text);
   const who = b.persona?.trim() || 'a member of the sales team';
   const shop = b.name?.trim() || 'this business';
   const out = [`You are ${who}, chatting with a person on WhatsApp on behalf of ${shop}.\nYour job: ${b.goal?.trim() || 'Help the person with what they ask.'}`];
 
-  out.push(section('About the business', b.about));
+  out.push(section('About the business', plain(b.about)));
   out.push(section('Products, services and prices', fit(b.catalog)));
   out.push(section('Frequently asked questions', fit(b.faqs)));
-  out.push(section('Policies (delivery, payment, returns)', b.policies));
-  out.push(section('Example replies in our voice', b.examples));
+  out.push(section('Policies (delivery, payment, returns)', plain(b.policies)));
+  out.push(section('Example replies in our voice', plain(b.examples)));
   out.push(section('Learned from the owner\'s own past chats (how they answer, what they quote; if this conflicts with a section above, the section above wins)', fit(b.learned)));
   out.push(section('From the business website and WhatsApp profile', fit(b.learnedWeb)));
   out.push(section('Standing instructions from the owner (always follow)', b.memory));
@@ -56,7 +74,8 @@ export function buildSystem(settings, chat, mode, query = '') {
 - Never confirm an order or a payment you have not seen proof of in this chat.
 
 ## Hard rules
-- Only state prices, stock, delivery times, discounts and policies that appear above. If the answer is not there, say you will confirm and set "handoff" to true. Never make something up.
+${linkMode(b) ? `- Prices and stock change often, so you do not know them. Never write a price, amount, discount or stock status, even if the customer or an old message mentions one. When they ask the price or want to buy, send the product's link from above: the page shows the current price and stock. If you are not sure which product they mean, ask. If there is no link for it, send ${b.shopLink?.trim() || 'our website'}.
+` : ''}- Only state prices, stock, delivery times, discounts and policies that appear above. If the answer is not there, say you will confirm and set "handoff" to true. Never make something up.
 - If the customer sincerely asks whether they are talking to a bot, an AI or a real person, tell the truth: you are an AI assistant for ${shop}, and a team member can step in if they prefer. Do not claim to be human.
 - If the customer asks not to be contacted, apologise in one line, confirm, and set "stage" to "opted_out".
 - Set "handoff" to true for refunds, complaints, payment disputes, angry customers, custom quotes, or anything you cannot answer from the information above.
@@ -181,10 +200,20 @@ export async function decide(chatId, mode = 'reply', { turns = null, chatOverrid
   const recent = messages.filter((m) => m.role === 'user').slice(mode === 'reply' ? -4 : -12).map((m) => m.content).join(' ');
   const system = lean ? leanSystem(settings) : buildSystem(settings, chat, mode, `${recent} ${chat.summary || ''} ${chat.notes || ''}`);
   let lastErr;
+  const noPrices = linkMode(settings.business) && mode !== 'analyze';
+  let priced = null;
   for (let attempt = 0; attempt < 3; attempt++) {
-    const out = await complete({ system, messages, ...(lean ? { maxTokens: 400 } : {}) }, { purpose: mode });
+    const out = await complete({ system, messages: priced ? [...messages, { role: 'user', content: '[Note from the system, not the customer] Your last answer contained a price. Prices change, so do not write any amount: send the product link instead. Answer again with the JSON object.' }] : messages, ...(lean ? { maxTokens: 400 } : {}) }, { purpose: mode });
     try {
-      return { ...parseDecision(out.text, mode, chat, { instructed: !!instruction }), provider: out.providerName, model: out.model, latencyMs: out.latencyMs, hops: out.hops, usage: out.usage };
+      const d = { ...parseDecision(out.text, mode, chat, { instructed: !!instruction }), provider: out.providerName, model: out.model, latencyMs: out.latencyMs, hops: out.hops, usage: out.usage };
+      const texts = d.messages || (d.message ? [d.message] : []);
+      if (noPrices && texts.some((t) => PRICE_RE.test(t))) {
+        if (!priced) { priced = d; continue; }
+        const strip = (t) => withoutPrices(t).replace(/\s+([,.!?])/g, '$1').trim();
+        if (d.messages) d.messages = d.messages.map(strip).filter(Boolean);
+        if (d.message) d.message = strip(d.message);
+      }
+      return d;
     } catch (e) {
       lastErr = e; // one retry: a second sample usually fixes malformed JSON
     }

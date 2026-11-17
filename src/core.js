@@ -35,6 +35,8 @@ export const DEFAULT_SETTINGS = {
     tone: 'Short, warm, natural WhatsApp messages. No long paragraphs, no bullet lists.',
     language: 'Reply in the language and script the customer uses: if they write in Urdu script (اردو), reply in proper Urdu script; if they write Roman Urdu, reply in Roman Urdu; if English, reply in English.',
     purchaseSignal: 'Customer confirms the order or shares a payment proof.',
+    prices: 'quote',                     // quote = say prices from this page | link = never say a price, send the product link
+    shopLink: '',                        // sent when a product has no link of its own (link mode)
     examples: '',
   },
   human: {

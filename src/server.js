@@ -401,6 +401,7 @@ app.post('/api/commands', wrap(async (req) => {
 app.post('/api/learn', wrap((req) => learnFromChats({ accountId: req.body.accountId ? Number(req.body.accountId) : null, maxChats: Math.min(1000, Math.max(1, Number(req.body.maxChats) || 150)) })));
 app.put('/api/settings', wrap((req) => {
   const s = saveSettings(req.body || {});
+  if (req.body?.business?.prices) kvSet('pricesChosen', true); // the owner decided; saved shop files no longer switch it
   log('info', 'settings', 'Settings updated');
   return s;
 }));
@@ -461,7 +462,8 @@ app.use((err, _req, res, _next) => {
 
 export function start(port = Number(process.env.PORT) || 3000) {
   migrateSettings();
-  try { importKnowledgeFiles(); } catch (e) { log('error', 'learn', `Could not load knowledge files: ${e.message}`); }
+  // Once on upgrade: re-read saved shop files so an existing install also picks up the price mode they imply.
+  try { importKnowledgeFiles({ force: !kvGet('priceModeChecked') }); kvSet('priceModeChecked', true); } catch (e) { log('error', 'learn', `Could not load knowledge files: ${e.message}`); }
   startPipeline();
   startCommander();
   startTasks();

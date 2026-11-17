@@ -10,12 +10,13 @@ export function readFiles() {
   if (!fs.existsSync(KNOWLEDGE_DIR)) return [];
   return fs.readdirSync(KNOWLEDGE_DIR).filter((f) => /\.(md|txt)$/i.test(f) && !/^readme/i.test(f)).sort().map((f) => {
     const full = path.join(KNOWLEDGE_DIR, f);
-    const text = fs.readFileSync(full, 'utf8')
+    const raw = fs.readFileSync(full, 'utf8');
+    const text = raw
       .replace(/<!--[\s\S]*?-->/g, '')
       .replace(/^#{1,6}\s+/gm, '')        // headings become plain lines ("Payment", "AI Tools (26):")
       .replace(/\*\*(.+?)\*\*/g, '$1')
       .replace(/\n{3,}/g, '\n\n').trim();
-    return { file: f, site: f.replace(/\.(md|txt)$/i, ''), text, mtime: fs.statSync(full).mtimeMs };
+    return { file: f, site: f.replace(/\.(md|txt)$/i, ''), text, raw, mtime: fs.statSync(full).mtimeMs };
   });
 }
 
@@ -33,7 +34,12 @@ export function importKnowledgeFiles({ force = false } = {}) {
     blocks.push(`Source: ${f.file} (saved file)\n${f.text}`);
     seen[f.file] = f.mtime;
   }
-  saveSettings({ business: { learnedWeb: blocks.join('\n\n') } });
+  // A shop file made by fetch-shop.mjs links every product page, which always shows the current price.
+  // Until the owner picks a price mode, use those links instead of prices that go stale.
+  const shop = changed.map((f) => /<!-- products:start[^>]*?from (https?:\/\/\S+)/.exec(f.raw)).find(Boolean);
+  const auto = shop && !kvGet('pricesChosen') ? { prices: 'link', shopLink: getSettings().business.shopLink || shop[1] } : {};
+  saveSettings({ business: { learnedWeb: blocks.join('\n\n'), ...auto } });
+  if (auto.prices) log('info', 'learn', `Prices change on ${auto.shopLink}: the agent sends product links instead of prices (change it on the Knowledge page)`);
   kvSet('knowledgeFiles', seen);
   log('info', 'learn', `Loaded saved knowledge: ${changed.map((f) => f.file).join(', ')}`);
   return { files: changed.length, names: changed.map((f) => f.file) };
