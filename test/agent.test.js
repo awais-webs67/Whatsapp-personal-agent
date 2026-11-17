@@ -865,3 +865,39 @@ test('a chat that fails in a batch (timeout, dropped connection) is tried again 
   run('UPDATE providers SET enabled = 1');
   run("UPDATE followups SET status = 'skipped' WHERE status IN ('pending','approved')");
 });
+
+test('ad lead goes quiet after the owner answered by hand: the agent follows up on its own', async () => {
+  const { sweepQuiet, followupStatus } = followups;
+  const { saveSettings, getSettings } = await import('../src/core.js');
+  await until(() => !followups.campaign.running, 20000);
+  run("UPDATE followups SET status = 'skipped' WHERE status IN ('pending','approved')");
+  saveSettings({ followup: { approval: false, enabled: true, quietStart: 0, quietEnd: 0 } });
+  assert.equal(getSettings().followup.approval, false);
+  // A new lead from an ad writes, the owner answers from the phone, then silence.
+  const linkedAt = get('SELECT connected_at FROM accounts WHERE id = 1').connected_at;
+  run('UPDATE accounts SET connected_at = ? WHERE id = 1', now() - 48 * 3_600_000); // the number was linked before the ad lead wrote
+  const jid = '777@s.whatsapp.net';
+  run('UPDATE chats SET ai_enabled = 0 WHERE jid = ?', jid); // keep the live auto-reply out of this test
+  deliver([{ jid, phone: '777', name: 'Ad lead', waId: 'ad-1', fromMe: false, text: 'Ad dekha, Canva Pro ka price?', type: 'text', ts: now() - 30 * 3_600_000 }]);
+  const chat = get('SELECT * FROM chats WHERE jid = ?', jid);
+  run('UPDATE chats SET ai_enabled = NULL WHERE id = ?', chat.id);
+  deliver([{ jid, waId: 'own-ad-1', fromMe: true, text: 'Rs 1,200 ka hai, 1 saal ka.', type: 'text', ts: now() - 29 * 3_600_000 }]);
+  run('UPDATE chats SET paused_until = NULL WHERE id = ?', chat.id); // the owner's hand-off pause has long passed
+  assert.equal(get('SELECT next_followup_at FROM chats WHERE id = ?', chat.id).next_followup_at, null, 'nothing scheduled yet');
+  assert.ok(sweepQuiet() >= 1, 'the sweep finds the quiet lead');
+  const due = get('SELECT next_followup_at FROM chats WHERE id = ?', chat.id).next_followup_at;
+  assert.ok(due && due <= now() + 1000, 'already 29h quiet, so the first nudge (24h) is due now');
+  reply = JSON.stringify({ skip: false, message: 'Canva Pro ka offer abhi bhi hai, chahiye to bata dein.', stage: 'interested', summary: 'Asked Canva price', reason: 'quiet after price' });
+  const n = sent.length;
+  await followups._tick();
+  assert.equal(sent.at(-1)?.jid, jid, 'sent without waiting for approval');
+  assert.equal(sent.at(-1).text, 'Canva Pro ka offer abhi bhi hai, chahiye to bata dein.');
+  assert.ok(sent.length > n);
+  assert.equal(get('SELECT followup_count FROM chats WHERE id = ?', chat.id).followup_count, 1);
+  assert.ok(get('SELECT next_followup_at FROM chats WHERE id = ?', chat.id).next_followup_at > now() + 70 * 3_600_000, 'the second nudge is set for 3 days later');
+  const st = followupStatus();
+  assert.equal(st.approval, false);
+  assert.ok(st.sentToday >= 1);
+  saveSettings({ followup: { approval: true } });
+  run('UPDATE accounts SET connected_at = ? WHERE id = 1', linkedAt);
+});

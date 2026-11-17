@@ -68,6 +68,7 @@ export function onOwner(chatId) {
   const minutes = getSettings().human.handoffMinutes;
   clearTimeout(timers.get(chatId));
   timers.delete(chatId);
+  // The agent stays quiet in the live chat for a while; if the customer then goes silent, the follow-up sweep picks them up.
   update('chats', chatId, { paused_until: now() + minutes * 60_000, next_followup_at: null }, ['paused_until', 'next_followup_at']);
   emit('chat', { chatId });
 }

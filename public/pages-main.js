@@ -1,4 +1,4 @@
-import { h, set, GET, POST, PATCH, act, toast, modal, field, select, rel, clock, dayLabel, num, STAGES, stagePill, PROVIDER_STATUS } from './ui.js';
+import { h, set, GET, POST, PATCH, PUT, act, toast, modal, field, select, rel, clock, dayLabel, num, STAGES, stagePill, PROVIDER_STATUS } from './ui.js';
 import { S, live } from './state.js';
 
 const ACCOUNT_STATE = { connected: ['Connected', 'ok'], connecting: ['Connecting', 'warn'], qr: ['Scan QR', 'hot'], pairing: ['Enter code', 'hot'], logged_out: ['Logged out', 'bad'], error: ['Error', 'bad'], disconnected: ['Offline', ''] };
@@ -17,6 +17,25 @@ export function chainRail(providers) {
       h('b', { title: p.name }, p.name), h('span', { title: p.model }, p.model),
       h('em', {}, p === active ? 'Serving now' : down ? `${label}${p.cooldownUntil ? ` · back ${rel(p.cooldownUntil)}` : ''}` : 'Standby'));
   }));
+}
+
+/** Leads who went quiet and when the agent will nudge them. */
+function followupCard(f) {
+  if (!f) return null;
+  const steps = f.steps.map((hrs) => (hrs % 24 ? `${hrs}h` : `${hrs / 24}d`)).join(', ');
+  const toggle = (patch, msg) => act(null, () => PUT('/api/settings', { followup: patch }), msg).then(() => location.reload());
+  return h('div.card', {},
+    h('header', {}, h('h2', {}, 'Follow-ups for quiet leads'),
+      h('div.row', {}, f.enabled ? h('span.pill.ok', {}, f.approval ? 'On · you approve each' : 'On · automatic') : h('span.pill.bad', {}, 'Off'),
+        h('button.btn.sm', { onclick: () => toggle({ enabled: !f.enabled }, f.enabled ? 'Follow-ups turned off' : 'Follow-ups turned on') }, f.enabled ? 'Turn off' : 'Turn on'),
+        f.enabled ? h('button.btn.sm', { onclick: () => toggle({ approval: !f.approval }, f.approval ? 'Follow-ups now go out on their own' : 'Follow-ups now wait for your approval') }, f.approval ? 'Send automatically' : 'Ask me first') : null)),
+    h('div.pad.stack', {},
+      h('div.muted', {}, `When a lead goes quiet after a reply (yours or the agent's), the agent writes them a short personal nudge after ${steps} of silence, then stops. It never messages people who bought, said no, or asked not to be contacted. At most ${f.dailyCap} a day per number, none between ${f.quietStart}:00 and ${f.quietEnd}:00.`),
+      h('div.grid3', {}, h('div.kv', {}, 'Leads waiting for a nudge', h('b', {}, num(f.scheduled))), h('div.kv', {}, 'Sent in the last 24h', h('b', {}, num(f.sentToday))), h('div.kv', {}, 'Replied after a nudge (7 days)', h('b', {}, num(f.repliedAfter)))),
+      f.drafts ? h('div.note.warn', {}, `${f.drafts} follow-up${f.drafts === 1 ? '' : 's'} wait for your approval. `, h('a', { href: '#/followups' }, 'Review')) : null,
+      f.why && f.queued ? h('div.note.warn', {}, h('b', {}, 'Not sending right now. '), f.why) : null,
+      f.next.length ? h('div', {}, h('div.muted', { style: 'font-size:12px;margin-bottom:4px' }, 'Next nudges'),
+        f.next.map((c) => h('a.kv', { href: `#/inbox/${c.id}`, style: 'text-decoration:none;color:inherit;padding:3px 0' }, h('span', {}, c.title, h('span.muted', {}, ` · nudge ${c.step}`)), h('b', {}, c.at <= Date.now() + 60_000 ? 'now' : rel(c.at))))) : null));
 }
 
 export function overview() {
@@ -38,6 +57,7 @@ export function overview() {
         h('div.tiles', {}, [
           ['New leads', s.newLeads24h], ['Messages in', s.inbound24h], ['AI replies', s.aiReplies24h], ['Follow-ups', s.followups24h], ['Need you', s.needsHuman, true], ['Purchased', s.purchased],
         ].map(([label, n, alert]) => h(`div.tile${alert && n ? '.alert' : ''}`, {}, h('b', {}, num(n)), h('span', {}, label, label === 'Purchased' || label === 'Need you' ? '' : ' · 24h')))),
+        followupCard(o.followups),
         h('div.card', {}, h('header', {}, h('h2', {}, 'Model chain'), h('a.btn.sm', { href: '#/models' }, 'Manage')), h('div', { id: 'rail' }, chainRail(o.providers))),
         h('div.grid2', {},
           h('div.card', {}, h('header', {}, h('h2', {}, 'Numbers'), h('a.btn.sm', { href: '#/numbers' }, 'Manage')),

@@ -23,12 +23,59 @@ function queue(chatId, kind, text, reason, status, dueAt = now(), taskId = null)
 }
 
 /** 1) Turn due chats into drafts. */
+/**
+ * Find leads who went quiet after we (the agent or the owner) answered, and give each one its next follow-up time.
+ * This covers chats the owner answered by hand and chats from before the agent was running, not only agent replies.
+ */
+export function sweepQuiet() {
+  const s = getSettings().followup;
+  if (!s.enabled || !s.stepsHours?.length) return 0;
+  const rows = all(`SELECT c.* FROM chats c
+      WHERE c.next_followup_at IS NULL AND c.needs_human = 0
+        AND c.stage NOT IN ('purchased','not_interested','opted_out')
+        AND c.last_in_at IS NOT NULL AND c.last_out_at IS NOT NULL AND c.last_out_at >= c.last_in_at
+        AND c.last_out_at > ? AND c.followup_count < ?
+        AND (c.paused_until IS NULL OR c.paused_until < ?)
+        AND c.jid != COALESCE((SELECT a.self_jid FROM accounts a WHERE a.id = c.account_id), '')
+        AND NOT EXISTS (SELECT 1 FROM followups f WHERE f.chat_id = c.id AND f.status IN ('pending','approved'))
+      LIMIT 200`, now() - 30 * 86_400_000, s.stepsHours.length, now());
+  let n = 0;
+  for (const c of rows) {
+    const account = get('SELECT * FROM accounts WHERE id = ?', c.account_id);
+    if (!account || !eligibility({ ...c, paused_until: null }, account)[0]) continue; // e.g. an old contact on a "new leads only" number
+    // Counted from our last message, so a lead who has been quiet for a while is due straight away.
+    const due = Math.max(now(), c.last_out_at + s.stepsHours[c.followup_count] * 3_600_000);
+    update('chats', c.id, { next_followup_at: due }, ['next_followup_at']);
+    n++;
+  }
+  if (n) emit('followups');
+  return n;
+}
+
+/** What the follow-up machine is doing, for the Overview page. */
+export function followupStatus() {
+  const s = getSettings().followup;
+  const n = (sql, ...p) => get(sql, ...p).n;
+  return {
+    enabled: s.enabled, approval: s.approval, steps: s.stepsHours, quietStart: s.quietStart, quietEnd: s.quietEnd, timezone: s.timezone, dailyCap: s.dailyCap,
+    scheduled: n('SELECT COUNT(*) n FROM chats WHERE next_followup_at IS NOT NULL'),
+    drafts: n("SELECT COUNT(*) n FROM followups WHERE status = 'pending'"),
+    queued: n("SELECT COUNT(*) n FROM followups WHERE status = 'approved'"),
+    sentToday: n("SELECT COUNT(*) n FROM followups WHERE status = 'sent' AND sent_at > ?", now() - 86_400_000),
+    repliedAfter: n("SELECT COUNT(DISTINCT f.chat_id) n FROM followups f WHERE f.status = 'sent' AND f.sent_at > ? AND EXISTS (SELECT 1 FROM messages m WHERE m.chat_id = f.chat_id AND m.from_me = 0 AND m.ts > f.sent_at)", now() - 7 * 86_400_000),
+    next: all(`SELECT c.id, c.name, c.phone, c.jid, c.stage, c.followup_count, c.next_followup_at FROM chats c WHERE c.next_followup_at IS NOT NULL ORDER BY c.next_followup_at LIMIT 6`)
+      .map((c) => ({ id: c.id, title: c.name || (c.phone ? `+${c.phone}` : c.jid.split('@')[0]), stage: c.stage, step: c.followup_count + 1, at: c.next_followup_at })),
+    why: whyNotSending(null),
+  };
+}
+
 async function draftDue() {
   if (drafting) return;
   drafting = true;
   try {
     const settings = getSettings();
     if (!settings.followup.enabled || !settings.autopilot) return;
+    sweepQuiet();
     const due = all(`SELECT c.* FROM chats c WHERE c.next_followup_at IS NOT NULL AND c.next_followup_at <= ?
                      AND NOT EXISTS (SELECT 1 FROM followups f WHERE f.chat_id = c.id AND f.status IN ('pending','approved')) LIMIT 5`, now());
     for (const chat of due) {

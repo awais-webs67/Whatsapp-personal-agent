@@ -48,7 +48,7 @@ export const DEFAULT_SETTINGS = {
   },
   followup: {
     enabled: true,
-    approval: true,                     // drafts wait for your approval before sending
+    approval: false,                    // true = drafts wait for your approval before sending
     stepsHours: [24, 72, 168],
     quietStart: 21, quietEnd: 9,        // no proactive messages between these hours
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
@@ -92,16 +92,18 @@ export const kvSet = (key, value) =>
 /** Installs created with the first, slower defaults move to the fast pacing once. */
 export function migrateSettings() {
   const version = kvGet('settingsVersion', 1);
-  if (version >= 4) return;
+  if (version >= 5) return;
   const row = get('SELECT value FROM settings WHERE key = ?', 'app');
   let stored = row ? parse(row.value) : null;
   if (stored && version < 2 && stored.human?.debounceMin === 4 && stored.human.debounceMax === 9) stored = merge(stored, { human: PACING.fast, llm: { timeoutSec: 20 } });
+  // v5: follow-ups go out by themselves (the owner asked not to approve each one). Turn "Ask me before sending" back on in Settings to review them.
+  if (stored && version < 5 && stored.followup?.approval === true) stored = merge(stored, { followup: { approval: false } });
   // v4: Urdu script support in the default language rule.
   if (stored && stored.business?.language === 'Reply in the same language and script the customer uses (English, Urdu, Roman Urdu...).') stored = merge(stored, { business: { language: 'Reply in the language and script the customer uses: if they write in Urdu script (اردو), reply in proper Urdu script; if they write Roman Urdu, reply in Roman Urdu; if English, reply in English.' } });
   // v3: shorter history by default (fewer tokens per reply), unless the owner had changed it.
   if (stored && stored.llm?.historyMessages === 30) stored = merge(stored, { llm: { historyMessages: 12 } });
   if (stored) kvSet('app', stored);
-  kvSet('settingsVersion', 4);
+  kvSet('settingsVersion', 5);
 }
 
 // ---------- secrets ----------

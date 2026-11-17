@@ -13,7 +13,7 @@ import { chooseModel } from './llm/client.js';
 import * as wa from './wa/manager.js';
 import { STAGES, decide, buildSystem } from './agent/brain.js';
 import { startPipeline, onOwner, eligibility } from './agent/pipeline.js';
-import { startFollowups, runCampaign, campaign, whyNotSending } from './agent/followups.js';
+import { startFollowups, runCampaign, campaign, whyNotSending, followupStatus } from './agent/followups.js';
 import { learnFromChats, learnFromWebsite, learnFromProfile, learning } from './agent/learn.js';
 import { importKnowledgeFiles } from './agent/knowledge-files.js';
 import { handleCommand, startCommander, listThreads, newThread } from './agent/commander.js';
@@ -139,6 +139,7 @@ app.get('/api/overview', wrap(() => {
       activeTasks: count("SELECT COUNT(*) n FROM tasks WHERE status = 'active'"),
     },
     stages: all('SELECT stage, COUNT(*) n FROM chats GROUP BY stage'),
+    followups: followupStatus(),
     campaign,
   };
 }));
