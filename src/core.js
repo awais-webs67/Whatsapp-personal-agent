@@ -57,7 +57,7 @@ export const DEFAULT_SETTINGS = {
     dailyCap: 40,                       // proactive messages per account per day
     gapMinSec: 60, gapMaxSec: 240,
   },
-  llm: { historyMessages: 12, maxTokens: 1024, timeoutSec: 20, tokenSaver: true },
+  llm: { historyMessages: 12, maxTokens: 1024, timeoutSec: 20, tokenSaver: true, spread: true, knowledgeChars: 6000 },
 };
 
 const merge = (base, over) => {

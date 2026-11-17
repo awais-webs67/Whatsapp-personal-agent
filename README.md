@@ -67,6 +67,19 @@ models with a daily request limit (the keys never leave the admin's workspace), 
 The admin can open any client's dashboard to help them. Each account uses about 150 MB of memory.
 `npm run single` runs one dashboard without accounts, the way it worked before.
 
+**Your own files.** Knowledge page → Upload files: `.md`, `.txt` or `.docx` (price lists, FAQs, policies, scripts).
+They are kept in `data/knowledge/` and read into the agent's knowledge; for each reply only the paragraphs that
+match the customer's question go to the model, so long files do not cost many tokens. Remove a file to forget it.
+
+**Shortcuts in Command.** Teach the agent your own words once: `jab main "report" kahun to pichle 1 din ki stats aur
+pending follow-ups batao` (or `when I say "report", ...`). Then `report` runs the whole instruction. `shortcuts` lists
+them, `report wala shortcut hatao` removes one.
+
+**All models together.** Customer replies use your models in the order you set and switch when one fails. Batch work
+(reading many chats, follow-up batches) takes turns over every ready model, so each one's limit lasts longer.
+Several keys of one provider can be added as separate models, but Groq counts limits per account (organization),
+so two keys from the same Groq account share one limit.
+
 **Prices that change.** On the Knowledge page, "When a customer asks the price" → "Send the product link" makes the
 agent never write a price or stock (prices are removed from everything it reads, and a price that still slips
 into a reply is caught); it sends the product's link, where the website shows the current price.

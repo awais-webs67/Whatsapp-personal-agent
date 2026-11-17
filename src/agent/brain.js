@@ -2,7 +2,7 @@
 import { all, get } from '../db.js';
 import { getSettings } from '../core.js';
 import { complete } from '../llm/router.js';
-import { focus } from './knowledge.js';
+import { focus, trimProse } from './knowledge.js';
 
 export const STAGES = ['new', 'engaged', 'interested', 'negotiating', 'purchased', 'not_interested', 'opted_out'];
 export const CLOSED = ['purchased', 'not_interested', 'opted_out'];
@@ -49,7 +49,7 @@ export function buildSystem(settings, chat, mode, query = '') {
   out.push(section('Policies (delivery, payment, returns)', plain(b.policies)));
   out.push(section('Example replies in our voice', plain(b.examples)));
   out.push(section('Learned from the owner\'s own past chats (how they answer, what they quote; if this conflicts with a section above, the section above wins)', fit(b.learned)));
-  out.push(section('From the business website and WhatsApp profile', fit(b.learnedWeb)));
+  out.push(section('From the business website, WhatsApp profile and saved files', settings.llm.tokenSaver === false ? fit(b.learnedWeb) : trimProse(fit(b.learnedWeb), query, settings.llm.knowledgeChars || 6000)));
   out.push(section('Standing instructions from the owner (always follow)', b.memory));
 
   out.push(`

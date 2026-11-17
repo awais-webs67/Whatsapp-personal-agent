@@ -10,6 +10,7 @@ import { STAGES, extractJson } from './brain.js';
 import { runCampaign, campaign, whyNotSending } from './followups.js';
 import { createTask, listTasks, taskView, controlTask, setTaskRunner, setCampaign, nextRun } from './tasks.js';
 import { quickIntent, ASKS_PERMISSION } from './intent.js';
+import { shortcut } from './shortcuts.js';
 import { humanSend } from './pipeline.js';
 import { learnFromChats, learnFromWebsite, learnFromProfile } from './learn.js';
 
@@ -248,6 +249,10 @@ function facts(steps) {
 const withFacts = (reply, steps) => [reply, ...facts(steps)].filter(Boolean).join('\n');
 
 export async function runCommand(text, history = [], { scheduled = false } = {}) {
+  // The owner's own shortcuts: teach, list, remove, or expand one into the full instruction.
+  const sc = shortcut(text);
+  if (sc?.reply) return { reply: sc.reply, steps: [] };
+  if (sc?.text) text = sc.text;
   // Orders the app understands by itself run straight away: no model, no "should I?".
   const quick = quickIntent(text, { scheduled });
   if (quick && TOOLS[quick.action]) {

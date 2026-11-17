@@ -53,6 +53,31 @@ function trimBlock(head, items, q, { full, keepAll, indexChars }) {
   ];
 }
 
+/**
+ * Long notes and documents: keep list blocks (products, Q&A) as they are, and of the prose paragraphs send only
+ * the ones that match the conversation, in their original order, up to `max` characters.
+ */
+export function trimProse(text, query, max = 6000) {
+  const src = String(text || '').trim();
+  if (src.length <= max) return src;
+  const q = words(query);
+  const paras = src.split(/\n{2,}/).map((p, i) => {
+    const lines = p.split('\n');
+    const keep = /^Source: /.test(p) || lines.some(isItem); // headers and lists stay
+    const low = p.toLowerCase();
+    return { p, i, keep, s: q.reduce((n, w) => n + (low.includes(w) ? 1 : 0), 0) };
+  });
+  let room = max - paras.filter((x) => x.keep).reduce((n, x) => n + x.p.length + 2, 0);
+  const chosen = new Set();
+  for (const x of [...paras].filter((x) => !x.keep).sort((a, b) => b.s - a.s || a.i - b.i)) {
+    if (x.p.length + 2 > room) continue;
+    chosen.add(x.i);
+    room -= x.p.length + 2;
+  }
+  const left = paras.filter((x) => !x.keep && !chosen.has(x.i)).length;
+  return [...paras.filter((x) => x.keep || chosen.has(x.i)).map((x) => x.p), ...(left ? [`(${left} more paragraphs of saved notes are not shown here. If the customer asks about something not covered above, say you will check.)`] : [])].join('\n\n');
+}
+
 const looksLikeProduct = (line) => (line.match(/\s[—–]\s/g) || []).length >= 2 && /\d/.test(line);
 
 /**

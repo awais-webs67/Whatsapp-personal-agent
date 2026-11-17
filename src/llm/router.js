@@ -284,8 +284,19 @@ export async function complete(req, { purpose = 'reply' } = {}) {
   }
 }
 
+const SPREAD = new Set(['analyze', 'followup']);
+let turn = 0;
+/** For batch work, start each request at the next ready model, so all of them share the load and their limits. */
+export function ordered(purpose, chain = chainFor(purpose)) {
+  if (!SPREAD.has(purpose) || getSettings().llm.spread === false) return chain;
+  const ready = chain.filter((r) => r.enabled && !blockedReason(r));
+  if (ready.length < 2) return chain;
+  const first = ready[turn++ % ready.length];
+  return [first, ...chain.filter((r) => r.id !== first.id)];
+}
+
 async function completeOnce(req, purpose) {
-  const chain = chainFor(purpose);
+  const chain = ordered(purpose);
   if (!chain.some((r) => r.enabled)) throw new LLMError('bad_request', 'No AI model is configured. Add one on the Models page.');
   const hops = [];
   for (const row of chain) {

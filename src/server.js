@@ -16,7 +16,7 @@ import { startPipeline, onOwner, eligibility, answerNow } from './agent/pipeline
 import { runChatCommand, COMMANDS } from './agent/chat-commands.js';
 import { startFollowups, runCampaign, campaign, whyNotSending, followupStatus } from './agent/followups.js';
 import { learnFromChats, learnFromWebsite, learnFromProfile, learning } from './agent/learn.js';
-import { importKnowledgeFiles } from './agent/knowledge-files.js';
+import { importKnowledgeFiles, saveUpload, listFiles, removeFile } from './agent/knowledge-files.js';
 import { handleCommand, startCommander, listThreads, newThread } from './agent/commander.js';
 import { listTasks, createTask, controlTask, startTasks } from './agent/tasks.js';
 
@@ -386,6 +386,13 @@ app.get('/api/pacing', wrap(() => PACING));
 app.get('/api/learn', wrap(() => learning));
 app.post('/api/learn/website', wrap(async (req) => learnFromWebsite(String(req.body.url || ''))));
 app.post('/api/learn/files', wrap(() => importKnowledgeFiles({ force: true })));
+// Knowledge files (.md, .txt, .docx) uploaded from the Knowledge page: the body is the file itself.
+app.get('/api/knowledge/files', wrap(() => listFiles()));
+app.post('/api/knowledge/files', express.raw({ type: () => true, limit: '15mb' }), wrap((req) => {
+  if (!Buffer.isBuffer(req.body) || !req.body.length) throw bad('Empty file');
+  return saveUpload(decodeURIComponent(String(req.headers['x-file-name'] || 'notes.txt')), req.body);
+}));
+app.delete('/api/knowledge/files/:name', wrap((req) => removeFile(req.params.name)));
 app.post('/api/learn/profile', wrap(async () => learnFromProfile(await wa.profiles())));
 
 // ---------- tasks ----------

@@ -1,4 +1,4 @@
-import { h, set, GET, POST, PUT, act, toast, modal, field, toggle, select, clock, num, stagePill } from './ui.js';
+import { h, set, GET, POST, PUT, DEL, act, toast, modal, field, toggle, select, clock, num, stagePill, rel } from './ui.js';
 import { S, live } from './state.js';
 import { logRow } from './pages-main.js';
 
@@ -150,6 +150,26 @@ function learnCard(f, b) {
   live.on('weblearn', (w) => w.running && w.total && set(webNote, `Reading product pages: ${w.done} of ${w.total}…`));
   const filesBtn = h('button.btn', { title: 'Loads the shop data saved in the knowledge folder (made with scripts/fetch-shop.mjs). Works without opening the website.', onclick: () => act(filesBtn, async () => { const r = await POST('/api/learn/files'); await refill(r.files ? `Loaded ${r.names.join(', ')}.` : 'No saved files found in the knowledge folder.'); }) }, 'Load saved shop files');
   const profBtn = h('button.btn', { title: 'Uses the business profile and catalogue of your connected WhatsApp Business number', onclick: () => act(profBtn, async () => { await POST('/api/learn/profile'); await refill('Profile read. Check the text below.'); }) }, 'Read WhatsApp profile');
+  // Files: .md, .txt, .docx. Each one is read into the box below and kept on the server; remove it to forget it.
+  const fileList = h('div.stack');
+  const loadFiles = async () => {
+    const files = await GET('/api/knowledge/files').catch(() => []);
+    set(fileList, files.length ? files.map((x) => h('div.row', { style: 'justify-content:space-between;border:1px solid var(--line);padding:8px 12px' },
+      h('span', {}, h('b', {}, x.file), h('span.muted', {}, ` · ${num(x.chars)} characters · ${rel(x.updatedAt)}`)),
+      x.builtIn ? h('span.pill', { title: 'Comes with the app' }, 'Built in') : h('button.btn.sm.danger', { onclick: (e) => act(e.target, async () => { await DEL(`/api/knowledge/files/${encodeURIComponent(x.file)}`); await loadFiles(); await refill(`${x.file} removed. The agent no longer uses it.`); }) }, 'Remove'))) : h('span.muted', {}, 'No files yet.'));
+  };
+  const picker = h('input', { type: 'file', multiple: true, accept: '.md,.txt,.docx,.markdown', style: 'display:none', onchange: () => act(upBtn, async () => {
+    for (const file of picker.files) {
+      const res = await fetch('/api/knowledge/files', { method: 'POST', headers: { 'content-type': 'application/octet-stream', 'x-file-name': encodeURIComponent(file.name) }, body: file });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(`${file.name}: ${j.error || res.status}`);
+    }
+    picker.value = '';
+    await loadFiles();
+    await refill('Files added. The agent uses them from the next message.');
+  }) });
+  const upBtn = h('button.btn', { onclick: () => picker.click() }, 'Upload files');
+  loadFiles();
   const status = h('div');
   const btn = h('button.btn.dark', { onclick: () => act(btn, async () => draw(await POST('/api/learn', {}))) }, b.learned ? 'Learn again' : 'Learn from my chats');
   const draw = (l) => {
@@ -161,13 +181,15 @@ function learnCard(f, b) {
   live.on('learning', draw);
   GET('/api/learn').then((l) => l.running && draw(l));
   return h('div.card', {}, h('header', {}, h('h2', {}, 'Train the agent'), btn), h('div.pad.stack', {},
-    h('p', {}, 'Three ways to teach it without typing everything: your own past chats, your website, and your WhatsApp Business profile. Each one fills a text box you can edit. Old chats and pages can hold old prices, so skim the result.'),
+    h('p', {}, 'Ways to teach it without typing everything: your own past chats, your website, your WhatsApp Business profile and your own files. Each one fills a text box you can edit. Old chats and pages can hold old prices, so skim the result.'),
     status,
     field('From your chats', f.learned, b.learnedAt ? `Last updated ${new Date(b.learnedAt).toLocaleString()}. Anything you write in the sections above wins over this.` : 'Needs a linked number with synced history.'),
     h('div.row.wrap', { style: 'align-items:flex-end' }, h('div.grow', { style: 'min-width:220px' }, field('Website to read', url, 'Reads every product (name, price, description) the site publishes, plus its about, FAQ and policy pages. Your shop or home page link is enough.')),
       h('div', { style: 'padding-bottom:22px' }, h('div.row.wrap', {}, webBtn, filesBtn, profBtn))),
     webNote,
-    field('From your website and WhatsApp profile', f.learnedWeb),
+    h('label.f', {}, 'Your files (.md, .txt, .docx)', h('div.row.wrap', {}, upBtn, picker), fileList,
+      h('small', {}, 'Price lists, FAQs, policies, scripts. Long files are fine: for each reply only the parts that match the customer\'s question are sent to the model, which saves tokens. Old .doc files: save them as .docx first.')),
+    field('From your website, profile and files', f.learnedWeb),
     field('Standing instructions', f.memory, 'Things you told the agent to remember, e.g. a running offer. One per line. You can also add these by command: “remember that…”.')));
 }
 
