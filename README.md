@@ -79,6 +79,12 @@ See `.env.example` for options. Put the dashboard behind HTTPS before exposing i
 - Voice notes and images arrive as `[voice note]` / `[image]` placeholders; the agent sees that
   one was sent but not its content.
 
+## Run it on a server
+
+On any Ubuntu server (Oracle Cloud Always Free, a Hostinger VPS, …), clone the project and run
+`bash deploy/setup-server.sh agent.yourdomain.com`. It installs Node.js, keeps the agent running with PM2 and
+adds HTTPS with Caddy. Step by step for Oracle: [deploy/ORACLE.md](deploy/ORACLE.md).
+
 ## Tests
 
 ```bash

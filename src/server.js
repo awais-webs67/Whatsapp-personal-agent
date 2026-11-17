@@ -469,7 +469,9 @@ export function start(port = Number(process.env.PORT) || 3000) {
   startRouterTicker();
   wa.startAll();
   syncBalances().catch(() => {});
-  return app.listen(port, () => log('info', 'server', `Dashboard ready on http://localhost:${port}`));
+  // HOST=127.0.0.1 keeps the app reachable only through the HTTPS proxy on a server.
+  const host = process.env.HOST || undefined;
+  return app.listen(port, host, () => log('info', 'server', `Dashboard ready on http://${host || 'localhost'}:${port}`));
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
