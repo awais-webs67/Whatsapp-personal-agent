@@ -21,7 +21,7 @@ function classify(status, body) {
   const text = typeof body === 'string' ? body : JSON.stringify(body ?? '');
   if (status === 400 && /api[ _-]?key|API_KEY_INVALID/i.test(text)) return 'auth'; // Gemini reports a bad key as 400
   // The configured model was renamed, retired, or is not on this account: the router picks a current one.
-  if ((status === 404 || status === 400 || status === 403) && /model[^"]{0,80}(does not exist|not[ _]found|decommission|deprecat|no longer|not supported|do not have access|is not available|unknown)|model_(not_found|decommissioned)|invalid model/i.test(text)) return 'model_missing';
+  if ((status === 404 || status === 400 || status === 403) && /model[^"]{0,80}(does not exist|not[ _]found|decommission|deprecat|no longer|not supported|do not have access|is not available|unknown)|model_(not_found|decommissioned)|invalid model|cannot be used with the chat\/completions endpoint|not a chat model|does not support chat|not supported (for|on|with) (the )?chat|only (available|supported) (in|on|via) (the )?(v1\/)?(completions|responses|batch)/i.test(text)) return 'model_missing';
   // Region / VPN blocks (Groq: "Access denied. Please check your network settings.") are not key problems.
   if (status === 403 && GEO_RE.test(text)) return 'network';
   // Some gateways (AgentRouter) only serve the coding tools they have approved and reject every other app.
@@ -303,7 +303,7 @@ export async function probe(provider) {
 }
 
 // Model IDs that are not chat models (speech, images, embeddings, safety filters...).
-const NOT_CHAT = /whisper|tts|audio|speech|transcri|embed|guard|moderation|image|vision-preview|dall-e|sora|imagen|veo|rerank|realtime|search-preview|computer-use|aqa|playai|orpheus|prompt-guard|safeguard|ocr/i;
+const NOT_CHAT = /:batch\b|[-_/]batch\b|whisper|tts|audio|speech|transcri|embed|guard|moderation|image|vision-preview|dall-e|sora|imagen|veo|rerank|realtime|search-preview|computer-use|aqa|playai|orpheus|prompt-guard|safeguard|ocr/i;
 // Signs of a capable, general chat model, best first.
 const GOOD = [/gpt-oss-120b/i, /llama-4-maverick|llama-3\.3-70b|70b/i, /qwen3?-.*(32b|235b)|kimi-k2/i, /flash(?!-lite)|sonnet|gpt-4\.1|gpt-4o|large|pro\b/i, /versatile|instruct|chat|turbo/i, /mini|instant|8b|lite/i];
 

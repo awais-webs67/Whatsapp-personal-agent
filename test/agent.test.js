@@ -35,6 +35,8 @@ const server = http.createServer((req, res) => {
     const send = (status, json, headers = {}) => { res.writeHead(status, { 'content-type': 'application/json', ...headers }); res.end(JSON.stringify(json)); };
     if (key === 'limited') return send(429, { error: { message: 'Rate limit reached' } }, { 'retry-after': '120' });
     if (key === 'broke') return send(429, { error: { message: 'You exceeded your current quota, please check your plan and billing details' } });
+    if (key === 'batchonly' && req.url.endsWith('/models')) return send(200, { data: [{ id: 'deepseek/deepseek-v4-flash-0731:batch' }, { id: 'deepseek/deepseek-v4-flash-0731', context_length: 128000 }, { id: 'qwen/qwen3-8b', context_length: 32000 }] });
+    if (key === 'batchonly' && /:batch$/.test(body && JSON.parse(body).model)) return send(404, { error: { message: `${JSON.parse(body).model} cannot be used with the chat/completions endpoint (adapter DeepInfraBatchAdapter).`, code: 404 } });
     if (key === 'badkey') return send(401, { error: { message: 'Incorrect API key provided' } });
     if (key === 'flaky' && (flakyCount = (flakyCount || 0) + 1) === 1) return send(200, { model: 'small', choices: [{ message: { content: '' }, finish_reason: 'stop' }] });
     if (key === 'toolcalls') return send(200, { model: 'small', choices: [{ message: { content: null, tool_calls: [{ type: 'function', function: { name: 'stats', arguments: '{"days":3}' } }] }, finish_reason: 'stop' }] });
@@ -769,4 +771,18 @@ test('daily summary', async () => {
   const { digest } = await import('../src/agent/updates.js');
   const d = digest();
   assert.match(d, /^Daily summary: \d+ new leads, \d+ messages in, \d+ agent replies, \d+ follow-ups sent\./);
+});
+
+test('a batch-only model is never offered for chat, and one already set is swapped for its chat version', async () => {
+  const { describeModel, chooseModel } = await import('../src/llm/client.js');
+  assert.equal(describeModel({ id: 'deepseek/deepseek-v4-flash-0731:batch' }).chat, false);
+  assert.equal(chooseModel(['deepseek/deepseek-v4-flash-0731:batch', 'deepseek/deepseek-v4-flash-0731'], 'deepseek/deepseek-v4-flash-0731:batch'), 'deepseek/deepseek-v4-flash-0731');
+  run('UPDATE providers SET enabled = 0');
+  const id = Number(run('INSERT INTO providers (preset, name, kind, base_url, api_key, model, priority, created_at) VALUES (?,?,?,?,?,?,?,?)', 'openrouter', 'OpenRouter', 'openai', baseUrl, encrypt('batchonly'), 'deepseek/deepseek-v4-flash-0731:batch', -1, now()).lastInsertRowid);
+  reply = '{"reply": "ok"}';
+  const out = await complete({ messages: [{ role: 'user', content: 'x' }] }, { purpose: 'command' });
+  assert.equal(out.text, '{"reply": "ok"}');
+  assert.equal(get('SELECT model FROM providers WHERE id = ?', id).model, 'deepseek/deepseek-v4-flash-0731');
+  run('DELETE FROM providers WHERE id = ?', id);
+  run('UPDATE providers SET enabled = 1');
 });
