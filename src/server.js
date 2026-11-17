@@ -12,7 +12,8 @@ import { listProviders, publicProvider, callProvider, complete, hydrate, syncBal
 import { chooseModel } from './llm/client.js';
 import * as wa from './wa/manager.js';
 import { STAGES, decide, buildSystem } from './agent/brain.js';
-import { startPipeline, onOwner, eligibility } from './agent/pipeline.js';
+import { startPipeline, onOwner, eligibility, answerNow } from './agent/pipeline.js';
+import { runChatCommand, COMMANDS } from './agent/chat-commands.js';
 import { startFollowups, runCampaign, campaign, whyNotSending, followupStatus } from './agent/followups.js';
 import { learnFromChats, learnFromWebsite, learnFromProfile, learning } from './agent/learn.js';
 import { importKnowledgeFiles } from './agent/knowledge-files.js';
@@ -257,6 +258,12 @@ app.post('/api/chats/:id/remind', wrap((req) => {
   emit('chat', { chatId: chat.id });
   return { ok: true, at: Math.max(at, now()) };
 }));
+/** "/stop", "/bought", "/remind 2h …" typed in the Inbox: run it for this chat, never send it to the customer. */
+app.post('/api/chats/:id/command', wrap((req) => {
+  const chat = need(get('SELECT id FROM chats WHERE id = ?', Number(req.params.id)), 'Chat');
+  return { reply: runChatCommand(chat.id, String(req.body.text || ''), { answerNow }) };
+}));
+app.get('/api/chat-commands', wrap(() => COMMANDS.map(([cmd, about]) => ({ cmd, about }))));
 app.post('/api/chats/:id/suggest', wrap(async (req) => {
   const d = await decide(Number(req.params.id), 'reply');
   return { messages: d.messages, provider: d.provider, model: d.model, handoff: d.handoff, handoffReason: d.handoffReason };

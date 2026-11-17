@@ -203,6 +203,9 @@ export class QrConnector {
     if (on) await sock.sendPresenceUpdate('available').catch(() => {});
     await sock.sendPresenceUpdate(on ? 'composing' : 'paused', jid).catch(() => {});
   }
+  async deleteForEveryone(jid, key) {
+    if (key) await this.#need().sendMessage(jid, { delete: key }).catch(() => {});
+  }
   async markRead(jid) {
     const key = this.lastKeys.get(jid);
     if (key) await this.#need().readMessages([key]).catch(() => {});

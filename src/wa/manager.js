@@ -7,7 +7,8 @@ import { CloudConnector } from './cloud.js';
 const connectors = new Map(); // accountId -> connector
 const statuses = new Map();   // accountId -> { state, qr, pairingCode, me, error }
 const pendingBot = new Map(); // chatId -> [{ text, by, at }] sends in flight, to recognise our own echoes
-let handlers = { onCustomer: () => {}, onOwner: () => {}, onCommand: () => {} };
+let handlers = { onCustomer: () => {}, onOwner: () => {}, onCommand: () => {}, onChatCommand: () => {} };
+const CHAT_COMMAND = /^[/#!][a-z]+\b/i; // the exact list is checked by the handler
 export const setHandlers = (h) => { handlers = { ...handlers, ...h }; };
 
 export const statusOf = (id) => statuses.get(id) || { state: 'disconnected' };
@@ -106,6 +107,13 @@ function ingest(accountId, msgs, live) {
     for (const m of msgs) {
       const chat = upsertChat(accountId, m, live);
       const pending = m.fromMe ? takePending(chat.id, m.text) : null;
+      // "/stop", "#bought", "/remind 2h …" typed by the owner in a customer's chat: a command for the agent.
+      // It is not stored as part of the conversation, and the handler deletes it for everyone.
+      if (live && m.fromMe && !pending && CHAT_COMMAND.test(m.text) && !connectors.get(accountId)?.isSelf?.(m.jid) && handlers.isChatCommand?.(m.text)) {
+        (touched.get(chat.id) || touched.set(chat.id, { chat, last: null, liveCustomer: false, liveOwner: false }).get(chat.id)).chatCommands = [
+          ...((touched.get(chat.id)?.chatCommands) || []), { text: m.text, key: m.raw?.key, jid: m.jid }];
+        continue;
+      }
       const by = m.fromMe ? (pending?.by || 'owner') : 'customer';
       const res = run('INSERT OR IGNORE INTO messages (chat_id, wa_id, from_me, by, type, text, ts) VALUES (?,?,?,?,?,?,?)', chat.id, m.waId, m.fromMe ? 1 : 0, by, m.type, m.text, m.ts);
       if (!res.changes) continue; // duplicate (already stored, or our own send echoed back)
@@ -124,6 +132,7 @@ function ingest(accountId, msgs, live) {
       touched.set(chat.id, t);
     }
     for (const [chatId, t] of touched) {
+      if (!t.last) continue; // only commands arrived in this chat
       const prev = get('SELECT last_msg_at FROM chats WHERE id = ?', chatId);
       if (!prev.last_msg_at || t.last.ts >= prev.last_msg_at) run('UPDATE chats SET last_msg_at = ?, last_text = ? WHERE id = ?', t.last.ts, t.last.text.slice(0, 200), chatId);
       run(`UPDATE chats SET
@@ -141,6 +150,8 @@ function ingest(accountId, msgs, live) {
   if (!touched.size) return;
   if (!live) return emit('history', { accountId, chats: touched.size });
   for (const [chatId, t] of touched) {
+    for (const c of t.chatCommands || []) handlers.onChatCommand(chatId, c.text, { accountId, key: c.key, jid: c.jid });
+    if (!t.last) continue;
     emit('chat', { chatId });
     if (t.command) handlers.onCommand(chatId, t.command);
     else if (t.liveCustomer) handlers.onCustomer(chatId);
@@ -186,6 +197,8 @@ export async function profiles() {
   }
   return out.join('\n\n');
 }
+/** Remove one of our own messages for everyone in the chat (used to hide an owner's command from the customer). */
+export const deleteForEveryone = (accountId, jid, key) => connectors.get(accountId)?.deleteForEveryone?.(jid, key) ?? Promise.resolve();
 export const idle = (accountId) => connectors.get(accountId)?.idle?.() ?? Promise.resolve();
 
 /** Test hook: register a fake connector without touching WhatsApp. */

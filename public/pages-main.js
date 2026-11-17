@@ -150,9 +150,27 @@ export function inbox(openId) {
     for (const f of followups) bubbles.push(h('div.msg.me.followup', { dir: 'auto' }, f.text, h('small', {}, f.kind === 'reminder' ? `Reminder · sends ${new Date(f.due_at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}` : f.status === 'pending' ? 'Follow-up draft · waiting for your approval' : 'Follow-up · queued to send')));
     const thread = h('div.thread', {}, bubbles.length ? bubbles : h('div.empty', {}, 'No messages stored for this chat.'));
 
-    const input = h('textarea', { dir: 'auto', rows: 1, placeholder: 'Write a reply. Enter to send, Shift+Enter for a new line.', 'aria-label': 'Reply', value: draft,
+    const input = h('textarea', { dir: 'auto', rows: 1, placeholder: 'Write a reply, or type / for agent commands (never sent to the customer)', 'aria-label': 'Reply', value: draft,
       onkeydown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendBtn.click(); } } });
-    const sendBtn = h('button.btn.primary', { onclick: () => { const text = input.value.trim(); if (text) act(sendBtn, async () => { await POST(`/api/chats/${chat.id}/send`, { text }); input.value = ''; }); } }, 'Send');
+    const hints = h('div.cmdhints.hide');
+    const showHints = () => {
+      const v = input.value.trim();
+      if (!/^[/#]/.test(v) || v.includes(' ')) return hints.classList.add('hide');
+      const q = v.slice(1).toLowerCase();
+      GET('/api/chat-commands').then((list) => {
+        const rows = list.filter((c) => c.cmd.startsWith(q));
+        set(hints, rows.map((c) => h('button.cmdhint', { type: 'button', onclick: () => { input.value = `/${c.cmd.split(' ')[0]} `; input.focus(); hints.classList.add('hide'); } }, h('b.mono', {}, `/${c.cmd}`), h('span', {}, c.about))));
+        hints.classList.toggle('hide', !rows.length);
+      });
+    };
+    input.addEventListener('input', showHints);
+    const sendBtn = h('button.btn.primary', { onclick: () => {
+      const text = input.value.trim();
+      if (!text) return;
+      // A command for the agent, never sent to the customer.
+      if (/^[/#][a-z]+/i.test(text)) return act(sendBtn, async () => { const r = await POST(`/api/chats/${chat.id}/command`, { text }); input.value = ''; hints.classList.add('hide'); toast(r.reply.split('\n')[0]); if (r.reply.includes('\n')) modal('Agent', h('pre.out', {}, r.reply)); });
+      act(sendBtn, async () => { await POST(`/api/chats/${chat.id}/send`, { text }); input.value = ''; });
+    } }, 'Send');
     const remindBtn = h('button.btn', { title: 'Send this customer a message at a set time', onclick: () => {
       const msg = h('textarea', { rows: 3, dir: 'auto', value: input.value, placeholder: 'e.g. Assalam o alaikum! Aap ka Canva order aaj expire ho raha hai, renew karna ho to bata dein.' });
       const when = h('input', { type: 'datetime-local' });
@@ -173,7 +191,7 @@ export function inbox(openId) {
       chat.needs_human ? h('div.banner.bad', {}, h('div.grow', {}, h('b', {}, 'Needs you. '), chat.handoff_reason || 'The agent asked for help.'), h('button.btn.sm', { onclick: () => patch({ resume: true }, 'Agent resumed') }, 'Hand back to agent')) : null,
       !chat.needs_human && chat.paused_until > Date.now() ? h('div.banner.warn', {}, h('div.grow', {}, `You replied by hand, so the agent is quiet until ${clock(chat.paused_until)}.`), h('button.btn.sm', { onclick: () => patch({ resume: true }, 'Agent resumed') }, 'Resume now')) : null,
       thread,
-      h('div.composer', {}, input, remindBtn, suggestBtn, sendBtn));
+      h('div', { style: 'position:relative' }, hints, h('div.composer', {}, input, remindBtn, suggestBtn, sendBtn)));
     if (stick) thread.scrollTop = thread.scrollHeight;
 
     const notes = h('textarea', { rows: 4, placeholder: 'Anything the agent should know about this customer', value: chat.notes || '', onblur: (e) => e.target.value !== (chat.notes || '') && patch({ notes: e.target.value }, 'Notes saved') });

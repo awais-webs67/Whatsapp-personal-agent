@@ -901,3 +901,53 @@ test('ad lead goes quiet after the owner answered by hand: the agent follows up 
   saveSettings({ followup: { approval: true } });
   run('UPDATE accounts SET connected_at = ? WHERE id = 1', linkedAt);
 });
+
+test('chat commands: stop, start, bought, follow-up, reminder, note, info', async () => {
+  const { parseChatCommand, runChatCommand, parseWhen } = await import('../src/agent/chat-commands.js');
+  assert.equal(parseChatCommand('/xyz hello'), null, 'unknown words are ordinary messages');
+  assert.equal(parseChatCommand('price kya hai /stop'), null, 'only at the start');
+  assert.deepEqual(parseChatCommand('#remind 2h Order ready'), { cmd: 'remind', rest: '2h Order ready' });
+  const chat = get("SELECT * FROM chats WHERE jid = '555@s.whatsapp.net'");
+  let answered = 0;
+  const hooks = { answerNow: () => { answered++; } };
+  assert.match(runChatCommand(chat.id, '/stop', hooks), /Agent stopped/);
+  assert.equal(get('SELECT ai_enabled FROM chats WHERE id = ?', chat.id).ai_enabled, 0);
+  assert.match(runChatCommand(chat.id, '/start', hooks), /Agent is on/);
+  assert.equal(get('SELECT ai_enabled FROM chats WHERE id = ?', chat.id).ai_enabled, 1);
+  assert.match(runChatCommand(chat.id, '/followup now', hooks), /written now/);
+  assert.ok(get('SELECT next_followup_at FROM chats WHERE id = ?', chat.id).next_followup_at <= now() + 1000);
+  assert.match(runChatCommand(chat.id, '/bought', hooks), /purchased/);
+  assert.equal(get('SELECT stage, next_followup_at FROM chats WHERE id = ?', chat.id).next_followup_at, null);
+  assert.match(runChatCommand(chat.id, '/remind 2h Aap ka order ready hai', hooks), /Reminder for/);
+  const r = get("SELECT * FROM followups WHERE chat_id = ? AND kind = 'reminder' ORDER BY id DESC LIMIT 1", chat.id);
+  assert.equal(r.text, 'Aap ka order ready hai');
+  assert.ok(Math.abs(r.due_at - (now() + 2 * 3_600_000)) < 5000);
+  assert.ok(parseWhen('kal 10 baje Payment yaad rakhna').at > now(), 'Roman Urdu times work');
+  assert.match(runChatCommand(chat.id, '/note Sirf Urdu mein baat karein', hooks), /Note saved/);
+  assert.match(get('SELECT notes FROM chats WHERE id = ?', chat.id).notes, /Sirf Urdu/);
+  assert.match(runChatCommand(chat.id, '/info', hooks), /purchased[\s\S]*Notes: .*Sirf Urdu[\s\S]*Queued: reminder/);
+  assert.match(runChatCommand(chat.id, '/help', hooks), /\/stop – /);
+  run("UPDATE followups SET status = 'skipped' WHERE chat_id = ? AND status = 'approved'", chat.id);
+  run("UPDATE chats SET ai_enabled = NULL, stage = 'interested' WHERE id = ?", chat.id);
+});
+
+test('a command typed in a customer chat on WhatsApp is run, hidden from the customer, and confirmed to the owner', async () => {
+  const deleted = [];
+  fake.deleteForEveryone = async (jid, key) => { deleted.push({ jid, key }); };
+  const chat = get("SELECT * FROM chats WHERE jid = '555@s.whatsapp.net'");
+  const before = get('SELECT COUNT(*) n FROM messages WHERE chat_id = ?', chat.id).n;
+  const n = sent.length;
+  deliver([{ jid: '555@s.whatsapp.net', waId: 'cmd-1', fromMe: true, text: '/stop', type: 'text', ts: now(), raw: { key: { id: 'cmd-1', fromMe: true, remoteJid: '555@s.whatsapp.net' } } }]);
+  await until(() => deleted.length === 1, 3000);
+  assert.equal(deleted[0].key.id, 'cmd-1', 'deleted for everyone');
+  assert.equal(get('SELECT ai_enabled FROM chats WHERE id = ?', chat.id).ai_enabled, 0, 'the agent stopped for this customer');
+  assert.equal(get('SELECT COUNT(*) n FROM messages WHERE chat_id = ?', chat.id).n, before, 'the command is not part of the conversation');
+  assert.equal(get('SELECT paused_until FROM chats WHERE id = ?', chat.id).paused_until, chat.paused_until, 'not treated as the owner replying');
+  assert.ok(sent.slice(n).every((s) => s.jid !== '555@s.whatsapp.net'), 'nothing was sent to the customer');
+  const updates = get("SELECT id FROM command_threads WHERE kind = 'updates'").id;
+  assert.match(get('SELECT text FROM commands WHERE thread_id = ? ORDER BY id DESC LIMIT 1', updates).text, /Agent stopped for/);
+  // An ordinary owner message that merely starts with a slash-like word is still a normal message.
+  deliver([{ jid: '555@s.whatsapp.net', waId: 'own-normal', fromMe: true, text: '/price list attached', type: 'text', ts: now() }]);
+  assert.equal(get('SELECT COUNT(*) n FROM messages WHERE chat_id = ?', chat.id).n, before + 1);
+  run('UPDATE chats SET ai_enabled = NULL, paused_until = NULL WHERE id = ?', chat.id);
+});

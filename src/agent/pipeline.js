@@ -4,6 +4,7 @@ import { getSettings, log, emit, sleep, rand } from '../core.js';
 import * as wa from '../wa/manager.js';
 import { decide, CLOSED } from './brain.js';
 import { notify, who } from './updates.js';
+import { parseChatCommand, runChatCommand } from './chat-commands.js';
 
 const timers = new Map(); // chatId -> debounce timer
 const busy = new Set();   // chats currently being answered
@@ -156,6 +157,21 @@ async function answer(chatId) {
   }
 }
 
+/** Answer the customer now, whatever the debounce or pause (used by /start and /reply). */
+export function answerNow(chatId) {
+  clearTimeout(timers.get(chatId));
+  timers.delete(chatId);
+  answer(chatId);
+}
+
 export function startPipeline() {
-  wa.setHandlers({ onCustomer, onOwner });
+  wa.setHandlers({
+    onCustomer, onOwner,
+    isChatCommand: (text) => !!parseChatCommand(text),
+    onChatCommand: (chatId, text, { accountId, key, jid }) => {
+      const reply = runChatCommand(chatId, text, { answerNow });
+      wa.deleteForEveryone(accountId, jid, key).catch(() => {});
+      notify(reply); // dashboard + your "Message yourself" chat
+    },
+  });
 }
