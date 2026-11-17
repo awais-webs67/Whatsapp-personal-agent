@@ -11,15 +11,17 @@ old="$(git rev-parse HEAD)"
 new="$(git rev-parse FETCH_HEAD)"
 [[ "$old" == "$new" ]] && exit 0
 
+# npm can rewrite package-lock.json on the server; that is not a real local change, so it never blocks an update.
+git checkout -q -- package-lock.json 2>/dev/null || true
 if ! git merge -q --ff-only FETCH_HEAD; then
   echo "$(date -Is) update: files were changed on the server, skipped. Run: git status"
   exit 0
 fi
 if git diff --name-only "$old" HEAD | grep -qE '^package(-lock)?\.json$'; then
-  if ! npm install --omit=dev --no-audit --no-fund; then
+  if ! npm ci --omit=dev --no-audit --no-fund; then
     echo "$(date -Is) update: npm install failed, going back to the old version"
     git reset -q --hard "$old"
-    npm install --omit=dev --no-audit --no-fund
+    npm ci --omit=dev --no-audit --no-fund
     exit 1
   fi
 fi

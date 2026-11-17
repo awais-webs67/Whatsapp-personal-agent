@@ -46,7 +46,8 @@ node -v
 
 step "App packages"
 cd "$APP_DIR"
-npm install --omit=dev
+git checkout -q -- package-lock.json 2>/dev/null || true
+npm ci --omit=dev --no-audit --no-fund   # installs exactly the locked versions and leaves package-lock.json as it is
 
 step "PM2: keep the agent running"
 sudo npm install -g pm2
