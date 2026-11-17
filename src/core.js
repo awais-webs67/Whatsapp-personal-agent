@@ -59,6 +59,7 @@ export const DEFAULT_SETTINGS = {
     dailyCap: 40,                       // proactive messages per account per day
     gapMinSec: 60, gapMaxSec: 240,
   },
+  reading: { auto: true, perTick: 4 },  // keep reading chats that changed (stage + summary), a few at a time
   llm: { historyMessages: 12, maxTokens: 1024, timeoutSec: 20, tokenSaver: true, spread: true, knowledgeChars: 6000 },
 };
 

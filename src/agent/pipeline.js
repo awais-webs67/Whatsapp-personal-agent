@@ -137,6 +137,8 @@ async function answer(chatId) {
     }, ['stage', 'summary', 'needs_human', 'handoff_reason']);
 
     await humanSend(chat, decision.messages, 'ai', now() - started);
+    // The reply came with a fresh stage and summary: the chat counts as read up to here.
+    update('chats', chatId, { analyzed_at: now() }, ['analyzed_at']);
     scheduleNextFollowup(chatId, decision.followupHours);
     log('info', 'agent', `Replied to ${chat.name || chat.phone || chat.jid} via ${decision.provider} (${(decision.latencyMs / 1000).toFixed(1)}s)`);
     if (decision.handoff) notify(`${who(chat)} needs you: ${decision.handoffReason || 'the agent asked for help'}. Open the chat in the Inbox.`, { key: `handoff:${chatId}`, everyMs: 30 * 60_000 });

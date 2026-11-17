@@ -266,6 +266,19 @@ export function chainFor(purpose, rows = listProviders()) {
   return fits.some((r) => r.enabled) ? fits : rows;
 }
 
+/**
+ * When the next model for this kind of work is usable again: now if one is ready, the earliest cooldown end
+ * if all are resting, or null if none will recover by itself (keys rejected, models switched off).
+ */
+export function nextReadyAt(purpose) {
+  const rows = chainFor(purpose).filter((r) => r.enabled);
+  if (rows.some((r) => !blockedReason(r))) return now();
+  const ends = rows.map((r) => parse(r.state).cooldownUntil).filter((t) => t && t > now()).sort((a, b) => a - b);
+  return ends[0] || null;
+}
+/** The error that means "every model is at its limit for now" (not a bad key or a broken request). */
+export const outOfModels = (e) => e instanceof LLMError && ['quota', 'rate_limited', 'rate_limit'].includes(e.kind) && /No model could answer|limit|quota|busy/i.test(e.message);
+
 export async function complete(req, { purpose = 'reply' } = {}) {
   // A customer is waiting on a live reply: one short wait at most. Background work (reading chats, learning,
   // batches, commands) is patient: free models hit their limits often, and a few minutes of waiting beats failing.

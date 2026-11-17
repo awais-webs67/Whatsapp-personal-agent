@@ -26,6 +26,7 @@ let flakyCount = 0;
 let tpmCount = 0;
 let busyCount = 0;
 let flakyBatch = 0;
+let quotaOnce = 0;
 const budget = { left: 3000, resetAt: 0 }; // scripted answers for the owner-command prompt
 let reply = JSON.stringify({ messages: ['Hi! The price is 2500.', 'Want me to book it?'], stage: 'interested', summary: 'Asked price', handoff: false });
 const server = http.createServer((req, res) => {
@@ -58,6 +59,7 @@ const server = http.createServer((req, res) => {
         { 'x-ratelimit-remaining-tokens': String(budget.left), 'x-ratelimit-limit-tokens': '3000', 'x-ratelimit-reset-tokens': `${((budget.resetAt - nowMs) / 1000).toFixed(2)}s` });
     }
     if (key === 'htmlbase' && !req.url.startsWith('/v1/')) { res.writeHead(200, { 'content-type': 'text/html' }); return res.end('<!doctype html><html><body>Our website</body></html>'); }
+    if (key === 'quotaonce' && !req.url.endsWith('/models') && (quotaOnce = (quotaOnce || 0) + 1) === 1) return send(402, { error: { message: 'Insufficient balance' } });
     if (key === 'cnappid') return send(401, { error: { message: '无效的AppId' } });
     if (key === 'cnbusy') return send(429, { error: { message: '请求过于频繁，请稍后再试' } });
     if (key === 'cnbroke') return send(402, { error: { message: '余额不足' } });
@@ -618,7 +620,8 @@ test('orders are understood directly: days, interval, night, one person, questio
   assert.equal(quickIntent('923001234567 ko follow up bhejo'), null);
   assert.equal(quickIntent('kitne follow-up bheje gaye?'), null, 'questions are not orders');
   assert.equal(quickIntent('follow ups rok do').action, 'stop_followups');
-  assert.deepEqual(quickIntent('saari chats parho, analysis karo aur un se seekho'), { action: 'analyse_chats', args: { days: 90 } });
+  assert.deepEqual(quickIntent('saari chats parho, analysis karo aur un se seekho'), { action: 'analyse_chats', args: { days: 90, again: false } });
+  assert.equal(quickIntent('pichle 30 din ki chats dobara parho').args.again, true);
   assert.deepEqual(quickIntent('roz raat 9 baje naye logon ko follow up bhejo').args.daily_at, '21:00');
   assert.equal(quickIntent('roz raat 9 baje naye logon ko follow up bhejo', { scheduled: true }).action, 'start_followups', 'when the scheduled task runs, it sends instead of scheduling again');
   assert.equal(parseClock('subah 10:30 baje'), '10:30');
@@ -657,7 +660,7 @@ test('"read the chats and learn" runs as a task: every chat gets a stage and sum
   await until(() => !followups.campaign.running);
   reply = JSON.stringify({ stage: 'negotiating', summary: 'Wants a discount on the website package', should_followup: false, message: '', reason: '' });
   const n = sent.length;
-  const out = await runCommand('saari chats parho, analysis karo aur un se seekho');
+  const out = await runCommand('saari chats dobara parho, analysis karo aur un se seekho');
   assert.equal(out.steps[0].action, 'analyse_chats');
   const id = out.steps[0].result.task_id;
   await until(() => !followups.campaign.running, 8000);
@@ -668,6 +671,12 @@ test('"read the chats and learn" runs as a task: every chat gets a stage and sum
   assert.equal(get("SELECT summary FROM chats WHERE jid = '444@s.whatsapp.net'").summary, 'Wants a discount on the website package');
   assert.equal(sent.length, n, 'analysis sends nothing');
   assert.equal(get("SELECT COUNT(*) n FROM followups WHERE task_id = ?", id).n, 0);
+  // Asked again without "dobara": everything is already read and unchanged, so no model is called.
+  const before = calls.length;
+  const again = await runCommand('saari chats parho aur analysis karo');
+  assert.equal(again.steps[0].result.started, false);
+  assert.match(again.reply, /already read and nothing new/);
+  assert.equal(calls.length, before);
 });
 
 test('a request larger than the provider allows is shortened and sent, not failed', async () => {
@@ -995,4 +1004,63 @@ test('a base URL without /v1 that returns a web page is corrected and saved', as
   assert.ok(out.text);
   assert.equal(get('SELECT base_url FROM providers WHERE id = ?', id).base_url, `${root}/v1`);
   run('DELETE FROM providers WHERE id = ?', id);
+});
+
+test('settings and switches by command: follow-ups, auto replies, reading, random gaps', async () => {
+  const { quickIntent } = await import('../src/agent/intent.js');
+  const { runCommand } = await import('../src/agent/commander.js');
+  const { getSettings, saveSettings } = await import('../src/core.js');
+  assert.deepEqual(quickIntent('follow up band karo'), { action: 'change_settings', args: { followups: false } });
+  assert.deepEqual(quickIntent('auto reply on karo').args, { autopilot: true });
+  assert.deepEqual(quickIntent('chats parhna band karo').args, { reading: false });
+  assert.deepEqual(quickIntent('follow up randomly 10,15,6,25 minutes ke gap se bhejna').args, { followup_gap_minutes: [6, 25] });
+  assert.deepEqual(quickIntent('pichle 5 din ke logon ko follow up bhejo, 6 se 25 minute random').args.interval_minutes, [6, 25]);
+  const before = calls.length;
+  const r = await runCommand('follow up randomly 10,15,6,25 minutes ke gap se bhejna');
+  assert.match(r.reply, /spaced randomly 6 to 25 minutes apart/);
+  assert.equal(calls.length, before, 'no model call needed');
+  assert.deepEqual([getSettings().followup.gapMinSec, getSettings().followup.gapMaxSec], [360, 1500]);
+  assert.match((await runCommand('chats parhna band karo')).reply, /reading new chats off/);
+  assert.equal(getSettings().reading.auto, false);
+  assert.match((await runCommand('follow up band karo')).reply, /automatic follow-ups off/);
+  assert.equal(getSettings().followup.enabled, false);
+  await runCommand('follow up on karo');
+  assert.equal(getSettings().followup.enabled, true);
+  saveSettings({ followup: { gapMinSec: 0, gapMaxSec: 0 }, reading: { auto: true } });
+});
+
+test('a long command conversation is remembered: recent messages in full, everything the owner said before in short', async () => {
+  const { threadMemory } = await import('../src/agent/commander.js');
+  for (let i = 1; i <= 30; i++) run('INSERT INTO commands (role, text, thread_id, ts) VALUES (?,?,?,?)', i % 2 ? 'owner' : 'agent', i === 1 ? 'mera naam Awais hai, SellMeTools chalata hun' : `message ${i}`, 9999, now() + i);
+  const mem = threadMemory(9999);
+  assert.equal(mem[0].role, 'user');
+  assert.match(mem[0].content, /Earlier in this conversation[\s\S]*mera naam Awais hai/);
+  assert.match(mem.at(-1).content, /message 30/);
+  assert.equal(mem.length, 18);
+});
+
+test('when every model hits its limit a batch pauses and carries on from the same chat; changed chats are read again by themselves', async () => {
+  const { runCampaign, campaign, readChanged } = await import('../src/agent/followups.js');
+  const on = all('SELECT id FROM providers WHERE enabled = 1').map((r) => r.id);
+  run('UPDATE providers SET enabled = 0');
+  const id = Number(run('INSERT INTO providers (preset, name, kind, base_url, api_key, model, priority, created_at) VALUES (?,?,?,?,?,?,?,?)', 'custom', 'Resting', 'openai', baseUrl, encrypt('quotaonce'), 'fake-1', -5, now()).lastInsertRowid);
+  try {
+    reply = JSON.stringify({ stage: 'interested', summary: 'Asked about the website package', should_followup: false, message: '', reason: '' });
+    runCampaign({ analyzeOnly: true, sinceDays: 3650, reanalyze: true, limit: 2 });
+    await until(() => campaign.waitingUntil, 8000);
+    assert.equal(campaign.done, 0, 'paused on the first chat, nothing skipped');
+    run("UPDATE providers SET state = '{}' WHERE id = ?", id); // the limit is over
+    await until(() => !campaign.running, 8000);
+    assert.equal(campaign.failed, 0);
+    assert.equal(campaign.done, 2);
+    // Only chats with something new since they were read are read again.
+    const fresh = get("SELECT id FROM chats WHERE analyzed_at IS NOT NULL ORDER BY analyzed_at DESC LIMIT 1");
+    run('UPDATE chats SET analyzed_at = 0, last_msg_at = ? WHERE id = ?', now() - 10 * 60_000, fresh.id);
+    const n = await readChanged();
+    assert.ok(n >= 1);
+    assert.ok(get('SELECT analyzed_at FROM chats WHERE id = ?', fresh.id).analyzed_at > 0);
+  } finally {
+    run('DELETE FROM providers WHERE id = ?', id);
+    for (const p of on) run('UPDATE providers SET enabled = 1 WHERE id = ?', p);
+  }
 });

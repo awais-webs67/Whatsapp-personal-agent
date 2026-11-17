@@ -79,9 +79,35 @@ function namesOnePerson(t) {
  * Returns { action, args } for an order the app can carry out by itself, or null.
  * `scheduled` = this text is a scheduled task running now (so do not schedule it again).
  */
+const OFF = /\b(band|off|bnd|disable)\b/i;
+const HALT = /\b(rok|ruk|stop)\b/i; // "follow ups rok do" stops the running batch (stop_followups), it does not switch them off
+const ON = /\b(on|chalu|start|shuru|enable|chala|khol)\b/i;
+/** "follow up band karo", "auto reply on karo", "chats parhna band karo" -> which switch, on or off. */
+export function switchIntent(t) {
+  if (t.length > 120 || QUESTION.test(t) || /\d/.test(t)) return null;
+  let on = OFF.test(t) ? false : ON.test(t) ? true : null;
+  if (on === null && HALT.test(t) && !/follow\s*-?\s*ups?/i.test(t)) on = false;
+  if (on === null) return null;
+  if (/auto\s*-?\s*(reply|replies|jawab)|autopilot|customers?\s*ko\s*(jawab|reply)|auto\s*handl/i.test(t)) return { autopilot: on };
+  if (/(chats?|messages?)\s*(parh|padh|read|reading)|reading/i.test(t)) return { reading: on };
+  if (/follow\s*-?\s*ups?/i.test(t) && !/\b(bhej|send|ko)\b/i.test(t)) return { followups: on };
+  return null;
+}
+/** "randomly 10,15,6,25 minutes" / "6 se 25 minute random" -> [6, 25] */
+export function randomMinutes(t) {
+  if (!/random|randomly|alag\s*alag|kabhi/i.test(t)) return null;
+  const m = /((?:\d+\s*(?:,|se|to|-|aur|and|or|\/)\s*)+\d+)\s*(?:minute|minutes|mins?|mint|mnt)/i.exec(t);
+  const list = m ? m[1].split(/[^\d]+/).map(Number).filter((n) => n > 0) : [];
+  return list.length >= 2 ? [Math.min(...list), Math.max(...list)] : null;
+}
+
 export function quickIntent(text, { scheduled = false } = {}) {
   const t = String(text || '').trim();
   if (!t || t.length > 600) return null;
+  const sw = switchIntent(t);
+  if (sw) return { action: 'change_settings', args: sw };
+  const gap = randomMinutes(t);
+  if (gap && !/\b(pichle|last|din|days?|logon|logo|customers?|leads?)\b/i.test(t)) return { action: 'change_settings', args: { followup_gap_minutes: gap } };
   if (STOP.test(t) && !/mat\s*(rok|band)/i.test(t)) return { action: 'stop_followups', args: {} };
 
   const wantsSend = FOLLOW.test(t) && DO_IT.test(t) && !QUESTION.test(t);
@@ -103,7 +129,7 @@ export function quickIntent(text, { scheduled = false } = {}) {
       action: 'start_followups',
       args: {
         // Tagged customers are picked by the tag, not by how recent they are: look back a year unless a period is named.
-        days: tagsIn(t).length ? parseDays(t, 365) : parseDays(t), interval_minutes: Math.max(1, parseInterval(t)), instruction: t,
+        days: tagsIn(t).length ? parseDays(t, 365) : parseDays(t), interval_minutes: randomMinutes(t) || Math.max(1, parseInterval(t)), instruction: t,
         stages: /\binterested\b/i.test(t) ? ['interested', 'negotiating'] : [],
         audience: audienceOf(t),
         tags: tagsIn(t),
@@ -112,7 +138,7 @@ export function quickIntent(text, { scheduled = false } = {}) {
       },
     };
   }
-  return { action: 'analyse_chats', args: { days: parseDays(t, 90) } };
+  return { action: 'analyse_chats', args: { days: parseDays(t, 90), again: /dobara|dubara|phir\s*se|again|re-?read|naye\s*sire\s*se/i.test(t) } };
 }
 
 // The model asked for permission instead of acting.

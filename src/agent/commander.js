@@ -83,7 +83,8 @@ const TOOLS = {
       const tags = normTags(a.tags);
       if (!t.length) return { started: false, reason: 'No chats match' };
       const s = getSettings().followup;
-      const interval = Math.max(1, Number(a.interval_minutes) || 5);
+      const range = nums(a.interval_minutes).filter((n) => n > 0);
+      const interval = range.length >= 2 ? [Math.min(...range), Math.max(...range)] : Math.max(1, range[0] || 5);
       const taskId = createTask({ kind: 'batch', threadId: activeThread, ignoreQuiet: !!a.ignore_quiet_hours, title: `${audience === 'buyers' ? 'Reminders to buyers' : 'Follow-ups'}: ${String(a.instruction || 'quiet leads').slice(0, 80)}`, instruction: `${{ buyers: 'People who bought, ', non_buyers: 'People who did not buy, ', all: '' }[audience]}last ${days(a.days)} days${stageList(a.stages).length ? `, stages ${stageList(a.stages).join(', ')}` : ''}, every ${interval} min, ${a.send ? 'sends automatically' : 'drafts for approval'}. ${a.instruction || ''}`.trim() });
       await runCampaign({ taskId, sinceDays: days(a.days), limit: Math.min(500, Number(a.limit) || 100), reanalyze: true, instruction: String(a.instruction || '').slice(0, 600), autoApprove: !!a.send, intervalMinutes: interval, stages: stageList(a.stages), audience, tags });
       if (!campaign.total) run("UPDATE tasks SET status = 'removed' WHERE id = ?", taskId); // nothing to do: no empty task left behind
@@ -132,13 +133,21 @@ const TOOLS = {
     },
   },
   analyse_chats: {
-    doc: 'analyse_chats {"days": 90} - read every customer chat of the period in full, record each one\'s stage and summary, then learn the owner\'s offers, prices and tone from them. Sends nothing.',
+    doc: 'analyse_chats {"days": 90, "again": false} - read the customer chats of the period, record each one\'s stage and summary, then learn the owner\'s offers, prices and tone from them. Chats read before with nothing new since are skipped; "again": true reads them all again (only when the owner says again / dobara). Sends nothing.',
     run: async (a) => {
       const taskId = createTask({ kind: 'analysis', threadId: activeThread, title: `Read and learn from chats (last ${days(a.days, 90)} days)`, instruction: 'Read every customer chat, record its stage and summary, then learn offers, prices and tone from the chats the owner answered.' });
-      await runCampaign({ taskId, analyzeOnly: true, sinceDays: days(a.days, 90), limit: Math.min(1000, Number(a.limit) || 300) });
+      await runCampaign({ taskId, analyzeOnly: true, sinceDays: days(a.days, 90), limit: Math.min(1000, Number(a.limit) || 300), reanalyze: !!a.again });
       if (!campaign.total) run("UPDATE tasks SET status = 'removed' WHERE id = ?", taskId);
-      return campaign.total ? { started: true, task_id: taskId, chats_being_read: campaign.total } : { started: false, reason: 'no customer chats are stored for that period yet. Link a WhatsApp number and let its history sync' };
+      if (campaign.total) return { started: true, task_id: taskId, chats_being_read: campaign.total };
+      const read = get('SELECT COUNT(*) n FROM chats WHERE last_in_at >= ? AND analyzed_at >= COALESCE(last_msg_at, 0)', now() - days(a.days, 90) * DAY).n;
+      return read
+        ? { started: false, already_read: read, reason: `all ${read} chats of this period were already read and nothing new was said since, so no AI requests were needed. Their stage and summary are in the Inbox. Say "dobara parho" to read them all again` }
+        : { started: false, reason: 'no customer chats are stored for that period yet. Link a WhatsApp number and let its history sync' };
     },
+  },
+  change_settings: {
+    doc: 'change_settings {"autopilot": true, "followups": true, "reading": true, "ask_before_sending": false, "followup_gap_minutes": [6, 25], "followup_after_hours": [24, 72, 168], "quiet_hours": [21, 9], "daily_cap": 40, "reply_delay_seconds": [2, 4]} - switch things on/off and change timings; send only the keys the owner mentioned. autopilot = the agent answers customers by itself; followups = automatic follow-ups for quiet leads; reading = keep reading chats that changed; followup_gap_minutes = random gap between two follow-up messages; followup_after_hours = when to nudge a quiet lead; quiet_hours = [start, end] hours with no proactive messages; reply_delay_seconds = how long it waits before answering.',
+    run: (a) => applySettings(a),
   },
   stop_followups: {
     doc: 'stop_followups {} - stop the running batch and cancel everything queued to send.',
@@ -199,6 +208,36 @@ const TOOLS = {
   },
 };
 
+const nums = (v) => (Array.isArray(v) ? v : [v]).map(Number).filter((n) => Number.isFinite(n) && n >= 0);
+/** Settings the owner can change by talking to the agent. Returns what changed, in plain words. */
+export function applySettings(a = {}) {
+  const patch = {};
+  const done = [];
+  const onOff = (v) => (v ? 'on' : 'off');
+  if (typeof a.autopilot === 'boolean') { patch.autopilot = a.autopilot; done.push(`auto replies to customers ${onOff(a.autopilot)}`); }
+  if (typeof a.followups === 'boolean') {
+    patch.followup = { ...patch.followup, enabled: a.followups };
+    let cancelled = 0;
+    if (!a.followups) { campaign.cancel = true; cancelled = Number(run("UPDATE followups SET status = 'skipped', error = 'Follow-ups switched off' WHERE status IN ('approved','pending')").changes); emit('followups'); }
+    done.push(`automatic follow-ups ${onOff(a.followups)}${cancelled ? ` (${cancelled} waiting message${cancelled === 1 ? '' : 's'} cancelled)` : ''}`);
+  }
+  if (typeof a.reading === 'boolean') { patch.reading = { auto: a.reading }; done.push(`reading new chats ${onOff(a.reading)}`); }
+  if (typeof a.ask_before_sending === 'boolean') { patch.followup = { ...patch.followup, approval: a.ask_before_sending }; done.push(a.ask_before_sending ? 'follow-ups wait for your approval' : 'follow-ups go out without asking'); }
+  const gap = nums(a.followup_gap_minutes);
+  if (gap.length) { const lo = Math.min(...gap), hi = Math.max(...gap); patch.followup = { ...patch.followup, gapMinSec: Math.round(lo * 60), gapMaxSec: Math.round(hi * 60) }; done.push(`follow-ups spaced randomly ${lo} to ${hi} minutes apart`); }
+  const after = nums(a.followup_after_hours).filter((n) => n > 0);
+  if (after.length) { patch.followup = { ...patch.followup, stepsHours: after.slice(0, 6) }; done.push(`quiet leads nudged after ${after.join(', ')} hours`); }
+  const quiet = nums(a.quiet_hours);
+  if (quiet.length === 2 && quiet.every((h) => h <= 24)) { patch.followup = { ...patch.followup, quietStart: quiet[0] % 24, quietEnd: quiet[1] % 24 }; done.push(`no proactive messages from ${quiet[0]}:00 to ${quiet[1]}:00`); }
+  if (Number(a.daily_cap) > 0) { patch.followup = { ...patch.followup, dailyCap: Math.round(Number(a.daily_cap)) }; done.push(`at most ${Math.round(Number(a.daily_cap))} follow-ups a day per number`); }
+  const delay = nums(a.reply_delay_seconds);
+  if (delay.length) { const lo = Math.min(...delay), hi = Math.max(...delay); patch.human = { debounceMin: lo, debounceMax: Math.max(hi, lo) }; done.push(`replies after ${lo} to ${hi} seconds`); }
+  if (!done.length) return { changed: [], note: 'Nothing recognised to change' };
+  saveSettings(patch);
+  emit('settings');
+  return { changed: done };
+}
+
 function systemPrompt(scheduled = false) {
   const s = getSettings();
   return `You are the operations assistant of ${s.business.name || 'a business'}'s WhatsApp agent. The business OWNER is talking to you (not a customer). Carry out what they ask using the actions below, then report back briefly in the owner's language.
@@ -238,9 +277,11 @@ function facts(steps) {
       if (!r.started) out.push(`⚠️ Nothing started: ${r.reason || 'no chats matched'}.`);
       else {
         const why = whyNotSending(r.task_id);
-        out.push(`📋 Task #${r.task_id} started: reading ${r.chats_being_read} chat${r.chats_being_read === 1 ? '' : 's'}, one message every ${r.interval_minutes} min, ${r.mode}. Progress is on the Tasks page.${why ? `\n⚠️ Not sending yet: ${why}` : ''}`);
+        out.push(`📋 Task #${r.task_id} started: reading ${r.chats_being_read} chat${r.chats_being_read === 1 ? '' : 's'}, one message every ${Array.isArray(r.interval_minutes) ? `${r.interval_minutes[0]} to ${r.interval_minutes[1]} min (random)` : `${r.interval_minutes} min`}, ${r.mode}. Progress is on the Tasks page.${why ? `\n⚠️ Not sending yet: ${why}` : ''}`);
       }
     }
+    if (s.action === 'analyse_chats' && !r.started && r.reason) out.push(`ℹ️ ${r.reason[0].toUpperCase()}${r.reason.slice(1)}.`);
+    if (s.action === 'change_settings') out.push(r.changed?.length ? `⚙️ Changed: ${r.changed.join('; ')}.` : '⚠️ Nothing was changed.');
     if (s.action === 'remind' && r.reminder_for) out.push(`⏰ Reminder for ${r.reminder_for} at ${new Date(r.at).toLocaleString('en-GB', { timeZone: getSettings().followup.timezone, dateStyle: 'medium', timeStyle: 'short' })}. You get a message when it is sent.`);
     if (s.action === 'analyse_chats') out.push(r.started ? `📋 Task #${r.task_id} started: reading ${r.chats_being_read} chat${r.chats_being_read === 1 ? '' : 's'} in full, then learning from them. Progress is on the Tasks page.` : `⚠️ Nothing started: ${r.reason}.`);
     if (s.action === 'schedule_task') out.push(`⏰ Task #${r.task_id}: ${r.schedule}${r.first_run ? `, first run ${new Date(r.first_run).toLocaleString('en-GB', { timeZone: getSettings().followup.timezone, dateStyle: 'medium', timeStyle: 'short' })}` : ''}.`);
@@ -266,7 +307,8 @@ export async function runCommand(text, history = [], { scheduled = false } = {})
     log('info', 'command', `${quick.action} ${JSON.stringify(quick.args).slice(0, 200)}`);
     const steps = [{ action: quick.action, args: quick.args, result }];
     const ok = !result?.error && result?.started !== false;
-    return { reply: withFacts(ok ? 'Theek hai, shuru kar diya.' : 'Yeh shuru nahi ho saka.', steps), steps };
+    const said = quick.action === 'change_settings' ? 'Theek hai, kar diya.' : result?.already_read ? 'Yeh chats pehle se parhi hui hain.' : ok ? 'Theek hai, shuru kar diya.' : 'Yeh shuru nahi ho saka.';
+    return { reply: withFacts(said, steps), steps };
   }
   const messages = [...history, { role: 'user', content: text }];
   const steps = [];
@@ -344,12 +386,30 @@ export function adoptLooseCommands() {
 export const listThreads = () => all(`SELECT t.*, (SELECT COUNT(*) FROM commands c WHERE c.thread_id = t.id) messages,
   (SELECT text FROM commands c WHERE c.thread_id = t.id ORDER BY c.id DESC LIMIT 1) last_text FROM command_threads t ORDER BY t.updated_at DESC LIMIT 200`);
 
+/**
+ * What the agent remembers of one command conversation: the latest 16 messages in full, and before them,
+ * everything the owner said in short (so "jaisa pehle kaha tha" still works in a long conversation).
+ */
+export function threadMemory(thread) {
+  const rows = all('SELECT role, text FROM commands WHERE thread_id = ? ORDER BY id', thread);
+  const recent = rows.slice(-16);
+  const older = rows.slice(0, -16).filter((r) => r.role === 'owner').slice(-40);
+  const out = recent.map((r) => ({ role: r.role === 'owner' ? 'user' : 'assistant', content: r.role === 'owner' ? clip(r.text, 900) : JSON.stringify({ reply: clip(r.text, 600) }) }));
+  if (older.length) {
+    out.unshift(
+      { role: 'user', content: `[Earlier in this conversation I told you:]\n${older.map((r) => `- ${clip(r.text, 160)}`).join('\n')}` },
+      { role: 'assistant', content: JSON.stringify({ reply: 'Noted, I remember all of that.' }) });
+  }
+  // Chat models want the conversation to start with the owner.
+  while (out.length && out[0].role !== 'user') out.shift();
+  return out;
+}
+
 export function handleCommand(text, { chatId = null, scheduled = false, label = null, threadId = null } = {}) {
   const thread = threadId || (chatId ? fixedThread('whatsapp', 'WhatsApp (Message yourself)') : scheduled ? fixedThread('tasks', 'Scheduled tasks') : newThread());
   const job = queue.then(async () => {
     // The agent remembers this conversation (and only this one).
-    const history = scheduled ? [] : all('SELECT role, text FROM (SELECT * FROM commands WHERE thread_id = ? ORDER BY id DESC LIMIT 10) ORDER BY id', thread)
-      .map((r) => ({ role: r.role === 'owner' ? 'user' : 'assistant', content: r.role === 'owner' ? clip(r.text, 300) : JSON.stringify({ reply: clip(r.text, 300) }) }));
+    const history = scheduled ? [] : threadMemory(thread);
     run('INSERT INTO commands (role, text, thread_id, ts) VALUES (?,?,?,?)', 'owner', label || text, thread, now());
     const t = get('SELECT title, kind FROM command_threads WHERE id = ?', thread);
     if (t?.kind === 'chat' && t.title === 'New chat') run('UPDATE command_threads SET title = ? WHERE id = ?', clip(text, 60), thread);

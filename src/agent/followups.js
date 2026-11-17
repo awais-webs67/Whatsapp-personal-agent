@@ -8,6 +8,57 @@ import { learnFromChats } from './learn.js';
 import { notify, who } from './updates.js';
 import { eligibility, humanSend, scheduleNextFollowup } from './pipeline.js';
 import { hasAnyTag } from './tags.js';
+import { nextReadyAt, outOfModels } from '../llm/router.js';
+
+/** Read before, and nothing new said since: its stored stage and summary are current. */
+export const isFresh = (c) => !!c.analyzed_at && c.analyzed_at >= (c.last_msg_at || 0);
+
+/**
+ * Every model is at its limit: wait until one is back, then carry on where we were.
+ * Returns false when no model will come back by itself (then the work stops with a clear reason).
+ */
+async function waitForModels(state) {
+  let told = false;
+  while (!state.cancel) {
+    const until = nextReadyAt('analyze');
+    if (!until) { state.waitingUntil = null; return false; } // nothing will come back by itself
+    if (until <= now()) break;                               // a model is ready (or was reset by hand)
+    if (!told) {
+      told = true;
+      log('info', 'campaign', `Paused: every model is at its limit. Continuing by itself in about ${Math.ceil((until - now()) / 60_000)} min, from the same chat.`);
+    }
+    if (state.waitingUntil !== until) { state.waitingUntil = until; emit('campaign', state); emit('tasks'); }
+    await sleep(process.env.NODE_ENV === 'test' ? 20 : 5000);
+  }
+  state.waitingUntil = null;
+  emit('campaign', state);
+  return !state.cancel;
+}
+
+/**
+ * Keep the CRM current without re-reading everything: chats with something new since they were last read
+ * get a fresh stage and summary, a few at a time, once the conversation has settled for a few minutes.
+ */
+export async function readChanged() {
+  const s = getSettings().reading || {};
+  if (s.auto === false || campaign.running) return 0;
+  if (nextReadyAt('analyze') !== now()) return 0; // models resting: try on a later tick
+  const rows = all(`SELECT c.* FROM chats c
+      WHERE c.last_msg_at > COALESCE(c.analyzed_at, 0) AND c.last_msg_at < ? AND c.jid NOT LIKE '%@g.us'
+        AND c.jid != COALESCE((SELECT a.self_jid FROM accounts a WHERE a.id = c.account_id), '')
+        AND (SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.id AND m.from_me = 0) >= 1
+      ORDER BY c.last_msg_at DESC LIMIT ?`, now() - 5 * 60_000, Math.max(1, Number(s.perTick) || 4));
+  let n = 0;
+  for (const c of rows) {
+    try {
+      const d = await decide(c.id, 'analyze', { lean: true });
+      update('chats', c.id, { stage: c.stage === 'opted_out' ? 'opted_out' : d.stage, summary: d.summary, analyzed_at: now() }, ['stage', 'summary', 'analyzed_at']);
+      n++;
+    } catch (e) { if (outOfModels(e)) break; }
+  }
+  if (n) emit('chat', {});
+  return n;
+}
 
 const nextSlot = new Map(); // accountId -> earliest time the next proactive message may go out
 let drafting = false;
@@ -197,10 +248,10 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
   // Analysis reads every customer chat in the period (buyers included); it sends nothing.
   const tagged = tags?.length > 0;
   let chats = analyzeOnly ? all(`SELECT c.* FROM chats c
-      WHERE (?1 IS NULL OR c.account_id = ?1) AND c.last_in_at >= ?2
+      WHERE (?1 IS NULL OR c.account_id = ?1) AND c.last_in_at >= ?2 AND (?4 = 1 OR c.analyzed_at IS NULL OR c.analyzed_at < COALESCE(c.last_msg_at, 0))
         AND c.jid != COALESCE((SELECT a.self_jid FROM accounts a WHERE a.id = c.account_id), '')
         AND (SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.id AND m.from_me = 0) >= 1
-      ORDER BY c.last_in_at DESC LIMIT ?3`, accountId, since, limit) : all(`SELECT c.* FROM chats c
+      ORDER BY c.last_in_at DESC LIMIT ?3`, accountId, since, limit, reanalyze ? 1 : 0) : all(`SELECT c.* FROM chats c
       WHERE (?1 IS NULL OR c.account_id = ?1) AND c.last_in_at >= ?2 AND c.stage != 'opted_out'
         AND (?5 != '' OR ?6 = 1 OR c.stage != 'purchased') AND (?5 = '' OR instr(?5, ',' || c.stage || ',') > 0)
         AND c.jid != COALESCE((SELECT a.self_jid FROM accounts a WHERE a.id = c.account_id), '')
@@ -210,33 +261,49 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
         AND NOT EXISTS (SELECT 1 FROM followups f WHERE f.chat_id = c.id AND f.status IN ('pending','approved'))
       ORDER BY c.last_in_at DESC LIMIT ?4`, accountId, since, reanalyze || instruction ? 1 : 0, tagged ? 5000 : limit, stages?.length ? `,${stages.join(',')},` : '', audience === 'buyers' || tagged ? 1 : 0);
   if (tagged) chats = chats.filter((c) => hasAnyTag(c, tags)).slice(0, limit);
-  const gap = Math.max(0, Number(intervalMinutes) || 0) * 60_000;
+  // Chats read before and unchanged since: their stored stage decides who is in, without a model call.
+  if (!analyzeOnly && !tagged && !stages?.length) {
+    if (audience === 'buyers') chats = chats.filter((c) => !isFresh(c) || c.stage === 'purchased');
+    if (audience === 'non_buyers') chats = chats.filter((c) => !isFresh(c) || c.stage !== 'purchased');
+    if (audience !== 'buyers') chats = chats.filter((c) => !isFresh(c) || !['not_interested', 'opted_out'].includes(c.stage));
+  }
+  const range = Array.isArray(intervalMinutes) ? intervalMinutes.map(Number).filter((n) => n > 0).sort((a, b) => a - b) : null;
+  const gap = range?.length ? 0 : Math.max(0, Number(intervalMinutes) || 0) * 60_000;
+  // "randomly 6 to 25 minutes apart": each gap is picked at random in that range.
+  const nextGap = () => (range?.length ? rand(range[0], range.at(-1)) * 60_000 : gap * rand(0.8, 1.2));
   let nextDue = now();
-  Object.assign(campaign, { taskId, analyzeOnly, stages: {}, running: true, total: chats.length, done: 0, drafted: 0, skipped: 0, skipReasons: [], failed: 0, cancel: false, startedAt: now(), error: null });
+  Object.assign(campaign, { taskId, analyzeOnly, waitingUntil: null, stages: {}, running: true, total: chats.length, done: 0, drafted: 0, skipped: 0, skipReasons: [], failed: 0, cancel: false, startedAt: now(), error: null });
   emit('campaign', campaign);
   log('info', 'campaign', `Reviewing ${chats.length} past conversations`);
   (async () => {
     // Read one chat; true when it worked.
     const handle = async (chat) => {
-      const d = await decide(chat.id, 'analyze', { instruction, lean: analyzeOnly, audience });
+      // Already read and unchanged: its summary is in the prompt, so the latest messages are enough to write from.
+      const d = await decide(chat.id, 'analyze', { instruction, lean: analyzeOnly, audience, history: !analyzeOnly && isFresh(chat) ? 12 : null });
       update('chats', chat.id, { stage: d.stage, summary: d.summary, analyzed_at: now() }, ['stage', 'summary', 'analyzed_at']);
       campaign.stages[d.stage] = (campaign.stages[d.stage] || 0) + 1;
       if (analyzeOnly) return;
       if (d.skip) { campaign.skipped++; if (d.reason && campaign.skipReasons.length < 3) campaign.skipReasons.push(`${chat.name || chat.phone || 'someone'}: ${d.reason}`); }
       else {
         queue(chat.id, audience === 'buyers' ? 'reminder' : 'campaign', d.message, d.reason, autoApprove ? 'approved' : 'pending', nextDue, taskId);
-        nextDue = Math.max(nextDue, now()) + gap * rand(0.8, 1.2);
+        nextDue = Math.max(nextDue, now()) + nextGap();
         campaign.drafted++;
       }
     };
     const failedOnce = [];
     for (const chat of chats) {
       if (campaign.cancel) break;
-      try { await handle(chat); } catch (e) {
-        failedOnce.push(chat);
+      let tries = 0;
+      for (;;) {
+        try { await handle(chat); } catch (e) {
+          // Limits reached: pause and resume from this same chat instead of failing the rest.
+          if (outOfModels(e) && tries++ < 20 && (await waitForModels(campaign))) continue;
+          failedOnce.push(chat);
         campaign.error = e.message;
         // Every model refusing several chats in a row: stop instead of burning through the list.
-        if (/No AI model/.test(e.message) || (failedOnce.length >= 4 && failedOnce.length === campaign.done + 1)) { campaign.cancel = true; log('error', 'campaign', `Stopped: ${e.message}`); }
+          if (/No AI model/.test(e.message) || (failedOnce.length >= 4 && failedOnce.length === campaign.done + 1)) { campaign.cancel = true; log('error', 'campaign', `Stopped: ${e.message}`); }
+        }
+        break;
       }
       campaign.done++;
       emit('campaign', campaign);
@@ -276,5 +343,7 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
 export function startFollowups() {
   const tick = () => draftDue().then(sendApproved).catch((e) => log('error', 'followup', e.message));
   setInterval(tick, 20_000).unref();
+  // Reading new conversation turns runs on its own, slower clock.
+  setInterval(() => readChanged().catch((e) => log('error', 'reading', e.message)), 3 * 60_000).unref();
 }
 export const _tick = () => draftDue().then(sendApproved);

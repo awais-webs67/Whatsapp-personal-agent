@@ -34,12 +34,16 @@ function shell(me) {
     await act(null, () => PUT('/api/settings', { autopilot: on }), on ? 'Autopilot on: the agent replies by itself' : 'Autopilot off: nothing is sent automatically');
     S.autopilot = on;
   }, 'Autopilot');
+  const reader = toggle(true, async (on) => {
+    await act(null, () => PUT('/api/settings', { reading: { auto: on } }), on ? 'The agent keeps reading chats that change' : 'Reading new chats is off');
+  }, 'Read new chats');
   const el = h('div.shell', {},
     h('aside.nav', {},
       h('div.brand', {}, h('img', { src: '/favicon.svg', alt: '' }), h('div', {}, h('b', {}, 'AivraSol'), h('small', {}, 'Agent desk'))),
       h('nav', { 'aria-label': 'Main' }, ROUTES.map(([id, label, icon]) => (navLinks[id] = h('a', { href: `#/${id}` }, svg(icon), h('span', {}, label))))),
       h('div.foot', {},
         h('div.pilot', {}, h('span', {}, 'Autopilot', h('small', {}, 'Agent replies on its own')), pilot),
+        h('div.pilot', {}, h('span', {}, 'Read chats', h('small', {}, 'Keeps notes on chats that change')), reader),
         who,
         h('button.linkbtn', { onclick: () => POST('/api/auth/logout').then(() => location.reload()) }, 'Sign out'))),
     banner ? h('div', { style: 'display:flex;flex-direction:column;min-width:0' }, banner, outlet) : outlet);
@@ -54,6 +58,7 @@ function shell(me) {
     if (!o) return;
     Object.assign(S, { accounts: o.accounts, providers: o.providers, autopilot: o.settings.autopilot, stats: o.stats, webhookBase: o.webhookBase });
     pilot.querySelector('input').checked = S.autopilot;
+    reader.querySelector('input').checked = o.settings.reading !== false;
     badge('inbox', o.stats.needsHuman);
     badge('followups', o.stats.pendingFollowups);
     badge('tasks', o.stats.activeTasks);

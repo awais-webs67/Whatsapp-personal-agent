@@ -198,11 +198,11 @@ Return ONLY a JSON object:
 {"stage": "${STAGES.join(' | ')}", "summary": "one or two lines: what they wanted (which product), any price discussed, how it ended and what is still open", "should_followup": false, "message": "", "reason": ""}`;
 }
 
-export async function decide(chatId, mode = 'reply', { turns = null, chatOverride = null, instruction = '', lean = false, audience = 'all' } = {}) {
+export async function decide(chatId, mode = 'reply', { turns = null, chatOverride = null, instruction = '', lean = false, audience = 'all', history = null } = {}) {
   const settings = getSettings();
   const chat = chatOverride || get('SELECT * FROM chats WHERE id = ?', chatId);
   if (!chat) throw new Error('Chat not found');
-  const messages = turns || buildTurns(chatId, mode === 'analyze' ? Math.max(40, settings.llm.historyMessages) : settings.llm.historyMessages);
+  const messages = turns || buildTurns(chatId, history || (mode === 'analyze' ? Math.max(40, settings.llm.historyMessages) : settings.llm.historyMessages));
   if (mode !== 'reply') {
     messages.push({ role: 'user', content: `[Instruction from the business owner, not from the customer] ${mode === 'followup' ? `The customer has been quiet since ${ago(chat.last_in_at)}. This would be follow-up number ${(chat.followup_count || 0) + 1}.` : 'Review the conversation above.'}${instruction ? ` For this batch the owner asked: "${instruction}". This is an order from the owner: set should_followup to true and write the message for everyone the request applies to. ${audience === 'buyers' ? 'The owner wants ONLY people who actually bought (paid, confirmed an order, received the product). Read the conversation: if this person bought what the request is about, write the reminder; if they never bought it, set should_followup to false and say so in reason. Do not try to sell to them again unless the request says so.' : 'Set it to false only if this person already bought, refused, asked not to be contacted, or clearly does not fit the request.'} Keep every hard rule.` : ''} Respond with the JSON object described in your instructions.` });
   }

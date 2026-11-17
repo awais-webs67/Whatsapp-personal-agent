@@ -142,7 +142,7 @@ app.get('/api/overview', wrap(() => {
   const since = now() - 86_400_000;
   const count = (sql, ...p) => get(sql, ...p).n;
   return {
-    settings: { autopilot: getSettings().autopilot },
+    settings: { autopilot: getSettings().autopilot, reading: getSettings().reading?.auto !== false },
     webhookBase: process.env.WEBHOOK_PREFIX || '',
     accounts: wa.listAccounts(),
     providers: listProviders().map(publicProvider),

@@ -86,7 +86,8 @@ export function taskView(t) {
     const counts = Object.fromEntries(all('SELECT status, COUNT(*) n FROM followups WHERE task_id = ? GROUP BY status', t.id).map((r) => [r.status, r.n]));
     const reading = campaignRef?.taskId === t.id && campaignRef.running ? { done: campaignRef.done, total: campaignRef.total } : null;
     const nextDue = get("SELECT MIN(due_at) d FROM followups WHERE task_id = ? AND status = 'approved'", t.id).d;
-    Object.assign(view, { waiting: t.status === 'active' && !reading ? whyRef(t.id) : null, progress: { reading, drafts: counts.pending || 0, queued: counts.approved || 0, sent: counts.sent || 0, skipped: counts.skipped || 0, failed: counts.failed || 0 }, next_run_at: t.status === 'active' ? nextDue : null });
+    const resting = campaignRef?.taskId === t.id && campaignRef.waitingUntil;
+    Object.assign(view, { waiting: resting ? `Paused: every AI model is at its limit. Continues by itself in about ${Math.max(1, Math.ceil((campaignRef.waitingUntil - Date.now()) / 60_000))} min, from where it stopped.` : t.status === 'active' && !reading ? whyRef(t.id) : null, progress: { reading, drafts: counts.pending || 0, queued: counts.approved || 0, sent: counts.sent || 0, skipped: counts.skipped || 0, failed: counts.failed || 0 }, next_run_at: t.status === 'active' ? nextDue : null });
   }
   return view;
 }
