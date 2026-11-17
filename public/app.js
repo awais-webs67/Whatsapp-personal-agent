@@ -42,6 +42,7 @@ function shell() {
     navLinks[id].querySelector('.count')?.remove();
     if (n > 0) navLinks[id].append(h('span.count', {}, n));
   };
+  let updatesUnseen = 0;
   const refreshBadges = async () => {
     const o = await GET('/api/overview').catch(() => null);
     if (!o) return;
@@ -53,6 +54,7 @@ function shell() {
   };
 
   function route() {
+    if (location.hash.startsWith('#/command')) { updatesUnseen = 0; badge('command', 0); }
     const [, id = 'overview', arg] = location.hash.split('/');
     const r = ROUTES.find((x) => x[0] === id) || ROUTES[0];
     subs.clear();
@@ -70,6 +72,13 @@ function shell() {
     if (e.type === 'accounts') S.accounts = e.data;
     if (e.type === 'providers') S.providers = e.data;
     for (const s of [...subs]) if (s.type === e.type || s.type === '*') s.fn(e.data, e);
+    if (e.type === 'update') {
+      // The agent reporting on its own: show it, and make it one click away.
+      const note = h('div.toast.update', { role: 'status', onclick: () => { location.hash = '#/command'; note.remove(); } }, h('b', {}, 'Agent update'), h('div', { dir: 'auto' }, e.data.text.slice(0, 280)));
+      document.getElementById('toasts').append(note);
+      setTimeout(() => note.remove(), 12000);
+      if (!location.hash.startsWith('#/command')) { updatesUnseen++; badge('command', updatesUnseen); }
+    }
     if (['chat', 'followups', 'campaign', 'tasks'].includes(e.type)) { clearTimeout(badgeTimer); badgeTimer = setTimeout(refreshBadges, 600); }
   };
   refreshBadges().then(route);

@@ -1,4 +1,4 @@
-import { h, set, GET, POST, PATCH, act, toast, select, rel, clock, dayLabel, num, STAGES, stagePill, PROVIDER_STATUS } from './ui.js';
+import { h, set, GET, POST, PATCH, act, toast, modal, field, select, rel, clock, dayLabel, num, STAGES, stagePill, PROVIDER_STATUS } from './ui.js';
 import { S, live } from './state.js';
 
 const ACCOUNT_STATE = { connected: ['Connected', 'ok'], connecting: ['Connecting', 'warn'], qr: ['Scan QR', 'hot'], pairing: ['Enter code', 'hot'], logged_out: ['Logged out', 'bad'], error: ['Error', 'bad'], disconnected: ['Offline', ''] };
@@ -127,12 +127,21 @@ export function inbox(openId) {
       const who = { ai: 'Agent', owner: 'You', followup: 'Follow-up', customer: '' }[m.by];
       bubbles.push(h(`div.msg${m.from_me ? `.me.${m.by}` : ''}`, {}, m.text, h('small', {}, [who, clock(m.ts)].filter(Boolean).join(' · '))));
     }
-    for (const f of followups) bubbles.push(h('div.msg.me.followup', { dir: 'auto' }, f.text, h('small', {}, f.status === 'pending' ? 'Follow-up draft · waiting for your approval' : 'Follow-up · queued to send')));
+    for (const f of followups) bubbles.push(h('div.msg.me.followup', { dir: 'auto' }, f.text, h('small', {}, f.kind === 'reminder' ? `Reminder · sends ${new Date(f.due_at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}` : f.status === 'pending' ? 'Follow-up draft · waiting for your approval' : 'Follow-up · queued to send')));
     const thread = h('div.thread', {}, bubbles.length ? bubbles : h('div.empty', {}, 'No messages stored for this chat.'));
 
     const input = h('textarea', { dir: 'auto', rows: 1, placeholder: 'Write a reply. Enter to send, Shift+Enter for a new line.', 'aria-label': 'Reply', value: draft,
       onkeydown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendBtn.click(); } } });
     const sendBtn = h('button.btn.primary', { onclick: () => { const text = input.value.trim(); if (text) act(sendBtn, async () => { await POST(`/api/chats/${chat.id}/send`, { text }); input.value = ''; }); } }, 'Send');
+    const remindBtn = h('button.btn', { title: 'Send this customer a message at a set time', onclick: () => {
+      const msg = h('textarea', { rows: 3, dir: 'auto', value: input.value, placeholder: 'e.g. Assalam o alaikum! Aap ka Canva order aaj expire ho raha hai, renew karna ho to bata dein.' });
+      const when = h('input', { type: 'datetime-local' });
+      const d = new Date(Date.now() + 3_600_000); d.setMinutes(0, 0, 0);
+      when.value = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+      modal(`Reminder for ${chat.title}`, [field('Message', msg, 'Sent exactly as written. Quiet hours do not apply to reminders.'), field('When', when)], (close) => [
+        h('button.btn', { onclick: close }, 'Cancel'),
+        h('button.btn.primary', { onclick: (e) => act(e.target, async () => { await POST(`/api/chats/${chat.id}/remind`, { text: msg.value, at: new Date(when.value).toISOString() }); close(); }, 'Reminder scheduled') }, 'Schedule')]);
+    } }, 'Remind');
     const suggestBtn = h('button.btn', { title: 'Let the agent draft a reply for you to edit', onclick: () => act(suggestBtn, async () => { const d = await POST(`/api/chats/${chat.id}/suggest`); input.value = d.messages.join('\n\n'); input.focus(); toast(`Draft from ${d.provider}`); }) }, 'Draft');
 
     set(threadCol, 
@@ -144,7 +153,7 @@ export function inbox(openId) {
       chat.needs_human ? h('div.banner.bad', {}, h('div.grow', {}, h('b', {}, 'Needs you. '), chat.handoff_reason || 'The agent asked for help.'), h('button.btn.sm', { onclick: () => patch({ resume: true }, 'Agent resumed') }, 'Hand back to agent')) : null,
       !chat.needs_human && chat.paused_until > Date.now() ? h('div.banner.warn', {}, h('div.grow', {}, `You replied by hand, so the agent is quiet until ${clock(chat.paused_until)}.`), h('button.btn.sm', { onclick: () => patch({ resume: true }, 'Agent resumed') }, 'Resume now')) : null,
       thread,
-      h('div.composer', {}, input, suggestBtn, sendBtn));
+      h('div.composer', {}, input, remindBtn, suggestBtn, sendBtn));
     if (stick) thread.scrollTop = thread.scrollHeight;
 
     const notes = h('textarea', { rows: 4, placeholder: 'Anything the agent should know about this customer', value: chat.notes || '', onblur: (e) => e.target.value !== (chat.notes || '') && patch({ notes: e.target.value }, 'Notes saved') });

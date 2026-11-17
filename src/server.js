@@ -242,6 +242,20 @@ app.post('/api/chats/:id/send', wrap(async (req) => {
   onOwner(id);
   return { ok: true };
 }));
+/** Send this exact message to this customer at a set time (a reminder). */
+app.post('/api/chats/:id/remind', wrap((req) => {
+  const chat = need(get('SELECT id, stage FROM chats WHERE id = ?', Number(req.params.id)), 'Chat');
+  const text = String(req.body.text || '').trim();
+  if (!text) throw bad('Write the message to send');
+  if (chat.stage === 'opted_out') throw bad('This person asked not to be contacted');
+  const at = req.body.at ? Date.parse(req.body.at) : now();
+  if (Number.isNaN(at)) throw bad('Pick a date and time');
+  if (at > now() + 366 * 86_400_000) throw bad('That is more than a year away');
+  run("INSERT INTO followups (chat_id, kind, text, reason, status, due_at, created_at) VALUES (?, 'reminder', ?, 'Scheduled by you', 'approved', ?, ?)", chat.id, text.slice(0, 1500), Math.max(at, now()), now());
+  emit('followups');
+  emit('chat', { chatId: chat.id });
+  return { ok: true, at: Math.max(at, now()) };
+}));
 app.post('/api/chats/:id/suggest', wrap(async (req) => {
   const d = await decide(Number(req.params.id), 'reply');
   return { messages: d.messages, provider: d.provider, model: d.model, handoff: d.handoff, handoffReason: d.handoffReason };

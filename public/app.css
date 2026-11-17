@@ -320,3 +320,6 @@ label.f { align-content: start; }
   .inbox.cmd .thread-head .muted { display: none; }
   .task-top > .row { width: 100%; }
 }
+
+.toast.update { cursor: pointer; border-left-color: var(--orange); display: grid; gap: 2px; }
+.toast.update b { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: #FFB09C; }

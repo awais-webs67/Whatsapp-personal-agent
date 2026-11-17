@@ -11,9 +11,9 @@ const EXAMPLES = [
 const STEP = {
   stats: 'Looked at the numbers', find_chats: 'Searched chats', read_chat: 'Read a chat', count_targets: 'Counted who this reaches', start_followups: 'Started a follow-up batch',
   stop_followups: 'Stopped follow-ups', send_message: 'Sent a message', update_chat: 'Updated a chat', remember: 'Saved an instruction', learn: 'Learned', set_autopilot: 'Changed autopilot',
-  schedule_task: 'Scheduled a task', list_tasks: 'Checked the tasks', pause_task: 'Paused a task', resume_task: 'Resumed a task', remove_task: 'Removed a task',
+  schedule_task: 'Scheduled a task', remind: 'Scheduled a reminder', analyse_chats: 'Started reading the chats', list_tasks: 'Checked the tasks', pause_task: 'Paused a task', resume_task: 'Resumed a task', remove_task: 'Removed a task',
 };
-const KIND = { whatsapp: 'WhatsApp', tasks: 'Scheduled' };
+const KIND = { whatsapp: 'WhatsApp', tasks: 'Scheduled', updates: 'Updates' };
 const remembered = () => { try { return Number(localStorage.getItem('cmdThread')) || null; } catch { return null; } };
 const remember = (id) => { try { localStorage.setItem('cmdThread', String(id || '')); } catch { /* private mode */ } };
 
@@ -85,7 +85,7 @@ export function command() {
     h('section.threadcol', {},
       h('div.thread-head', {},
         h('button.btn.ghost.sm', { class: 'back', onclick: () => wrap.classList.remove('open') }, 'Back'),
-        h('div.grow', {}, title, h('div.muted', { style: 'font-size:12px' }, 'Bulk messages are confirmed with you first. Daily caps and quiet hours still apply.')),
+        h('div.grow', {}, title, h('div.muted', { style: 'font-size:12px' }, 'Orders start as soon as you send them, and the agent reports progress here. Daily caps and quiet hours still apply.')),
         h('button.btn.sm', { onclick: rename }, 'Rename'),
         h('a.btn.sm', { href: '#/tasks' }, 'Tasks')),
       thread,

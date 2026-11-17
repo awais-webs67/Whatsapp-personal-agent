@@ -3,6 +3,7 @@ import { get, run, now, update } from '../db.js';
 import { getSettings, log, emit, sleep, rand } from '../core.js';
 import * as wa from '../wa/manager.js';
 import { decide, CLOSED } from './brain.js';
+import { notify, who } from './updates.js';
 
 const timers = new Map(); // chatId -> debounce timer
 const busy = new Set();   // chats currently being answered
@@ -40,8 +41,10 @@ export function onCustomer(chatId) {
   if (!chat) return;
   const last = get('SELECT text FROM messages WHERE chat_id = ? AND from_me = 0 ORDER BY ts DESC, id DESC LIMIT 1', chatId);
   // They answered: the follow-up sequence starts over, and queued nudges are no longer relevant.
+  if (chat.followup_count > 0 && last?.text) notify(`${who(chat)} replied after your follow-up: "${last.text.slice(0, 140)}"`, { key: `fu-reply:${chatId}`, everyMs: 3_600_000 });
   run('UPDATE chats SET followup_count = 0, next_followup_at = NULL WHERE id = ?', chatId);
-  run("UPDATE followups SET status = 'skipped', error = 'Customer replied first' WHERE chat_id = ? AND status IN ('pending','approved')", chatId);
+  // Queued nudges are dropped; a reminder the owner scheduled for a set time stays.
+  run("UPDATE followups SET status = 'skipped', error = 'Customer replied first' WHERE chat_id = ? AND status IN ('pending','approved') AND kind != 'reminder'", chatId);
   if (last?.text && OPT_OUT.test(last.text)) {
     update('chats', chatId, { stage: 'opted_out' }, ['stage']);
     log('info', 'agent', `${chat.name || chat.phone || chat.jid} asked not to be contacted — follow-ups stopped`);
@@ -134,6 +137,8 @@ async function answer(chatId) {
     await humanSend(chat, decision.messages, 'ai', now() - started);
     scheduleNextFollowup(chatId, decision.followupHours);
     log('info', 'agent', `Replied to ${chat.name || chat.phone || chat.jid} via ${decision.provider} (${(decision.latencyMs / 1000).toFixed(1)}s)`);
+    if (decision.handoff) notify(`${who(chat)} needs you: ${decision.handoffReason || 'the agent asked for help'}. Open the chat in the Inbox.`, { key: `handoff:${chatId}`, everyMs: 30 * 60_000 });
+    if (decision.stage === 'purchased' && chat.stage !== 'purchased') notify(`Sale: ${who(chat)} is now marked as purchased. ${decision.summary || ''}`.trim(), { key: `sale:${chatId}`, everyMs: 86_400_000 });
     if (decision.handoff) log('warn', 'agent', `${chat.name || chat.phone || chat.jid} needs you: ${decision.handoffReason || 'agent asked for help'}`);
     emit('chat', { chatId });
   } catch (e) {

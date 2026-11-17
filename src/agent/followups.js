@@ -5,6 +5,7 @@ import { getSettings, log, emit, sleep, rand, hourIn, isQuiet } from '../core.js
 import * as wa from '../wa/manager.js';
 import { decide, CLOSED } from './brain.js';
 import { learnFromChats } from './learn.js';
+import { notify, who } from './updates.js';
 import { eligibility, humanSend, scheduleNextFollowup } from './pipeline.js';
 
 const nextSlot = new Map(); // accountId -> earliest time the next proactive message may go out
@@ -56,7 +57,8 @@ async function sendApproved() {
   try {
     const s = getSettings().followup;
     // In quiet hours only tasks the owner explicitly allowed to run at night may send.
-    const quietOk = isQuiet(hourIn(s.timezone), s.quietStart, s.quietEnd) ? ' AND f.task_id IN (SELECT id FROM tasks WHERE ignore_quiet = 1)' : '';
+    // A reminder the owner scheduled for an exact time is always sent on time.
+    const quietOk = isQuiet(hourIn(s.timezone), s.quietStart, s.quietEnd) ? " AND (f.kind = 'reminder' OR f.task_id IN (SELECT id FROM tasks WHERE ignore_quiet = 1))" : '';
     const accounts = all(`SELECT DISTINCT c.account_id id FROM followups f JOIN chats c ON c.id = f.chat_id WHERE f.status = 'approved' AND f.due_at <= ? AND ${TASK_ACTIVE}${quietOk}`, now());
     for (const { id: accountId } of accounts) {
       if ((nextSlot.get(accountId) || 0) > now()) continue;
@@ -67,15 +69,27 @@ async function sendApproved() {
       if (!f) continue;
       nextSlot.set(accountId, now() + rand(s.gapMinSec, s.gapMaxSec) * 1000);
       const chat = get('SELECT * FROM chats WHERE id = ?', f.chat_id);
-      if (chat.stage === 'opted_out' || chat.stage === 'purchased') {
+      if (chat.stage === 'opted_out' || (chat.stage === 'purchased' && f.kind !== 'reminder')) {
         update('followups', f.id, { status: 'skipped', error: `Customer is ${chat.stage.replace('_', ' ')}` }, ['status', 'error']);
         continue;
       }
       try {
         await humanSend(chat, [f.text], 'followup');
         update('followups', f.id, { status: 'sent', sent_at: now() }, ['status', 'sent_at']);
-        run('UPDATE chats SET followup_count = followup_count + 1 WHERE id = ?', chat.id);
-        scheduleNextFollowup(chat.id);
+        if (f.kind === 'reminder') notify(`Reminder sent to ${who(chat)}: "${f.text.slice(0, 120)}"`);
+        else {
+          run('UPDATE chats SET followup_count = followup_count + 1 WHERE id = ?', chat.id);
+          scheduleNextFollowup(chat.id);
+        }
+        if (f.task_id) {
+          // Progress the owner can follow without opening the dashboard: the first message, then the halfway point.
+          const c = Object.fromEntries(all('SELECT status, COUNT(*) n FROM followups WHERE task_id = ? GROUP BY status', f.task_id).map((r) => [r.status, r.n]));
+          const sentN = c.sent || 0;
+          const total = sentN + (c.approved || 0) + (c.pending || 0);
+          const thread = get('SELECT thread_id FROM tasks WHERE id = ?', f.task_id)?.thread_id;
+          if (sentN === 1 && total > 1) notify(`Task #${f.task_id}: first message sent to ${who(chat)} (1 of ${total}).`, { threadId: thread });
+          else if (total >= 4 && sentN === Math.ceil(total / 2)) notify(`Task #${f.task_id}: halfway, ${sentN} of ${total} sent.`, { threadId: thread });
+        }
         log('info', 'followup', `Follow-up sent to ${label(chat)}`);
       } catch (e) {
         update('followups', f.id, { status: 'failed', error: e.message.slice(0, 300) }, ['status', 'error']);
@@ -183,10 +197,12 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
       try { const l = await learnFromChats({}); learned = ` Now learning your offers, prices and tone from ${l.chats} conversations you answered yourself; the result appears on the Knowledge page.`; } catch (e) { learned = ` Could not learn from them: ${e.message}`; }
       run('UPDATE tasks SET last_result = ? WHERE id = ?', `Read ${campaign.done} chat${campaign.done === 1 ? '' : 's'}${mix ? `: ${mix}` : ''}${campaign.failed ? `; ${campaign.failed} failed (${campaign.error})` : ''}.${learned}`.slice(0, 1000), taskId);
       emit('tasks');
+      notify(`Task #${taskId}: ${get('SELECT last_result FROM tasks WHERE id = ?', taskId)?.last_result || 'finished reading'}`, { threadId: get('SELECT thread_id FROM tasks WHERE id = ?', taskId)?.thread_id });
     } else if (taskId) {
       const summary = `Read ${campaign.done} chat${campaign.done === 1 ? '' : 's'}: ${campaign.drafted} message${campaign.drafted === 1 ? '' : 's'} ${autoApprove ? 'queued' : 'drafted for approval'}, ${campaign.skipped} skipped${campaign.failed ? `, ${campaign.failed} failed (${campaign.error})` : ''}.${campaign.skipReasons.length ? ` Skipped for example: ${campaign.skipReasons.join(' | ')}` : ''}`;
       run('UPDATE tasks SET last_result = ? WHERE id = ?', summary.slice(0, 1000), taskId);
       emit('tasks');
+      if (campaign.drafted) notify(`Task #${taskId}: ${summary} ${autoApprove ? 'Sending starts now, one by one.' : 'Approve them on the Follow-ups page.'}`, { threadId: get('SELECT thread_id FROM tasks WHERE id = ?', taskId)?.thread_id });
     }
     log('info', 'campaign', `Review finished: ${campaign.done} read, ${campaign.drafted} follow-ups drafted, ${campaign.failed} failed`);
   })();

@@ -180,6 +180,8 @@ export function settings() {
       return h('label.f', {}, label, h('div.row', {}, x, h('span.muted', {}, 'to'), y), hint && h('small', {}, hint));
     };
     const saver = toggle(s.llm.tokenSaver !== false, () => {}, 'Token saver');
+    const notifyWa = toggle(s.notifyWhatsApp !== false, () => {}, 'Send agent updates to my WhatsApp');
+    const digest = h('input', { type: 'number', min: -1, max: 23, value: s.digestHour ?? 21 });
     const fuOn = toggle(s.followup.enabled, () => {}, 'Automatic follow-ups'), fuApprove = toggle(s.followup.approval, () => {}, 'Approve before sending');
     const steps = h('input', { type: 'text', value: s.followup.stepsHours.join(', ') });
     const tz = h('input', { type: 'text', value: s.followup.timezone });
@@ -187,6 +189,8 @@ export function settings() {
       const patch = { human: {}, followup: {}, llm: {} };
       for (const [g, k, i] of inputs) patch[g][k] = Number(i.value) || 0;
       patch.llm.tokenSaver = saver.querySelector('input').checked;
+      patch.notifyWhatsApp = notifyWa.querySelector('input').checked;
+      patch.digestHour = Number(digest.value);
       Object.assign(patch.followup, { enabled: fuOn.querySelector('input').checked, approval: fuApprove.querySelector('input').checked, timezone: tz.value.trim(),
         stepsHours: steps.value.split(/[,\s]+/).map(Number).filter((x) => x > 0) });
       await PUT('/api/settings', patch);
@@ -210,6 +214,9 @@ export function settings() {
         h('div.grid3', {}, field('Follow up after (hours)', steps, 'One entry per follow-up. “24, 72, 168” = after 1, 3 and 7 days of silence, then stop.'),
           n('followup', 'dailyCap', 'Max follow-ups per day, per number'), pair('followup', 'gapMinSec', 'gapMaxSec', 'Gap between follow-ups (sec)')),
         h('div.grid3', {}, pair('followup', 'quietStart', 'quietEnd', 'Quiet hours (24h clock)', 'No follow-ups are sent between these hours.'), field('Time zone', tz, 'e.g. Asia/Karachi')))),
+      h('div.card', {}, h('header', {}, h('h2', {}, 'Agent updates')), h('div.pad.stack', {},
+        h('div.row', {}, notifyWa, h('div.grow', {}, h('b', { style: 'color:var(--ink)' }, 'Also send updates to my WhatsApp'), h('div.muted', {}, 'Task progress, customers who need you, sales and the daily summary go to your “Message yourself” chat (write anything there once so the agent knows it). They always appear on the Command page.'))),
+        h('div.grid3', {}, field('Daily summary at (hour, 0–23; -1 = off)', digest, 'Uses the time zone below.')))),
       h('div.card', {}, h('header', {}, h('h2', {}, 'Model calls')), h('div.pad.stack', {},
         h('div.row', {}, saver, h('div.grow', {}, h('b', { style: 'color:var(--ink)' }, 'Token saver'), h('div.muted', {}, 'With long product lists, send only the products this customer is asking about in full, and the rest as name and price. Uses about 4 times fewer tokens with a large catalogue.'))),
         h('div.grid3', {},

@@ -24,7 +24,7 @@ export const PRESETS = [
   { id: 'longcat', name: 'LongCat (Meituan)', kind: 'openai', baseUrl: 'https://api.longcat.chat/openai/v1', model: 'LongCat-Flash-Chat',
     keyUrl: 'https://longcat.chat/platform', free: true },
   { id: 'agentrouter', name: 'AgentRouter', kind: 'openai', baseUrl: 'https://agentrouter.org/v1', model: '',
-    keyUrl: 'https://agentrouter.org/console/token', free: true },
+    keyUrl: 'https://agentrouter.org/console/token', free: true, note: 'Approved coding tools only · refuses this app' },
   { id: 'cerebras', name: 'Cerebras', kind: 'openai', baseUrl: 'https://api.cerebras.ai/v1', model: 'llama-3.3-70b',
     keyUrl: 'https://cloud.cerebras.ai', free: true },
   { id: 'mistral', name: 'Mistral', kind: 'openai', baseUrl: 'https://api.mistral.ai/v1', model: 'mistral-small-latest',

@@ -22,6 +22,7 @@ export function blockedReason(row, state = parse(row.state), t = now()) {
   if (!row.enabled) return 'disabled';
   if (state.status === 'invalid_key') return 'invalid_key';
   if (state.status === 'model_missing') return 'model_missing';
+  if (state.status === 'client_blocked') return 'client_blocked';
   if (state.cooldownUntil && state.cooldownUntil > t) return state.status || 'cooldown';
   if (row.daily_limit && usageToday(row.id).requests >= row.daily_limit) return 'daily_limit';
   return null;
@@ -68,6 +69,7 @@ export function cooldownFor(err) {
     case 'server': return { status: 'provider_down', ms: hinted ?? 30_000 };
     case 'network': return { status: 'unreachable', ms: 30_000 };
     case 'model_missing': return { status: 'model_missing', ms: 0 };
+    case 'client_blocked': return { status: 'client_blocked', ms: 0 };
     default: return null; // bad_request / refusal / empty: this request's problem, not the provider's
   }
 }
@@ -266,7 +268,7 @@ async function completeOnce(req, purpose) {
       log('warn', 'router', `${row.name} failed (${err.kind}): ${err.message}${next ? ` — switching to ${next.name}` : ''}`);
     }
   }
-  const why = { rate_limited: 'rate limited', quota_exhausted: 'quota used up', invalid_key: 'API key rejected', daily_limit: 'daily cap reached', provider_down: 'provider down', unreachable: 'not reachable from this server', cooldown: 'cooling down', model_missing: 'model not found (pick another on the Models page)' };
+  const why = { rate_limited: 'rate limited', quota_exhausted: 'quota used up', invalid_key: 'API key rejected', daily_limit: 'daily cap reached', provider_down: 'provider down', unreachable: 'not reachable from this server', cooldown: 'cooling down', model_missing: 'model not found (pick another on the Models page)', client_blocked: 'this provider refuses apps other than its approved tools' };
   const detail = hops.map((h) => `${h.provider}: ${h.skipped ? why[h.skipped] || h.skipped : h.message || h.error}`).join('; ');
   const tooLarge = hops.some((h) => h.error === 'too_large');
   const weak = hops.some((h) => (h.error === 'empty' && !/ran out of tokens/.test(h.message || '')) || h.error === 'bad_request');

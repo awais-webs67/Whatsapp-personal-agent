@@ -698,3 +698,75 @@ test('reading a chat for analysis sends the conversation, not the product catalo
   assert.equal(sent.max_tokens, 400);
   saveSettings({ business: { catalog: '' } });
 });
+
+test('the agent reports on its own: task updates go to the conversation that started the task', async () => {
+  const { handleCommand, listThreads } = await import('../src/agent/commander.js');
+  const tasks = await import('../src/agent/tasks.js');
+  const { newThread } = await import('../src/agent/commander.js');
+  await until(() => !followups.campaign.running, 20000);
+  run("UPDATE followups SET status = 'skipped' WHERE status IN ('pending','approved')");
+  const thread = newThread();
+  reply = JSON.stringify({ stage: 'interested', summary: 's', should_followup: true, message: 'Offer abhi bhi open hai.', reason: 'asked' });
+  const out = await handleCommand('pichle 30 din ke logon ko har 1 minute baad follow up bhejo', { threadId: thread });
+  const taskId = out.steps[0].result.task_id;
+  assert.equal(get('SELECT thread_id FROM tasks WHERE id = ?', taskId).thread_id, thread, 'the task remembers where it was asked for');
+  await until(() => !followups.campaign.running, 20000);
+  const says = () => all('SELECT text FROM commands WHERE thread_id = ? AND role = ? ORDER BY id', thread, 'agent').map((r) => r.text).join('\n');
+  assert.match(says(), new RegExp(`Task #${taskId}: Read \\d+ chats?: \\d+ messages? queued`), 'says when reading is done');
+  // Make everything due, send, then let the task finish.
+  run('UPDATE followups SET due_at = ? WHERE task_id = ?', now() - 1, taskId);
+  for (let i = 0; i < 8 && get("SELECT COUNT(*) n FROM followups WHERE task_id = ? AND status = 'approved'", taskId).n; i++) { await followups._tick(); await new Promise((r) => setTimeout(r, 5)); }
+  run("UPDATE followups SET status = 'skipped' WHERE task_id = ? AND status = 'approved'", taskId);
+  run('UPDATE tasks SET created_at = ? WHERE id = ?', now() - 60_000, taskId);
+  await tasks._tick();
+  assert.match(says(), /first message sent to/);
+  assert.match(says(), new RegExp(`Task #${taskId} finished`), 'says when it is finished');
+  assert.ok(listThreads().some((t) => t.id === thread));
+});
+
+test('the agent tells the owner when a customer needs them, and reminders go out on time even at night', async () => {
+  const { runCommand } = await import('../src/agent/commander.js');
+  const { saveSettings } = await import('../src/core.js');
+  const updatesThread = () => get("SELECT id FROM command_threads WHERE kind = 'updates'")?.id;
+  // A handoff in a live chat produces an update.
+  const { kvSet } = await import('../src/core.js');
+  kvSet('updateKeys', {}); // an earlier test already reported Ali's handoff; the same news is sent once per 30 minutes
+  reply = JSON.stringify({ messages: ['Main team se confirm karti hun.'], stage: 'negotiating', summary: 'refund', handoff: true, handoff_reason: 'Wants a refund' });
+  run("UPDATE chats SET needs_human = 0, paused_until = NULL, ai_enabled = 1 WHERE jid = '111@s.whatsapp.net'");
+  deliver([{ jid: '111@s.whatsapp.net', waId: `in-h-${now()}`, fromMe: false, text: 'refund chahiye', type: 'text', ts: now() }]);
+  await until(() => updatesThread() && /needs you: Wants a refund/.test(all('SELECT text FROM commands WHERE thread_id = ?', updatesThread()).map((r) => r.text).join('\n')), 6000);
+
+  run("UPDATE chats SET needs_human = 0, ai_enabled = NULL WHERE jid = '111@s.whatsapp.net'");
+
+  // "Ali ko ... yaad dilao" goes through the model, which uses the remind action.
+  saveSettings({ followup: { quietStart: 0, quietEnd: 24 } }); // quiet all day
+  cmdReplies = [JSON.stringify({ action: 'remind', args: { customer: 'Ali', text: 'Aap ka order kal expire ho raha hai.', at: 'in 0 minutes' } }), JSON.stringify({ reply: 'Reminder laga diya.' })];
+  const out = await runCommand('Ali ko yaad dilao ke order kal expire ho raha hai');
+  assert.match(out.reply, /⏰ Reminder for Ali/);
+  const n = sent.length;
+  await followups._tick();
+  assert.equal(sent.at(-1)?.text, 'Aap ka order kal expire ho raha hai.', 'sent despite quiet hours');
+  assert.ok(sent.length > n);
+  saveSettings({ followup: { quietStart: 0, quietEnd: 0 } });
+});
+
+test('AgentRouter-style "unauthorized client" is reported as the provider refusing this app, not a bad key', async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ error: { message: 'unauthorized client detected, contact support for assistance at https://discord.gg/xyz' } }), { status: 401, headers: { 'content-type': 'application/json' } });
+  try {
+    run('UPDATE providers SET enabled = 0');
+    const id = Number(run('INSERT INTO providers (preset, name, kind, base_url, api_key, model, priority, created_at) VALUES (?,?,?,?,?,?,?,?)', 'agentrouter', 'AgentRouter', 'openai', 'https://agentrouter.org/v1', encrypt('k'), 'm', -1, now()).lastInsertRowid);
+    await assert.rejects(complete({ messages: [{ role: 'user', content: 'x' }] }), /only accepts requests from the apps it has approved/);
+    assert.equal(listProviders().map(publicProvider).find((p) => p.id === id).status, 'client_blocked');
+    run('DELETE FROM providers WHERE id = ?', id);
+  } finally {
+    globalThis.fetch = realFetch;
+    run('UPDATE providers SET enabled = 1');
+  }
+});
+
+test('daily summary', async () => {
+  const { digest } = await import('../src/agent/updates.js');
+  const d = digest();
+  assert.match(d, /^Daily summary: \d+ new leads, \d+ messages in, \d+ agent replies, \d+ follow-ups sent\./);
+});

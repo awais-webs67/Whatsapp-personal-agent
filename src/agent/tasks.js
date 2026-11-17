@@ -3,6 +3,7 @@
 //  - scheduled: an instruction the agent carries out once at a time, every N minutes, or daily at HH:MM
 import { all, get, run, now, parse, update } from '../db.js';
 import { getSettings, emit, log } from '../core.js';
+import { notify, announce, maybeDigest } from './updates.js';
 
 const MIN = 60_000;
 export const STATUSES = ['active', 'paused', 'done', 'failed', 'removed'];
@@ -52,12 +53,12 @@ export function describeSchedule(s) {
   return 'Unknown schedule';
 }
 
-export function createTask({ title, instruction, kind = 'scheduled', schedule = { type: 'once' }, ignoreQuiet = false }) {
+export function createTask({ title, instruction, kind = 'scheduled', schedule = { type: 'once' }, ignoreQuiet = false, threadId = null }) {
   const text = String(instruction || '').trim();
   if (!text) throw new Error('Describe what the task should do');
   const sched = kind !== 'scheduled' ? null : normaliseSchedule(schedule);
-  const { lastInsertRowid } = run('INSERT INTO tasks (title, instruction, kind, schedule, status, next_run_at, runs, ignore_quiet, created_at) VALUES (?,?,?,?,?,?,?,?,?)',
-    String(title || text).slice(0, 120), text.slice(0, 1000), kind, JSON.stringify(sched), 'active', kind !== 'scheduled' ? null : nextRun(sched), 0, ignoreQuiet ? 1 : 0, now());
+  const { lastInsertRowid } = run('INSERT INTO tasks (title, instruction, kind, schedule, status, next_run_at, runs, ignore_quiet, thread_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+    String(title || text).slice(0, 120), text.slice(0, 1000), kind, JSON.stringify(sched), 'active', kind !== 'scheduled' ? null : nextRun(sched), 0, ignoreQuiet ? 1 : 0, threadId, now());
   const id = Number(lastInsertRowid);
   log('info', 'tasks', `Task #${id} created: ${String(title || text).slice(0, 80)}${sched ? ` (${describeSchedule(sched)})` : ''}`);
   emit('tasks');
@@ -132,10 +133,17 @@ async function tick() {
         const result = t.kind === 'analysis' ? t.last_result || 'Finished' : `${t.last_result ? `${t.last_result} ` : ''}${sent} message${sent === 1 ? '' : 's'} sent.`;
         update('tasks', t.id, { status: 'done', last_result: result.slice(0, 1000), last_run_at: now() }, ['status', 'last_result', 'last_run_at']);
         emit('tasks');
+        notify(`Task #${t.id} finished (${t.title}). ${result}`, { threadId: t.thread_id });
+        continue;
+      }
+      // Still has messages to send but nothing is going out: say why, once per reason.
+      const why = !reading ? whyRef(t.id) : null;
+      if (why && !/^Paused/.test(why)) {
+        notify(`Task #${t.id} is not sending yet: ${why}`, { threadId: t.thread_id, key: `block:${t.id}:${why.slice(0, 50)}`, everyMs: 12 * 3_600_000 });
       }
     }
     const due = get("SELECT * FROM tasks WHERE kind = 'scheduled' AND status = 'active' AND next_run_at IS NOT NULL AND next_run_at <= ? ORDER BY next_run_at LIMIT 1", now());
-    if (!due || !runner) return;
+    if (!due || !runner) { try { maybeDigest(); } catch (e) { log('error', 'updates', e.message); } return; }
     const sched = parse(due.schedule, null);
     update('tasks', due.id, { next_run_at: null, last_run_at: now() }, ['next_run_at', 'last_run_at']); // never double-fire
     emit('tasks');
@@ -157,6 +165,8 @@ async function tick() {
       status: fresh.status === 'paused' ? 'paused' : next ? 'active' : failed ? 'failed' : 'done',
     }, ['runs', 'last_result', 'next_run_at', 'status']);
     emit('tasks');
+    announce(`Task #${due.id} (${due.title}) ran: ${String(result || '').slice(0, 600)}`);
+    try { maybeDigest(); } catch (e) { log('error', 'updates', e.message); }
   } catch (e) {
     log('error', 'tasks', e.message);
   } finally {

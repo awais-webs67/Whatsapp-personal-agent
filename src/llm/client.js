@@ -14,6 +14,7 @@ export class LLMError extends Error {
 }
 
 const GEO_RE = /check your network settings|access denied|not available in your (country|region|location)|unsupported_country|unsupported (country|region)|region is not supported|country.*not supported/i;
+const CLIENT_RE = /unauthorized client|client (is )?not (allowed|supported|authori[sz]ed)|unsupported client|only (available|supported) (for|in|via) /i;
 const QUOTA_RE = /insufficient[_ ](quota|balance|credit)|exceeded your current quota|quota (has been )?exceeded|out of credits|billing|payment required|daily limit|free tier.*(limit|exhaust)|resource[_ ]exhausted.*(day|quota)/i;
 
 function classify(status, body) {
@@ -23,6 +24,8 @@ function classify(status, body) {
   if ((status === 404 || status === 400 || status === 403) && /model[^"]{0,80}(does not exist|not[ _]found|decommission|deprecat|no longer|not supported|do not have access|is not available|unknown)|model_(not_found|decommissioned)|invalid model/i.test(text)) return 'model_missing';
   // Region / VPN blocks (Groq: "Access denied. Please check your network settings.") are not key problems.
   if (status === 403 && GEO_RE.test(text)) return 'network';
+  // Some gateways (AgentRouter) only serve the coding tools they have approved and reject every other app.
+  if ((status === 401 || status === 403) && CLIENT_RE.test(text)) return 'client_blocked';
   if (status === 401 || status === 403) return QUOTA_RE.test(text) ? 'quota' : 'auth';
   if (status === 402) return 'quota';
   if (status === 429) {
@@ -91,8 +94,9 @@ async function fetchJson(url, init, timeoutMs) {
     const b = Array.isArray(body) ? body[0] : body; // Gemini wraps errors in an array
     const msg = b?.error?.message || b?.message || (typeof b?.error === 'string' ? b.error : null) || String(raw).slice(0, 300) || res.statusText;
     const geo = res.status === 403 && GEO_RE.test(JSON.stringify(body ?? raw));
+    const blocked = (res.status === 401 || res.status === 403) && CLIENT_RE.test(JSON.stringify(body ?? raw));
     const hinted = /try again in ((?:\d+(?:\.\d+)?(?:ms|h|m|s))+)/i.exec(msg)?.[1];
-    const err = new LLMError(classify(res.status, body), `${res.status} ${msg}${geo ? ` ${new URL(url).hostname} is blocking this connection, most likely because of the VPN or country it comes from. Switch the VPN to another country (USA or Europe usually work) or turn it off for this computer.` : ''}`, {
+    const err = new LLMError(classify(res.status, body), `${res.status} ${msg}${geo ? ` ${new URL(url).hostname} is blocking this connection, most likely because of the VPN or country it comes from. Switch the VPN to another country (USA or Europe usually work) or turn it off for this computer.` : ''}${blocked ? ` ${new URL(url).hostname} only accepts requests from the apps it has approved (coding tools), so it cannot be used by this agent. Your key is fine; the provider refuses this app. Use Groq, Gemini or OpenRouter instead.` : ''}`, {
       status: res.status,
       retryAfter: parseDuration(res.headers.get('retry-after')) ?? parseDuration(hinted) ?? parseDuration(res.headers.get('x-ratelimit-reset-tokens')) ?? parseDuration(res.headers.get('x-ratelimit-reset-requests')),
     });

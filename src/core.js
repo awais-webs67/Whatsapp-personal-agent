@@ -22,6 +22,8 @@ export function log(level, scope, msg) {
 export const DEFAULT_SETTINGS = {
   autopilot: true,
   commandsViaWhatsApp: true,            // messages in "Message yourself" are treated as commands
+  notifyWhatsApp: true,                 // the agent also sends its updates to that chat
+  digestHour: 21,                       // daily summary at this hour (-1 = off)
   business: {
     name: '', persona: '',
     goal: 'Answer questions about what we offer and help the customer buy, without pressure.',

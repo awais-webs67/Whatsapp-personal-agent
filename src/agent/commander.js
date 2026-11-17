@@ -8,7 +8,7 @@ import { toolCallToJson } from '../llm/client.js';
 import * as wa from '../wa/manager.js';
 import { STAGES, extractJson } from './brain.js';
 import { runCampaign, campaign, whyNotSending } from './followups.js';
-import { createTask, listTasks, taskView, controlTask, setTaskRunner, setCampaign } from './tasks.js';
+import { createTask, listTasks, taskView, controlTask, setTaskRunner, setCampaign, nextRun } from './tasks.js';
 import { quickIntent, ASKS_PERMISSION } from './intent.js';
 import { humanSend } from './pipeline.js';
 import { learnFromChats, learnFromWebsite, learnFromProfile } from './learn.js';
@@ -77,7 +77,7 @@ const TOOLS = {
       if (!t.length) return { started: false, reason: 'No chats match' };
       const s = getSettings().followup;
       const interval = Math.max(1, Number(a.interval_minutes) || 5);
-      const taskId = createTask({ kind: 'batch', ignoreQuiet: !!a.ignore_quiet_hours, title: `Follow-ups: ${String(a.instruction || 'quiet leads').slice(0, 80)}`, instruction: `Last ${days(a.days)} days${stageList(a.stages).length ? `, stages ${stageList(a.stages).join(', ')}` : ''}, every ${interval} min, ${a.send ? 'sends automatically' : 'drafts for approval'}. ${a.instruction || ''}`.trim() });
+      const taskId = createTask({ kind: 'batch', threadId: activeThread, ignoreQuiet: !!a.ignore_quiet_hours, title: `Follow-ups: ${String(a.instruction || 'quiet leads').slice(0, 80)}`, instruction: `Last ${days(a.days)} days${stageList(a.stages).length ? `, stages ${stageList(a.stages).join(', ')}` : ''}, every ${interval} min, ${a.send ? 'sends automatically' : 'drafts for approval'}. ${a.instruction || ''}`.trim() });
       await runCampaign({ taskId, sinceDays: days(a.days), limit: Math.min(500, Number(a.limit) || 100), reanalyze: true, instruction: String(a.instruction || '').slice(0, 600), autoApprove: !!a.send, intervalMinutes: interval, stages: stageList(a.stages) });
       if (!campaign.total) run("UPDATE tasks SET status = 'removed' WHERE id = ?", taskId); // nothing to do: no empty task left behind
       return { started: campaign.total > 0, ...(campaign.total ? {} : { reason: 'every matching chat already has a follow-up waiting, or has too few messages to follow up on' }), task_id: taskId, chats_being_read: campaign.total, interval_minutes: interval, mode: a.send ? 'sends automatically' : 'drafts wait for approval',
@@ -88,7 +88,7 @@ const TOOLS = {
     doc: 'schedule_task {"instruction": "what to do each time, in the owner\'s words", "every_minutes": 30} or {"instruction": "...", "daily_at": "10:00"} or {"instruction": "...", "at": "18:30"} - set up a task that runs later or repeatedly. The instruction is carried out like a new request each time.',
     run: (a) => {
       const schedule = a.every_minutes ? { type: 'every', minutes: Number(a.every_minutes) } : a.daily_at ? { type: 'daily', time: String(a.daily_at) } : { type: 'once', at: a.at ? String(a.at) : undefined };
-      const id = createTask({ kind: 'scheduled', instruction: String(a.instruction || ''), title: a.title, schedule });
+      const id = createTask({ kind: 'scheduled', threadId: activeThread, instruction: String(a.instruction || ''), title: a.title, schedule });
       const t = taskView(get('SELECT * FROM tasks WHERE id = ?', id));
       return { task_id: id, schedule: t.scheduleText, first_run: t.next_run_at ? new Date(t.next_run_at).toISOString() : null };
     },
@@ -100,10 +100,34 @@ const TOOLS = {
   pause_task: { doc: 'pause_task {"id": 3}', run: ({ id }) => ({ status: controlTask(id, 'pause').status }) },
   resume_task: { doc: 'resume_task {"id": 3}', run: ({ id }) => ({ status: controlTask(id, 'resume').status }) },
   remove_task: { doc: 'remove_task {"id": 3} - stop it and cancel its queued messages.', run: ({ id }) => ({ status: controlTask(id, 'remove').status }) },
+  remind: {
+    doc: 'remind {"customer": "name or phone number", "text": "the exact message to send", "at": "18:30" | "2026-12-01T10:00" | "in 2 hours"} - send one customer a message at a set time (a reminder). Leave "at" out to send it now.',
+    run: ({ customer, text, at }) => {
+      const q = String(customer || '').trim();
+      const body = String(text || '').trim();
+      if (!q || !body) return { error: 'Say who to remind and what to tell them' };
+      const digits = q.replace(/\D/g, '');
+      const found = digits.length >= 7
+        ? all("SELECT * FROM chats WHERE phone LIKE ? OR jid LIKE ? ORDER BY last_msg_at DESC LIMIT 5", `%${digits.slice(-10)}%`, `%${digits.slice(-10)}%`)
+        : all('SELECT * FROM chats WHERE name LIKE ? ORDER BY last_msg_at DESC LIMIT 5', `%${q}%`);
+      if (!found.length) return { error: `No chat found for "${q}"` };
+      if (found.length > 1 && !found.some((c) => (c.name || '').toLowerCase() === q.toLowerCase())) return { error: `More than one chat matches "${q}": ${found.map(title).join(', ')}. Say which one.` };
+      const c = found.find((x) => (x.name || '').toLowerCase() === q.toLowerCase()) || found[0];
+      if (c.stage === 'opted_out') return { error: `${title(c)} asked not to be contacted` };
+      const rel = /in\s+(\d+)\s*(minute|minutes|min|mins|hour|hours|ghante|ghanta|day|days|din)/i.exec(String(at || ''));
+      const due = !at ? now()
+        : rel ? now() + Number(rel[1]) * (/^(hour|hours|ghante|ghanta)$/i.test(rel[2]) ? 3_600_000 : /^(day|days|din)$/i.test(rel[2]) ? 86_400_000 : 60_000)
+        : nextRun({ type: 'once', at: String(at) });
+      if (!due || Number.isNaN(due)) return { error: `Could not understand the time "${at}"` };
+      run("INSERT INTO followups (chat_id, kind, text, reason, status, due_at, created_at) VALUES (?, 'reminder', ?, 'Asked by the owner', 'approved', ?, ?)", c.id, body.slice(0, 1500), Math.max(due, now()), now());
+      emit('followups');
+      return { reminder_for: title(c), at: new Date(Math.max(due, now())).toISOString() };
+    },
+  },
   analyse_chats: {
     doc: 'analyse_chats {"days": 90} - read every customer chat of the period in full, record each one\'s stage and summary, then learn the owner\'s offers, prices and tone from them. Sends nothing.',
     run: async (a) => {
-      const taskId = createTask({ kind: 'analysis', title: `Read and learn from chats (last ${days(a.days, 90)} days)`, instruction: 'Read every customer chat, record its stage and summary, then learn offers, prices and tone from the chats the owner answered.' });
+      const taskId = createTask({ kind: 'analysis', threadId: activeThread, title: `Read and learn from chats (last ${days(a.days, 90)} days)`, instruction: 'Read every customer chat, record its stage and summary, then learn offers, prices and tone from the chats the owner answered.' });
       await runCampaign({ taskId, analyzeOnly: true, sinceDays: days(a.days, 90), limit: Math.min(1000, Number(a.limit) || 300) });
       if (!campaign.total) run("UPDATE tasks SET status = 'removed' WHERE id = ?", taskId);
       return campaign.total ? { started: true, task_id: taskId, chats_being_read: campaign.total } : { started: false, reason: 'no customer chats are stored for that period yet. Link a WhatsApp number and let its history sync' };
@@ -210,6 +234,7 @@ function facts(steps) {
         out.push(`📋 Task #${r.task_id} started: reading ${r.chats_being_read} chat${r.chats_being_read === 1 ? '' : 's'}, one message every ${r.interval_minutes} min, ${r.mode}. Progress is on the Tasks page.${why ? `\n⚠️ Not sending yet: ${why}` : ''}`);
       }
     }
+    if (s.action === 'remind' && r.reminder_for) out.push(`⏰ Reminder for ${r.reminder_for} at ${new Date(r.at).toLocaleString('en-GB', { timeZone: getSettings().followup.timezone, dateStyle: 'medium', timeStyle: 'short' })}. You get a message when it is sent.`);
     if (s.action === 'analyse_chats') out.push(r.started ? `📋 Task #${r.task_id} started: reading ${r.chats_being_read} chat${r.chats_being_read === 1 ? '' : 's'} in full, then learning from them. Progress is on the Tasks page.` : `⚠️ Nothing started: ${r.reason}.`);
     if (s.action === 'schedule_task') out.push(`⏰ Task #${r.task_id}: ${r.schedule}${r.first_run ? `, first run ${new Date(r.first_run).toLocaleString('en-GB', { timeZone: getSettings().followup.timezone, dateStyle: 'medium', timeStyle: 'short' })}` : ''}.`);
     if (s.action === 'send_message' && r.sent_to) out.push(`✉️ Sent to ${r.sent_to}.`);
@@ -287,6 +312,7 @@ export async function runCommand(text, history = [], { scheduled = false } = {})
 }
 
 let queue = Promise.resolve();
+let activeThread = null; // the conversation whose command is running (commands run one at a time)
 /** Handle a command from the dashboard or from the owner's own WhatsApp chat; requests run one at a time. */
 // ---------- conversations ----------
 /** A fixed conversation for WhatsApp self-chat commands or scheduled-task runs, created on first use. */
@@ -319,6 +345,7 @@ export function handleCommand(text, { chatId = null, scheduled = false, label = 
     run('UPDATE command_threads SET updated_at = ? WHERE id = ?', now(), thread);
     emit('command', { thread });
     let out;
+    activeThread = scheduled ? null : thread;
     try {
       out = await runCommand(text, history, { scheduled });
     } catch (e) {
