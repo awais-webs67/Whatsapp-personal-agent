@@ -108,7 +108,8 @@ export async function callProvider(row, req, { purpose = 'reply' } = {}) {
     return fitted;
   };
   await waitForBudget(row, build(row), live ? 30_000 : 65_000);
-  const once = (r) => { const { shortened, ...fitted } = build(r); return chat(hydrate(r), { timeoutMs, fast: purpose === 'reply', ...fitted }); };
+  const fallbacks = await openRouterFallbacks(row);
+  const once = (r) => { const { shortened, ...fitted } = build(r); return chat({ ...hydrate(r), fallbackModels: r.id === row.id ? fallbacks : [] }, { timeoutMs, fast: purpose === 'reply', ...fitted }); };
   // Small models now and then return an empty answer; a second sample almost always works.
   const call = async (r) => {
     for (let attempt = 0; ; attempt++) {
@@ -157,6 +158,31 @@ const REASONING = /gemini-(2\.5|[3-9])|gpt-oss|(^|\/)o\d|gpt-5|qwen3|qwq|deepsee
 export function outputBudget(model, requested, purpose, setting) {
   const need = requested ?? (purpose === 'reply' ? 500 : setting);
   return REASONING.test(model || '') ? Math.max(need, setting) : need;
+}
+
+const freeLists = new Map(); // provider id -> { at, models }
+/**
+ * For an OpenRouter ":free" model, two other free chat models to fall back on inside the same request.
+ * Free models are often busy upstream ("429 Provider returned error"); OpenRouter tries the next one itself.
+ */
+export async function openRouterFallbacks(row) {
+  const isOpenRouter = row.preset === 'openrouter' || /openrouter\.ai/.test(row.base_url || '');
+  if (!isOpenRouter || !/:free$/.test(row.model || '')) return [];
+  let cached = freeLists.get(row.id);
+  if (!cached || now() - cached.at > 6 * 3_600_000) {
+    try { cached = { at: now(), models: (await listModels(hydrate(row))).filter((m) => m.chat && m.free && (!m.context || m.context >= 16000)) }; }
+    catch { cached = { at: now(), models: [] }; }
+    freeLists.set(row.id, cached);
+  }
+  const picks = [];
+  let pool = cached.models.filter((m) => m.id !== row.model);
+  for (let i = 0; i < 2 && pool.length; i++) {
+    const id = chooseModel(pool, i === 0 ? row.model : picks[0]);
+    if (!id) break;
+    picks.push(id);
+    pool = pool.filter((m) => m.id !== id);
+  }
+  return picks;
 }
 
 /** Rough token count of a request (about 3.5 characters per token for mixed English / Roman Urdu). */
@@ -235,16 +261,22 @@ export function chainFor(purpose, rows = listProviders()) {
 }
 
 export async function complete(req, { purpose = 'reply' } = {}) {
-  try {
-    return await completeOnce(req, purpose);
-  } catch (e) {
-    const soon = chainFor(purpose).filter((r) => r.enabled && blockedReason(r) === 'rate_limited')
-      .map((r) => parse(r.state).cooldownUntil).filter(Boolean).sort((a, b) => a - b)[0];
-    const wait = soon ? soon - now() + 300 : null;
-    if (!(e instanceof LLMError) || wait == null || wait > (purpose === 'reply' ? 35_000 : 65_000)) throw e;
-    log('info', 'router', `${purpose}: every model is briefly rate limited, retrying in ${(wait / 1000).toFixed(1)}s`);
-    await new Promise((r) => setTimeout(r, Math.max(0, wait)));
-    return completeOnce(req, purpose);
+  // A customer is waiting on a live reply: one short wait at most. Background work (reading chats, learning,
+  // batches, commands) is patient: free models hit their limits often, and a few minutes of waiting beats failing.
+  const live = purpose === 'reply';
+  const maxWait = live ? 35_000 : 120_000;
+  const deadline = now() + (live ? 40_000 : 6 * 60_000);
+  for (let round = 0; ; round++) {
+    try {
+      return await completeOnce(req, purpose);
+    } catch (e) {
+      const soon = chainFor(purpose).filter((r) => r.enabled && blockedReason(r) === 'rate_limited')
+        .map((r) => parse(r.state).cooldownUntil).filter(Boolean).sort((a, b) => a - b)[0];
+      const wait = soon ? soon - now() + 300 : null;
+      if (!(e instanceof LLMError) || wait == null || wait > maxWait || now() + wait > deadline || (live && round >= 1)) throw e;
+      log('info', 'router', `${purpose}: every model is rate limited for now, trying again in ${Math.ceil(wait / 1000)}s`);
+      await new Promise((r) => setTimeout(r, Math.max(0, wait)));
+    }
   }
 }
 

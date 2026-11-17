@@ -143,7 +143,7 @@ export function whyNotSending(taskId = null) {
   return next > now() ? null : null;
 }
 
-export async function runCampaign({ accountId = null, sinceDays = 90, limit = 200, reanalyze = false, instruction = '', autoApprove = false, intervalMinutes = 0, stages = null, taskId = null, analyzeOnly = false } = {}) {
+export async function runCampaign({ accountId = null, sinceDays = 90, limit = 200, reanalyze = false, instruction = '', autoApprove = false, intervalMinutes = 0, stages = null, taskId = null, analyzeOnly = false, audience = 'all' } = {}) {
   if (campaign.running) throw new Error('Another batch is still reading chats. Wait for it to finish, or remove it on the Tasks page.');
   const since = now() - sinceDays * 86_400_000;
   // Analysis reads every customer chat in the period (buyers included); it sends nothing.
@@ -153,13 +153,13 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
         AND (SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.id AND m.from_me = 0) >= 1
       ORDER BY c.last_in_at DESC LIMIT ?3`, accountId, since, limit) : all(`SELECT c.* FROM chats c
       WHERE (?1 IS NULL OR c.account_id = ?1) AND c.last_in_at >= ?2 AND c.stage != 'opted_out'
-        AND (?5 != '' OR c.stage != 'purchased') AND (?5 = '' OR instr(?5, ',' || c.stage || ',') > 0)
+        AND (?5 != '' OR ?6 = 1 OR c.stage != 'purchased') AND (?5 = '' OR instr(?5, ',' || c.stage || ',') > 0)
         AND c.jid != COALESCE((SELECT a.self_jid FROM accounts a WHERE a.id = c.account_id), '')
         AND (?3 = 1 OR c.analyzed_at IS NULL)
         AND (SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.id AND m.from_me = 0) >= 1
         AND (SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.id) >= 2
         AND NOT EXISTS (SELECT 1 FROM followups f WHERE f.chat_id = c.id AND f.status IN ('pending','approved'))
-      ORDER BY c.last_in_at DESC LIMIT ?4`, accountId, since, reanalyze || instruction ? 1 : 0, limit, stages?.length ? `,${stages.join(',')},` : '');
+      ORDER BY c.last_in_at DESC LIMIT ?4`, accountId, since, reanalyze || instruction ? 1 : 0, limit, stages?.length ? `,${stages.join(',')},` : '', audience === 'buyers' ? 1 : 0);
   const gap = Math.max(0, Number(intervalMinutes) || 0) * 60_000;
   let nextDue = now();
   Object.assign(campaign, { taskId, analyzeOnly, stages: {}, running: true, total: chats.length, done: 0, drafted: 0, skipped: 0, skipReasons: [], failed: 0, cancel: false, startedAt: now(), error: null });
@@ -169,13 +169,13 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
     for (const chat of chats) {
       if (campaign.cancel) break;
       try {
-        const d = await decide(chat.id, 'analyze', { instruction, lean: analyzeOnly });
+        const d = await decide(chat.id, 'analyze', { instruction, lean: analyzeOnly, audience });
         update('chats', chat.id, { stage: d.stage, summary: d.summary, analyzed_at: now() }, ['stage', 'summary', 'analyzed_at']);
         campaign.stages[d.stage] = (campaign.stages[d.stage] || 0) + 1;
         if (analyzeOnly) { campaign.done++; emit('campaign', campaign); if (taskId) emit('tasks'); await sleep(rand(300, 800)); continue; }
         if (d.skip) { campaign.skipped++; if (d.reason && campaign.skipReasons.length < 3) campaign.skipReasons.push(`${chat.name || chat.phone || 'someone'}: ${d.reason}`); }
         if (!d.skip) {
-          queue(chat.id, 'campaign', d.message, d.reason, autoApprove ? 'approved' : 'pending', nextDue, taskId);
+          queue(chat.id, audience === 'buyers' ? 'reminder' : 'campaign', d.message, d.reason, autoApprove ? 'approved' : 'pending', nextDue, taskId);
           nextDue = Math.max(nextDue, now()) + gap * rand(0.8, 1.2);
           campaign.drafted++;
         }

@@ -20,11 +20,11 @@ const title = (c) => c.name || (c.phone ? `+${c.phone}` : c.jid.split('@')[0]);
 const days = (v, d = 7) => Math.min(3650, Math.max(0.01, Number(v) || d));
 const stageList = (v) => (Array.isArray(v) ? v.filter((s) => STAGES.includes(s)) : []);
 
-function targets({ days: d, stages }) {
+function targets({ days: d, stages, includePurchased = false }) {
   const st = stageList(stages);
   return all(`SELECT c.* FROM chats c WHERE c.last_in_at >= ? AND c.stage != 'opted_out'
               AND c.jid != COALESCE((SELECT a.self_jid FROM accounts a WHERE a.id = c.account_id), '')
-              ${st.length ? `AND c.stage IN (${st.map(() => '?').join(',')})` : "AND c.stage != 'purchased'"}
+              ${st.length ? `AND c.stage IN (${st.map(() => '?').join(',')})` : includePurchased ? '' : "AND c.stage != 'purchased'"}
               ORDER BY c.last_in_at DESC LIMIT 500`, now() - days(d) * DAY, ...st);
 }
 
@@ -71,14 +71,15 @@ const TOOLS = {
     run: (a) => { const t = targets(a); return { people: t.length, examples: t.slice(0, 5).map(title) }; },
   },
   start_followups: {
-    doc: 'start_followups {"days": 5, "stages": [], "instruction": "what to say / who it is for", "interval_minutes": 5, "limit": 100, "send": true, "ignore_quiet_hours": false} - read each matching chat, write a personal message following the instruction, and schedule them one by one with the interval. "send": true queues them to go out automatically; false leaves them as drafts for the owner to approve. Set "ignore_quiet_hours": true only if the owner says to send at night too.',
+    doc: 'start_followups {"days": 5, "stages": [], "instruction": "what to say / who it is for", "interval_minutes": 5, "limit": 100, "send": true, "ignore_quiet_hours": false, "audience": "all|buyers|non_buyers"} - read each matching chat, write a personal message following the instruction, and schedule them one by one with the interval. "send": true queues them to go out automatically; false leaves them as drafts for the owner to approve. Set "ignore_quiet_hours": true only if the owner says to send at night too. "audience": "buyers" when the owner means people who already bought (a renewal or after-sale reminder), "non_buyers" for people who did not buy, "all" otherwise.',
     run: async (a) => {
-      const t = targets(a);
+      const audience = ['buyers', 'non_buyers'].includes(a.audience) ? a.audience : 'all';
+      const t = targets({ ...a, includePurchased: audience === 'buyers' });
       if (!t.length) return { started: false, reason: 'No chats match' };
       const s = getSettings().followup;
       const interval = Math.max(1, Number(a.interval_minutes) || 5);
-      const taskId = createTask({ kind: 'batch', threadId: activeThread, ignoreQuiet: !!a.ignore_quiet_hours, title: `Follow-ups: ${String(a.instruction || 'quiet leads').slice(0, 80)}`, instruction: `Last ${days(a.days)} days${stageList(a.stages).length ? `, stages ${stageList(a.stages).join(', ')}` : ''}, every ${interval} min, ${a.send ? 'sends automatically' : 'drafts for approval'}. ${a.instruction || ''}`.trim() });
-      await runCampaign({ taskId, sinceDays: days(a.days), limit: Math.min(500, Number(a.limit) || 100), reanalyze: true, instruction: String(a.instruction || '').slice(0, 600), autoApprove: !!a.send, intervalMinutes: interval, stages: stageList(a.stages) });
+      const taskId = createTask({ kind: 'batch', threadId: activeThread, ignoreQuiet: !!a.ignore_quiet_hours, title: `${audience === 'buyers' ? 'Reminders to buyers' : 'Follow-ups'}: ${String(a.instruction || 'quiet leads').slice(0, 80)}`, instruction: `${{ buyers: 'People who bought, ', non_buyers: 'People who did not buy, ', all: '' }[audience]}last ${days(a.days)} days${stageList(a.stages).length ? `, stages ${stageList(a.stages).join(', ')}` : ''}, every ${interval} min, ${a.send ? 'sends automatically' : 'drafts for approval'}. ${a.instruction || ''}`.trim() });
+      await runCampaign({ taskId, sinceDays: days(a.days), limit: Math.min(500, Number(a.limit) || 100), reanalyze: true, instruction: String(a.instruction || '').slice(0, 600), autoApprove: !!a.send, intervalMinutes: interval, stages: stageList(a.stages), audience });
       if (!campaign.total) run("UPDATE tasks SET status = 'removed' WHERE id = ?", taskId); // nothing to do: no empty task left behind
       return { started: campaign.total > 0, ...(campaign.total ? {} : { reason: 'every matching chat already has a follow-up waiting, or has too few messages to follow up on' }), task_id: taskId, chats_being_read: campaign.total, interval_minutes: interval, mode: a.send ? 'sends automatically' : 'drafts wait for approval',
         limits: `at most ${s.dailyCap} per number per day; nothing is sent between ${s.quietStart}:00 and ${s.quietEnd}:00 (${s.timezone}); people who would not benefit are skipped` };

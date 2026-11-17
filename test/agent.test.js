@@ -24,6 +24,7 @@ const calls = [];
 let cmdReplies = [];
 let flakyCount = 0;
 let tpmCount = 0;
+let busyCount = 0;
 const budget = { left: 3000, resetAt: 0 }; // scripted answers for the owner-command prompt
 let reply = JSON.stringify({ messages: ['Hi! The price is 2500.', 'Want me to book it?'], stage: 'interested', summary: 'Asked price', handoff: false });
 const server = http.createServer((req, res) => {
@@ -37,6 +38,8 @@ const server = http.createServer((req, res) => {
     if (key === 'broke') return send(429, { error: { message: 'You exceeded your current quota, please check your plan and billing details' } });
     if (key === 'batchonly' && req.url.endsWith('/models')) return send(200, { data: [{ id: 'deepseek/deepseek-v4-flash-0731:batch' }, { id: 'deepseek/deepseek-v4-flash-0731', context_length: 128000 }, { id: 'qwen/qwen3-8b', context_length: 32000 }] });
     if (key === 'batchonly' && /:batch$/.test(body && JSON.parse(body).model)) return send(404, { error: { message: `${JSON.parse(body).model} cannot be used with the chat/completions endpoint (adapter DeepInfraBatchAdapter).`, code: 404 } });
+    if (key === 'busy' && (busyCount = (busyCount || 0) + 1) <= 2) return send(429, { error: { message: 'Provider returned error', code: 429, metadata: { raw: 'rate-limited upstream' } } }, { 'retry-after': '1' });
+    if (key === 'orfree' && req.url.endsWith('/models')) return send(200, { data: [{ id: 'meta/llama-3.3-70b:free', context_length: 131072, pricing: { prompt: '0', completion: '0' } }, { id: 'qwen/qwen3-32b:free', context_length: 40000, pricing: { prompt: '0', completion: '0' } }, { id: 'tiny/model-1b:free', context_length: 4000, pricing: { prompt: '0', completion: '0' } }, { id: 'paid/model', context_length: 128000, pricing: { prompt: '0.000001', completion: '0.000002' } }] });
     if (key === 'badkey') return send(401, { error: { message: 'Incorrect API key provided' } });
     if (key === 'flaky' && (flakyCount = (flakyCount || 0) + 1) === 1) return send(200, { model: 'small', choices: [{ message: { content: '' }, finish_reason: 'stop' }] });
     if (key === 'toolcalls') return send(200, { model: 'small', choices: [{ message: { content: null, tool_calls: [{ type: 'function', function: { name: 'stats', arguments: '{"days":3}' } }] }, finish_reason: 'stop' }] });
@@ -783,6 +786,64 @@ test('a batch-only model is never offered for chat, and one already set is swapp
   const out = await complete({ messages: [{ role: 'user', content: 'x' }] }, { purpose: 'command' });
   assert.equal(out.text, '{"reply": "ok"}');
   assert.equal(get('SELECT model FROM providers WHERE id = ?', id).model, 'deepseek/deepseek-v4-flash-0731');
+  run('DELETE FROM providers WHERE id = ?', id);
+  run('UPDATE providers SET enabled = 1');
+});
+
+test('"jinhon ne khareeda unko reminder bhejo" targets buyers; "jinhon ne nahi khareeda" targets the others', async () => {
+  const { quickIntent, audienceOf } = await import('../src/agent/intent.js');
+  const q = quickIntent('read karo chats last 30 days ki then jinho na ya cheez buy ki ha then un ko reminder bhjo');
+  assert.deepEqual([q.action, q.args.days, q.args.audience], ['start_followups', 30, 'buyers']);
+  assert.equal(audienceOf('jinhon ne purchase nahi kiya unhein follow up bhejo'), 'non_buyers');
+  assert.equal(audienceOf('jinho ne Canva khareeda unko renewal reminder bhejo'), 'buyers');
+  assert.equal(audienceOf('sab ko offer bhejo'), 'all');
+});
+
+test('a reminder batch to buyers reaches people marked purchased, and skips those who never bought', async () => {
+  const { runCommand } = await import('../src/agent/commander.js');
+  await until(() => !followups.campaign.running, 20000);
+  run("UPDATE followups SET status = 'skipped' WHERE status IN ('pending','approved')");
+  run("UPDATE chats SET stage = 'purchased' WHERE jid = '444@s.whatsapp.net'");
+  run("UPDATE chats SET stage = 'interested' WHERE jid = '555@s.whatsapp.net'");
+  // The model decides from each conversation who bought.
+  const realReply = reply;
+  reply = JSON.stringify({ stage: 'purchased', summary: 'Bought', should_followup: true, message: 'Aap ka plan jald expire ho raha hai, renew karna ho to bata dein.', reason: 'bought' });
+  const out = await runCommand('read karo chats last 30 days ki then jinho na ya cheez buy ki ha then un ko reminder bhjo');
+  assert.equal(out.steps[0].args.audience, 'buyers');
+  await until(() => !followups.campaign.running, 20000);
+  const taskId = out.steps[0].result.task_id;
+  const queued = all("SELECT f.kind, c.jid FROM followups f JOIN chats c ON c.id = f.chat_id WHERE f.task_id = ? AND f.status = 'approved'", taskId);
+  assert.ok(queued.some((x) => x.jid === '444@s.whatsapp.net'), 'the buyer is included');
+  assert.ok(queued.every((x) => x.kind === 'reminder'), 'sent as reminders, so the purchased stage does not block them');
+  run('UPDATE followups SET due_at = ? WHERE task_id = ?', now() - 1, taskId);
+  const n = sent.length;
+  await followups._tick();
+  assert.ok(sent.length > n, 'a reminder went out to a buyer');
+  assert.equal(sent.at(-1).text, 'Aap ka plan jald expire ho raha hai, renew karna ho to bata dein.');
+  run("UPDATE followups SET status = 'skipped' WHERE task_id = ? AND status = 'approved'", taskId);
+  reply = realReply;
+});
+
+test('background work waits out repeated rate limits instead of failing', async () => {
+  run('UPDATE providers SET enabled = 0');
+  const id = Number(run('INSERT INTO providers (preset, name, kind, base_url, api_key, model, priority, created_at) VALUES (?,?,?,?,?,?,?,?)', 'openrouter', 'Busy free', 'openai', baseUrl, encrypt('busy'), 'some/model:free', -1, now()).lastInsertRowid);
+  reply = '{"reply": "ok"}';
+  const out = await complete({ messages: [{ role: 'user', content: 'x' }] }, { purpose: 'learn' });
+  assert.equal(out.text, '{"reply": "ok"}', 'succeeded on the third try');
+  run('DELETE FROM providers WHERE id = ?', id);
+  run('UPDATE providers SET enabled = 1');
+});
+
+test('OpenRouter free models get two other free models to fall back on in the same request', async () => {
+  const { openRouterFallbacks } = await import('../src/llm/router.js');
+  run('UPDATE providers SET enabled = 0');
+  const id = Number(run('INSERT INTO providers (preset, name, kind, base_url, api_key, model, priority, created_at) VALUES (?,?,?,?,?,?,?,?)', 'openrouter', 'OR free', 'openai', baseUrl, encrypt('orfree'), 'deepseek/deepseek-chat:free', -1, now()).lastInsertRowid);
+  const fb = await openRouterFallbacks(get('SELECT * FROM providers WHERE id = ?', id));
+  assert.equal(fb.length, 2);
+  assert.ok(!fb.includes('tiny/model-1b:free') && !fb.includes('paid/model'), 'only roomy free models');
+  reply = '{"reply": "ok"}';
+  await complete({ messages: [{ role: 'user', content: 'x' }] }, { purpose: 'command' });
+  assert.deepEqual(calls.at(-1).body.models, ['deepseek/deepseek-chat:free', ...fb]);
   run('DELETE FROM providers WHERE id = ?', id);
   run('UPDATE providers SET enabled = 1');
 });

@@ -113,6 +113,8 @@ async function chatOpenAI(p, { system, messages, maxTokens, timeoutMs, fast }) {
   const payload = {
     model: p.model,
     messages: [...(system ? [{ role: 'system', content: system }] : []), ...messages],
+    // OpenRouter: other models to try, in order, if this one is busy or failing.
+    ...(p.fallbackModels?.length ? { models: [p.model, ...p.fallbackModels].slice(0, 3) } : {}),
   };
   const post = (extra) =>
     fetchJson(`${base(p)}/chat/completions`, {
@@ -132,7 +134,8 @@ async function chatOpenAI(p, { system, messages, maxTokens, timeoutMs, fast }) {
       return { text: toolCallToJson(e.failedGeneration), model: p.model, usage: { in: 0, out: 0 }, limits: null };
     }
     // Fall back for endpoints that reject an optional field (newer OpenAI models want max_completion_tokens).
-    if (effort.reasoning_effort && /reasoning/i.test(e.message)) out = await post({ max_tokens: maxTokens });
+    if (payload.models && /\bmodels\b/i.test(e.message)) { delete payload.models; out = await post({ max_tokens: maxTokens, ...effort }); }
+    else if (effort.reasoning_effort && /reasoning/i.test(e.message)) out = await post({ max_tokens: maxTokens });
     else if (/max_tokens|max_completion_tokens/i.test(e.message)) out = await post({ max_completion_tokens: maxTokens });
     else throw e;
   }

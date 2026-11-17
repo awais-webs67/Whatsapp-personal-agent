@@ -16,6 +16,17 @@ const ANALYSE = /(chats?|conversations?|history|baat[\s-]?cheet|messages?|msgs?)
 // Words that mean "people in general" before "ko" (to). Any other word there is one named person.
 const GROUP = new Set(['logon', 'log', 'logo', 'customers', 'customer', 'clients', 'client', 'leads', 'lead', 'sab', 'sabko', 'sabhi', 'un', 'in', 'unhein', 'inhein', 'walon', 'waalon', 'buyers', 'users', 'unhe', 'unko', 'inko', 'everyone', 'all', 'people', 'unn', 'jin', 'jinhon', 'dino', 'din']);
 
+// "jinhon ne X khareeda / buy kiya / order kiya / le liya" = buyers. With "nahi/ni/not" = people who did not buy.
+const BOUGHT = /(jinh?[oa][nm]?\s*(ne|na|nay)|jis\s*(ne|na)|jo\s*log|who|whoever|customers?\s*who|buyers?|khareedar|purchas(ed|ers?))\b[\s\S]{0,60}?(buy|bought|khar[ie]+d|kharid|purchas|order|le\s*li|liya|li\s*h|subscri)/i;
+const NOT_BOUGHT = /(nahi|nahin|nhi|ni|not|never|na\s+hi)\s*(buy|khar|purchas|order|liya|li\b|kiya|ki\b)|(buy|khar[ie]+d|kharid|purchas|order)\w*\s*(nahi|nahin|nhi|ni|not)\b|didn'?t\s*(buy|purchase|order)|not\s*(yet\s*)?(bought|purchased)/i;
+
+/** Who the order is about: people who bought, people who did not, or everyone talking to the shop. */
+export function audienceOf(t) {
+  if (NOT_BOUGHT.test(t)) return 'non_buyers';
+  if (BOUGHT.test(t) || /\b(buyers|customers who bought|purchased customers|khareedaron)\b/i.test(t)) return 'buyers';
+  return 'all';
+}
+
 /** Days of chats the order covers. */
 export function parseDays(t, fallback = 7) {
   const s = t.toLowerCase();
@@ -92,6 +103,7 @@ export function quickIntent(text, { scheduled = false } = {}) {
       args: {
         days: parseDays(t), interval_minutes: Math.max(1, parseInterval(t)), instruction: t,
         stages: /\binterested\b/i.test(t) ? ['interested', 'negotiating'] : [],
+        audience: audienceOf(t),
         send: !/\b(draft|approval|approve|pehle\s*dikha|review\s*kar(wa|ne))\b/i.test(t),
         ignore_quiet_hours: /raat\s*ko\s*bhi|night\s*too|abhi|foran|fauran|right\s*now|immediately|quiet\s*hours?\s*(ignore|ke\s*bawajood)/i.test(t),
       },
