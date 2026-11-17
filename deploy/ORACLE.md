@@ -14,7 +14,10 @@ Screens and limits change from time to time; if something below looks different,
 2. **Image**: Canonical **Ubuntu 24.04**.
 3. **Shape**: Ampere → **VM.Standard.A1.Flex**, 2 OCPUs and 12 GB memory is plenty (it must say *Always Free-eligible*).
 4. **SSH keys**: "Generate a key pair" and **download the private key**. You need it to log in.
-5. Create. If it says *Out of capacity*, try another availability domain or try again later.
+5. Create. If it says *Out of capacity*, try another availability domain, a smaller size (1 OCPU / 6 GB) or try again later.
+   Still no luck: upgrade the account to *Pay As You Go* (Always Free resources stay free; add a small budget alert),
+   or pick the AMD shape **VM.Standard.E2.1.Micro** (Always Free, 1 GB RAM) with the normal (x86) Ubuntu 24.04 image.
+   The setup script adds 2 GB of swap on small servers so the agent fits.
 6. Note the **Public IP address** shown on the instance page.
 
 ## 3. Open the web ports in Oracle's firewall

@@ -19,6 +19,20 @@ PORT="${PORT:-3000}"
 
 step() { printf '\n==> %s\n' "$*"; }
 
+step "Swap: extra memory for small servers"
+# Free 1 GB servers (Oracle E2.1.Micro) run out of memory during npm install without swap.
+ram_mb="$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)"
+if [[ "$ram_mb" -lt 3000 ]] && ! swapon --show | grep -q .; then
+  sudo fallocate -l 2G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048
+  sudo chmod 600 /swapfile
+  sudo mkswap /swapfile >/dev/null
+  sudo swapon /swapfile
+  grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null
+  echo "Added 2 GB swap (RAM is ${ram_mb} MB)."
+else
+  echo "RAM ${ram_mb} MB; swap not needed or already on."
+fi
+
 step "System packages"
 sudo apt-get update -y
 sudo -E apt-get install -y curl git ca-certificates gnupg debian-keyring debian-archive-keyring apt-transport-https iptables-persistent
