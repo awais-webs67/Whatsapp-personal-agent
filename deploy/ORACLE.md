@@ -53,7 +53,10 @@ The repository is private, so `git clone` asks for your GitHub username and a **
 Then open `https://agent.yourdomain.com`, set the owner password, and link your WhatsApp number.
 
 ## Everyday
-- Update to the latest version: `cd ~/whatsapp-personal-agent && git pull && npm install --omit=dev && pm2 restart agent`
+- Updates are automatic: every 5 minutes the server checks GitHub and, when there is new code, pulls it and restarts
+  the agent. See what happened in `data/update.log`. A private repository needs the token saved once:
+  `git config credential.helper store && git pull` (enter the token when asked).
+- Update by hand: `cd ~/Whatsapp-personal-agent && bash deploy/auto-update.sh`
 - See what it is doing: `pm2 logs agent`
 - Back up `~/whatsapp-personal-agent/data` (chats, settings, keys), for example by downloading it with `scp`.
 

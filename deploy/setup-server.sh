@@ -59,6 +59,12 @@ pm2 save
 sudo env PATH="$PATH" pm2 startup systemd -u "$APP_USER" --hp "$HOME" >/dev/null
 pm2 save
 
+step "Auto update: pull new code from GitHub every 5 minutes"
+mkdir -p "$APP_DIR/data"
+cron_line="*/5 * * * * bash $APP_DIR/deploy/auto-update.sh >> $APP_DIR/data/update.log 2>&1"
+( crontab -l 2>/dev/null | grep -v 'deploy/auto-update.sh'; echo "$cron_line" ) | crontab -
+echo "On. Log: $APP_DIR/data/update.log  (private repo? run once: git config credential.helper store && git pull)"
+
 step "Firewall: open ports 80 and 443 on this machine"
 # Oracle's Ubuntu images block everything except SSH in iptables, even after the cloud firewall is opened.
 for p in 80 443; do
@@ -91,5 +97,5 @@ step "Done"
 echo "Open https://$DOMAIN in a minute (the certificate is issued on the first visit)."
 echo "If it does not open: check the domain's A record, and that ports 80 and 443 are open in the cloud firewall."
 echo "Logs:     pm2 logs agent"
-echo "Update:   cd $APP_DIR && git pull && npm install --omit=dev && pm2 restart agent"
+echo "Updates:  automatic every 5 minutes (log: $APP_DIR/data/update.log)"
 echo "Backup:   the folder $APP_DIR/data holds chats, settings and keys. Copy it somewhere safe."
