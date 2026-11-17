@@ -91,6 +91,8 @@ export function normalize(messages) {
 }
 
 const base = (p) => String(p.baseUrl || '').replace(/\/+$/, '');
+/** "https://api.example.com" -> "https://api.example.com/v1" (only when the URL has no version in its path). */
+export const withV1 = (p) => { const b = base(p); return /^https?:\/\//.test(b) && !/\/v\d/.test(new URL(b).pathname) ? `${b}/v1` : null; };
 const authHeaders = (p) => (p.apiKey ? { authorization: `Bearer ${p.apiKey}` } : {});
 
 async function fetchJson(url, init, timeoutMs) {
@@ -117,7 +119,11 @@ async function fetchJson(url, init, timeoutMs) {
     if (typeof b?.error?.failed_generation === 'string') err.failedGeneration = b.error.failed_generation;
     throw err;
   }
-  if (typeof body !== 'object') throw new LLMError('bad_request', `Unexpected non-JSON response from ${new URL(url).host} — check the base URL`);
+  if (typeof body !== 'object') {
+    const u = new URL(url);
+    const hint = /\/v\d/.test(u.pathname) ? '' : ` Most providers need /v1 at the end of the base URL (for example ${u.origin}/v1).`;
+    throw Object.assign(new LLMError('bad_request', `Unexpected non-JSON response from ${u.host} — check the base URL.${hint}`), { notApi: true });
+  }
   return { body, headers: res.headers };
 }
 
@@ -281,8 +287,16 @@ export async function chat(provider, { system = '', messages, maxTokens = 1024, 
   const req = { system, messages: normalize(messages), maxTokens, timeoutMs, fast };
   if (!req.messages.length) throw new LLMError('bad_request', 'Nothing to send');
   const started = Date.now();
-  const out = provider.kind === 'anthropic' ? await chatAnthropic(provider, req) : await chatOpenAI(provider, req);
-  return { ...out, latencyMs: Date.now() - started };
+  try {
+    const out = provider.kind === 'anthropic' ? await chatAnthropic(provider, req) : await chatOpenAI(provider, req);
+    return { ...out, latencyMs: Date.now() - started };
+  } catch (e) {
+    // A web page instead of an API answer: the base URL is usually missing its /v1. Try that once.
+    const fixed = withV1(provider);
+    if (!e.notApi || !fixed) throw e;
+    const out = await chatOpenAI({ ...provider, baseUrl: fixed }, req);
+    return { ...out, latencyMs: Date.now() - started, fixedBaseUrl: fixed };
+  }
 }
 
 /** Full model descriptions (id, context window, max output, price when published). */

@@ -139,6 +139,10 @@ export async function callProvider(row, req, { purpose = 'reply' } = {}) {
       row = fixed;
       out = await call(row);
     }
+    if (out.fixedBaseUrl) {
+      run('UPDATE providers SET base_url = ? WHERE id = ?', out.fixedBaseUrl, row.id);
+      log('info', 'router', `${row.name}: base URL corrected to ${out.fixedBaseUrl}`);
+    }
     recordSuccess(row.id, out);
     return { ...out, providerId: row.id, providerName: row.name };
   } catch (e) {

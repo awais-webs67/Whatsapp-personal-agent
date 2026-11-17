@@ -57,6 +57,7 @@ const server = http.createServer((req, res) => {
       return send(200, { model: 'small', choices: [{ message: { content: reply }, finish_reason: 'stop' }], usage: { prompt_tokens: need, completion_tokens: 5 } },
         { 'x-ratelimit-remaining-tokens': String(budget.left), 'x-ratelimit-limit-tokens': '3000', 'x-ratelimit-reset-tokens': `${((budget.resetAt - nowMs) / 1000).toFixed(2)}s` });
     }
+    if (key === 'htmlbase' && !req.url.startsWith('/v1/')) { res.writeHead(200, { 'content-type': 'text/html' }); return res.end('<!doctype html><html><body>Our website</body></html>'); }
     if (key === 'cnappid') return send(401, { error: { message: '无效的AppId' } });
     if (key === 'cnbusy') return send(429, { error: { message: '请求过于频繁，请稍后再试' } });
     if (key === 'cnbroke') return send(402, { error: { message: '余额不足' } });
@@ -984,4 +985,14 @@ test('Chinese error messages are explained, and a model past its end of life is 
   await assert.rejects(ask('cnbusy'), (e) => e.kind === 'rate_limit' && /rate limit/.test(e.message));
   await assert.rejects(ask('cnbroke'), (e) => e.kind === 'quota');
   await assert.rejects(ask('gone'), (e) => e.kind === 'model_missing');
+});
+
+test('a base URL without /v1 that returns a web page is corrected and saved', async () => {
+  const { callProvider } = await import('../src/llm/router.js');
+  const root = baseUrl.replace(/\/v1$/, '');
+  const id = Number(run('INSERT INTO providers (preset, name, kind, base_url, api_key, model, priority, enabled, created_at) VALUES (?,?,?,?,?,?,?,?,?)', 'custom', 'Custom', 'openai', root, encrypt('htmlbase'), 'fake-1', 50, 0, now()).lastInsertRowid);
+  const out = await callProvider(get('SELECT * FROM providers WHERE id = ?', id), { messages: [{ role: 'user', content: 'hi' }] }, { purpose: 'test' });
+  assert.ok(out.text);
+  assert.equal(get('SELECT base_url FROM providers WHERE id = ?', id).base_url, `${root}/v1`);
+  run('DELETE FROM providers WHERE id = ?', id);
 });
