@@ -60,6 +60,12 @@ Then open `https://agent.yourdomain.com`, set the owner password, and link your 
 - See what it is doing: `pm2 logs agent`
 - Back up `~/whatsapp-personal-agent/data` (chats, settings, keys), for example by downloading it with `scp`.
 
+## Accounts for clients
+Sign in as **admin** (an install from before accounts existed keeps its password: username `admin`).
+**Clients** page → Add an account → send them the username and password. They open the same address and sign in.
+Each account uses about 150 MB of memory: the free 1 GB Micro server holds the admin and about 2 clients;
+the Arm server (A1.Flex, 6 GB or more) holds many more.
+
 ## Good to know
 - Oracle may reclaim Always Free servers that look idle (very low CPU, network and memory use for a week).
   This agent uses little CPU. Upgrading the account to *Pay As You Go* is said to stop idle reclaiming while

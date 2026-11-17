@@ -51,7 +51,7 @@ npm install
 npm start
 ```
 
-Open http://localhost:3000, set an owner password, then:
+Open http://localhost:3000, create the admin account (username and password), then:
 
 1. **Models**: add at least one API key (two or more for failover).
 2. **Knowledge**: products, prices, FAQs, and a few of your real replies.
@@ -59,6 +59,17 @@ Open http://localhost:3000, set an owner password, then:
 4. **Numbers**: link a number.
 
 Everything is stored in `./data` (SQLite database, WhatsApp sessions, encryption key).
+
+**Accounts for other businesses.** On the **Clients** page the admin creates accounts. Each one gets its own
+dashboard with its own WhatsApp numbers, chats, knowledge and models, running as a separate process with its own
+folder (`data/tenants/u<id>/`), so nobody sees anyone else's data. The admin can lend them the admin's own AI
+models with a daily request limit (the keys never leave the admin's workspace), or they add their own keys.
+The admin can open any client's dashboard to help them. Each account uses about 150 MB of memory.
+`npm run single` runs one dashboard without accounts, the way it worked before.
+
+**Prices that change.** On the Knowledge page, "When a customer asks the price" → "Send the product link" makes the
+agent never write a price or stock (prices are removed from everything it reads, and a price that still slips
+into a reply is caught); it sends the product's link, where the website shows the current price.
 See `.env.example` for options. Put the dashboard behind HTTPS before exposing it to the internet.
 
 ## Things to know before going live
@@ -98,7 +109,8 @@ past-chat review.
 ## Layout
 
 ```
-src/server.js          HTTP API, auth, live events, Cloud API webhook
+src/hub.js             accounts: sign-in, one workspace process per account, shared AI with daily limits
+src/server.js          one workspace: HTTP API, live events, Cloud API webhook
 src/llm/               provider presets, unified client, failover router
 src/wa/                QR connector, Cloud API connector, account manager
 src/agent/             prompt + decisions, live reply pipeline, follow-ups, owner commands, learning

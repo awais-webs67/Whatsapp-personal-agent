@@ -5,6 +5,7 @@ import { followups, numbers, models } from './pages-ops.js';
 import { playground, knowledge, settings, activity } from './pages-config.js';
 import { command } from './pages-command.js';
 import { tasks } from './pages-tasks.js';
+import { clients, viewingBanner } from './pages-hub.js';
 
 const root = document.getElementById('root');
 
@@ -22,9 +23,13 @@ const ROUTES = [
   ['activity', 'Activity', 'M1 8h3l2-5 3 10 2-5h4', activity],
 ];
 
-function shell() {
+function shell(me) {
   const navLinks = {};
   const outlet = h('main');
+  // Accounts (hub): the admin also manages clients; a client sees how much shared AI is left today.
+  if (me?.role === 'admin' && !ROUTES.some((r) => r[0] === 'clients')) ROUTES.push(['clients', 'Clients', 'M5 6a2.5 2.5 0 1 0 0-.1M1 14c0-2.5 1.8-4 4-4s4 1.5 4 4M11 7a2 2 0 1 0 0-.1M10 10.2c2.5-.6 5 .8 5 3.8', clients]);
+  const banner = viewingBanner(me);
+  const who = me ? h('small.muted', {}, me.viewing ? `Signed in as ${me.username}` : `${me.name || me.username}${!me.viewing && me.role === 'client' && me.sharedAi ? ` · AI today ${me.aiUsedToday}${me.aiDaily ? `/${me.aiDaily}` : ''}` : ''}`) : null;
   const pilot = toggle(S.autopilot, async (on) => {
     await act(null, () => PUT('/api/settings', { autopilot: on }), on ? 'Autopilot on: the agent replies by itself' : 'Autopilot off: nothing is sent automatically');
     S.autopilot = on;
@@ -35,8 +40,9 @@ function shell() {
       h('nav', { 'aria-label': 'Main' }, ROUTES.map(([id, label, icon]) => (navLinks[id] = h('a', { href: `#/${id}` }, svg(icon), h('span', {}, label))))),
       h('div.foot', {},
         h('div.pilot', {}, h('span', {}, 'Autopilot', h('small', {}, 'Agent replies on its own')), pilot),
+        who,
         h('button.linkbtn', { onclick: () => POST('/api/auth/logout').then(() => location.reload()) }, 'Sign out'))),
-    outlet);
+    banner ? h('div', { style: 'display:flex;flex-direction:column;min-width:0' }, banner, outlet) : outlet);
 
   const badge = (id, n) => {
     navLinks[id].querySelector('.count')?.remove();
@@ -46,7 +52,7 @@ function shell() {
   const refreshBadges = async () => {
     const o = await GET('/api/overview').catch(() => null);
     if (!o) return;
-    Object.assign(S, { accounts: o.accounts, providers: o.providers, autopilot: o.settings.autopilot, stats: o.stats });
+    Object.assign(S, { accounts: o.accounts, providers: o.providers, autopilot: o.settings.autopilot, stats: o.stats, webhookBase: o.webhookBase });
     pilot.querySelector('input').checked = S.autopilot;
     badge('inbox', o.stats.needsHuman);
     badge('followups', o.stats.pendingFollowups);
@@ -85,7 +91,8 @@ function shell() {
   return el;
 }
 
-function authScreen(setup) {
+function authScreen(setup, multi) {
+  const user = multi ? h('input', { type: 'text', autocomplete: 'username', autocapitalize: 'none', required: true, value: setup ? 'admin' : '' }) : null;
   const pw = h('input', { type: 'password', autocomplete: setup ? 'new-password' : 'current-password', required: true, minlength: setup ? 8 : 1 });
   const btn = h('button.btn.primary', { type: 'submit' }, setup ? 'Create password' : 'Sign in');
   return h('div.auth', {},
@@ -93,12 +100,14 @@ function authScreen(setup) {
       h('div.brand', { style: 'border:0;padding:0' }, h('img', { src: '/favicon.svg', alt: '' }), h('div', {}, h('b', {}, 'AivraSol'), h('small', {}, 'Agent desk'))),
       h('div', {}, h('h1', {}, 'Every chat answered', h('br'), h('span', {}, 'like you would.')),
         h('p', {}, 'Your WhatsApp numbers, your sales knowledge and any AI model you choose, working one conversation at a time.'))),
-    h('form', { onsubmit: (e) => { e.preventDefault(); act(btn, async () => { await POST(setup ? '/api/auth/setup' : '/api/auth/login', { password: pw.value }); location.reload(); }); } },
-      h('h2', {}, setup ? 'Set an owner password' : 'Welcome back'),
+    h('form', { onsubmit: (e) => { e.preventDefault(); act(btn, async () => { await POST(setup ? '/api/auth/setup' : '/api/auth/login', { password: pw.value, ...(user ? { username: user.value.trim() } : {}) }); location.reload(); }); } },
+      h('h2', {}, setup ? (multi ? 'Create the admin account' : 'Set an owner password') : 'Welcome back'),
       setup && h('p.muted', {}, 'This dashboard controls your WhatsApp numbers. Pick a strong password; it is the only way in.'),
+      user && field('Username', user, setup ? 'You manage the other accounts with it.' : null),
       field('Password', pw, setup ? 'At least 8 characters' : null), btn));
 }
 
 const auth = await GET('/api/auth').catch(() => ({ setup: false, authed: false }));
-set(root, auth.authed ? shell() : authScreen(auth.setup));
+const me = auth.authed && auth.multi ? await GET('/api/hub/me').catch(() => null) : null;
+set(root, auth.authed ? shell(me) : authScreen(auth.setup, auth.multi));
 if (!auth.authed) root.querySelector('input')?.focus();

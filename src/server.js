@@ -43,7 +43,15 @@ function checkPw(pw, stored) {
   const b = crypto.scryptSync(String(pw), salt, 32);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
+// Run by the hub (src/hub.js): the hub signs people in and forwards their requests with this token.
+// The workspace listens on 127.0.0.1 only, so nobody else can send it.
+const HUB_TOKEN = process.env.HUB_TOKEN || '';
+function fromHub(req) {
+  const t = String(req.headers['x-hub-token'] || '');
+  return !!HUB_TOKEN && t.length === HUB_TOKEN.length && crypto.timingSafeEqual(Buffer.from(t), Buffer.from(HUB_TOKEN));
+}
 function authed(req) {
+  if (fromHub(req)) return true;
   const raw = (req.headers.cookie || '').split(/;\s*/).find((c) => c.startsWith(`${COOKIE}=`))?.slice(COOKIE.length + 1);
   if (!raw) return false;
   const [exp, sig] = raw.split('.');
@@ -107,6 +115,14 @@ app.post('/webhook/cloud/:id', (req, res) => {
   try { c.conn.handleWebhook(req.body || {}); } catch (e) { log('error', 'whatsapp', `Webhook error: ${e.message}`); }
 });
 
+// Shared AI: the hub lends the admin's models to other accounts through this workspace's model chain.
+app.post('/internal/ai', wrap(async (req) => {
+  if (!fromHub(req)) throw bad('Not allowed', 403);
+  const { system = '', messages = [], maxTokens, purpose } = req.body || {};
+  const out = await complete({ system: String(system), messages: Array.isArray(messages) ? messages : [], maxTokens: Number(maxTokens) || undefined }, { purpose: purpose === 'reply' ? 'reply' : 'shared' });
+  return { text: out.text, model: out.model, usage: out.usage };
+}));
+
 app.use(express.static(path.join(here, '../public'), { extensions: ['html'] }));
 app.use('/api', (req, res, next) => (authed(req) ? next() : res.status(401).json({ error: 'Sign in required' })));
 
@@ -126,6 +142,7 @@ app.get('/api/overview', wrap(() => {
   const count = (sql, ...p) => get(sql, ...p).n;
   return {
     settings: { autopilot: getSettings().autopilot },
+    webhookBase: process.env.WEBHOOK_PREFIX || '',
     accounts: wa.listAccounts(),
     providers: listProviders().map(publicProvider),
     stats: {
@@ -460,8 +477,23 @@ app.use((err, _req, res, _next) => {
   res.status(status).json({ error: err.message || 'Something went wrong', kind: err.kind });
 });
 
+/** Models lent by the hub's admin show up as two ordinary providers; they go away when access is taken back. */
+export function syncSharedAI(url = process.env.SHARED_AI_URL, key = process.env.SHARED_AI_KEY) {
+  const rows = all("SELECT * FROM providers WHERE preset = 'shared'");
+  if (!url || !key) { if (rows.length) run("DELETE FROM providers WHERE preset = 'shared'"); return; }
+  for (const [name, model, useFor] of [['AivraSol AI (replies)', 'shared-fast', 'replies'], ['AivraSol AI (background)', 'shared-smart', 'background']]) {
+    const row = rows.find((r) => r.model === model);
+    if (row) run("UPDATE providers SET base_url = ?, api_key = ?, state = '{}' WHERE id = ?", url, encrypt(key), row.id);
+    else run('INSERT INTO providers (preset, name, kind, base_url, api_key, model, priority, use_for, created_at) VALUES (?,?,?,?,?,?,?,?,?)',
+      'shared', name, 'openai', url, encrypt(key), model, get('SELECT COALESCE(MAX(priority), -1) m FROM providers').m + 1, useFor, now());
+  }
+}
+
 export function start(port = Number(process.env.PORT) || 3000) {
   migrateSettings();
+  syncSharedAI();
+  // Started by the hub: stop together with it, and tell it when requests can be forwarded.
+  if (process.send) process.on('disconnect', () => process.exit(0));
   // Once on upgrade: re-read saved shop files so an existing install also picks up the price mode they imply.
   try { importKnowledgeFiles({ force: !kvGet('priceModeChecked') }); kvSet('priceModeChecked', true); } catch (e) { log('error', 'learn', `Could not load knowledge files: ${e.message}`); }
   startPipeline();
@@ -473,7 +505,7 @@ export function start(port = Number(process.env.PORT) || 3000) {
   syncBalances().catch(() => {});
   // HOST=127.0.0.1 keeps the app reachable only through the HTTPS proxy on a server.
   const host = process.env.HOST || undefined;
-  return app.listen(port, host, () => log('info', 'server', `Dashboard ready on http://${host || 'localhost'}:${port}`));
+  return app.listen(port, host, () => { log('info', 'server', `Dashboard ready on http://${host || 'localhost'}:${port}`); process.send?.({ ready: true }); });
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

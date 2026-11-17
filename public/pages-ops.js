@@ -114,7 +114,7 @@ export function numbers() {
             h('ol', {}, h('li', {}, 'Open WhatsApp on the phone.'), h('li', {}, 'Settings, then Linked devices, then Link a device.'), h('li', {}, s.state === 'qr' ? 'Point the camera at this code. It refreshes by itself.' : 'Choose “Link with phone number instead” and type the code.')),
             h('p.muted', { style: 'margin-top:10px' }, 'After linking, existing chats sync in the background so the agent can read past conversations.')))) : null,
         a.type === 'cloud' ? h('div.pad', { style: 'border-top:1px solid var(--line);display:grid;gap:6px' },
-          h('div.kv', {}, 'Webhook URL (paste into Meta)', h('b.mono', {}, `${location.origin}/webhook/cloud/${a.id}`)),
+          h('div.kv', {}, 'Webhook URL (paste into Meta)', h('b.mono', {}, `${location.origin}${S.webhookBase || ''}/webhook/cloud/${a.id}`)),
           h('div.kv', {}, 'Verify token', h('b.mono', {}, a.cloud.verifyToken)),
           h('div.kv', {}, 'Follow-up template (used after 24h)', h('b', {}, a.cloud.template || 'Not set')),
           !a.cloud.hasSecret ? h('div.note.warn', {}, 'No app secret saved, so incoming webhooks are not signature-checked. Add it under “Edit connection”.') : null) : null);
