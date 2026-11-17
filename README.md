@@ -80,6 +80,14 @@ them, `report wala shortcut hatao` removes one.
 Several keys of one provider can be added as separate models, but Groq counts limits per account (organization),
 so two keys from the same Groq account share one limit.
 
+**Tags and your customer list.** Put your own labels on chats (Inbox → Tags, or `/tag vip` inside the chat on
+WhatsApp). Then in Command: `vip tag walon ko follow-up bhejo`. Inbox → "Download customers (CSV)" gives your
+customers (people who messaged you; groups are left out) with number, stage, tags and summary, for Excel or Google Sheets.
+
+**Follow-ups in your words.** Knowledge page → "Your follow-up message": write one example the way you would send it,
+and "Links it may share" (website, channels). Every follow-up is written like your example, with what that customer
+asked about filled in.
+
 **Prices that change.** On the Knowledge page, "When a customer asks the price" → "Send the product link" makes the
 agent never write a price or stock (prices are removed from everything it reads, and a price that still slips
 into a reply is caught); it sends the product's link, where the website shows the current price.

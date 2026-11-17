@@ -5,6 +5,7 @@
 import { all, get, run, now, update } from '../db.js';
 import { getSettings, emit, log } from '../core.js';
 import { parseClock } from './intent.js';
+import { normTags, tagString, tagsOf } from './tags.js';
 
 const DUR = /^(\d+(?:\.\d+)?)\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|ghante|ghanta|d|day|days|din)$/i;
 const ms = (n, unit) => n * (/^(d|day|days|din)$/i.test(unit) ? 86_400_000 : /^(m|min|mins|minute|minutes)$/i.test(unit) ? 60_000 : 3_600_000);
@@ -22,10 +23,12 @@ export const COMMANDS = [
   ['nofollowup', 'No more follow-ups for this customer'],
   ['remind 18:30 message', 'Send this exact message at a time (2h, 1d, 18:30, kal 10 baje)'],
   ['note text', 'Add a note the agent will follow in this chat'],
+  ['tag vip ads', 'Add tags to this customer (send to a tag later from Command)'],
+  ['untag vip', 'Remove a tag'],
   ['info', 'Stage, summary and follow-up plan of this chat'],
   ['help', 'This list'],
 ];
-const NAMES = ['stop', 'off', 'band', 'start', 'on', 'chalu', 'auto', 'pause', 'reply', 'jawab', 'bought', 'sold', 'purchased', 'sale', 'lost', 'no', 'followup', 'fu', 'nofollowup', 'nofu', 'remind', 'reminder', 'note', 'info', 'status', 'help'];
+const NAMES = ['stop', 'off', 'band', 'start', 'on', 'chalu', 'auto', 'pause', 'reply', 'jawab', 'bought', 'sold', 'purchased', 'sale', 'lost', 'no', 'followup', 'fu', 'nofollowup', 'nofu', 'remind', 'reminder', 'note', 'tag', 'tags', 'untag', 'info', 'status', 'help'];
 
 /** "/stop", "#remind 2h ..." -> { cmd, rest } when it is one of ours, else null. */
 export function parseChatCommand(text) {
@@ -142,11 +145,21 @@ export function runChatCommand(chatId, text, hooks = {}) {
       out = `Note saved for ${name}. The agent follows it in this chat.`;
       break;
     }
+    case 'tag': case 'tags': case 'untag': {
+      const now_ = tagsOf(c);
+      const given = normTags(rest);
+      if (!given.length) { out = now_.length ? `Tags of ${name}: ${now_.join(', ')}` : `${name} has no tags. Add one: /tag vip`; break; }
+      const next = cmd === 'untag' ? now_.filter((t) => !given.includes(t)) : [...new Set([...now_, ...given])];
+      update('chats', c.id, { tags: tagString(next) }, ['tags']);
+      out = next.length ? `Tags of ${name}: ${next.join(', ')}` : `${name} has no tags now.`;
+      break;
+    }
     case 'info': case 'status': {
       const q = all("SELECT kind, due_at FROM followups WHERE chat_id = ? AND status IN ('pending','approved') ORDER BY due_at", c.id);
       out = [`${name} · ${String(c.stage).replace('_', ' ')}${c.ai_enabled === 0 ? ' · agent OFF' : c.ai_enabled === 1 ? ' · agent ON' : ''}${c.needs_human ? ' · needs you' : ''}`,
         c.summary ? `Summary: ${c.summary}` : null,
         c.notes ? `Notes: ${c.notes.slice(0, 200)}` : null,
+        tagsOf(c).length ? `Tags: ${tagsOf(c).join(', ')}` : null,
         c.next_followup_at ? `Next follow-up: ${when(c.next_followup_at)} (${c.followup_count} sent so far)` : `Follow-ups sent: ${c.followup_count > 50 ? 'stopped' : c.followup_count}`,
         q.length ? `Queued: ${q.map((x) => `${x.kind} ${when(x.due_at)}`).join(', ')}` : null].filter(Boolean).join('\n');
       break;

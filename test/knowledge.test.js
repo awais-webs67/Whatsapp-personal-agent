@@ -7,7 +7,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-kn-'));
-Object.assign(process.env, { DATA_DIR: tmp, KNOWLEDGE_DIR: path.join(tmp, 'shipped'), NODE_ENV: 'test' });
+Object.assign(process.env, { DATA_DIR: tmp, KNOWLEDGE_DIR: path.join(tmp, 'shipped'), NODE_ENV: 'test', HUB_TOKEN: 'test-hub-token' });
 const { run, now } = await import('../src/db.js');
 const { getSettings, encrypt } = await import('../src/core.js');
 const kf = await import('../src/agent/knowledge-files.js');
@@ -81,4 +81,53 @@ test('batch work takes turns over every ready model; customer replies keep the c
   assert.equal(ordered('analyze').length, 3, 'the others stay as fallbacks');
   assert.deepEqual(Array.from({ length: 3 }, () => ordered('reply')[0].id), [ids[0], ids[0], ids[0]]);
   assert.equal(chainFor('reply').length, 3);
+});
+
+test('tags: set on a chat, used to pick who gets a batch, and exported with the customers to a spreadsheet', async () => {
+  const { tagsIn, normTags } = await import('../src/agent/tags.js');
+  const { quickIntent } = await import('../src/agent/intent.js');
+  const { app } = await import('../src/server.js');
+  assert.deepEqual(tagsIn('vip tag walon ko follow up bhejo'), ['vip']);
+  assert.deepEqual(tagsIn('tag canva aur ads walon ko reminder bhejo'), ['canva', 'ads']);
+  assert.deepEqual(normTags('#VIP, ads  vip'), ['vip', 'ads']);
+  assert.deepEqual(quickIntent('vip tag walon ko abhi follow up bhejo').args.tags, ['vip']);
+
+  run('INSERT INTO accounts (id, name, type, created_at) VALUES (1, ?, ?, ?)', 'Line', 'qr', now());
+  const add = (jid, name, tags) => Number(run('INSERT INTO chats (account_id, jid, phone, name, stage, tags, summary, last_msg_at, last_in_at, created_at) VALUES (1,?,?,?,?,?,?,?,?,?)', jid, jid.split('@')[0], name, 'interested', tags, 'Asked about "Canva", price', now(), now(), now()).lastInsertRowid);
+  const ali = add('923001@s.whatsapp.net', 'Ali', ',vip,');
+  add('923002@s.whatsapp.net', 'Sara', null);
+  add('120363@g.us', 'Some group', ',vip,');
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((r) => server.once('listening', r));
+  const url = `http://127.0.0.1:${server.address().port}`;
+  const h = { 'x-hub-token': 'test-hub-token', 'content-type': 'application/json' };
+  try {
+    assert.equal((await fetch(`${url}/api/chats/${ali}`, { method: 'PATCH', headers: h, body: JSON.stringify({ tags: 'VIP, eid-ads' }) })).status, 200);
+    const chats = await (await fetch(`${url}/api/chats?tag=eid-ads`, { headers: h })).json();
+    assert.deepEqual(chats.map((c) => [c.name, c.tagList]), [['Ali', ['vip', 'eid-ads']]]);
+    const bytes = Buffer.from(await (await fetch(`${url}/api/chats/export.csv`, { headers: h })).arrayBuffer());
+    assert.deepEqual([...bytes.subarray(0, 3)], [0xef, 0xbb, 0xbf], 'BOM so Excel shows Urdu');
+    const all = bytes.toString('utf8').slice(1);
+    assert.match(all, /^"Name","Phone"/);
+    assert.match(all, /"Ali","\+923001","interested","vip eid-ads"/);
+    assert.match(all, /"Sara"/);
+    assert.match(all, /"Asked about ""Canva"", price"/);
+    assert.doesNotMatch(all, /Some group/, 'groups are not customers');
+    const vip = await (await fetch(`${url}/api/chats/export.csv?tag=vip`, { headers: h })).text();
+    assert.match(vip, /"Ali"/);
+    assert.doesNotMatch(vip, /"Sara"/);
+    assert.equal((await fetch(`${url}/api/chats/export.csv`)).status, 401, 'needs sign-in');
+  } finally { server.close(); }
+});
+
+test('follow-ups follow the owner\'s own example message and links', async () => {
+  const { buildSystem } = await import('../src/agent/brain.js');
+  const { saveSettings } = await import('../src/core.js');
+  saveSettings({ business: { followupStyle: 'Assalam o alaikum Sir, aap ne hum se ___ ke liye rabta kiya tha.', links: 'https://shop.test\nhttps://whatsapp.com/channel/x' } });
+  const s = getSettings();
+  const fu = buildSystem(s, { stage: 'interested', name: 'Ayesha' }, 'followup');
+  assert.match(fu, /Assalam o alaikum Sir, aap ne hum se ___ ke liye rabta kiya tha/);
+  assert.match(fu, /https:\/\/shop\.test \| https:\/\/whatsapp\.com\/channel\/x/);
+  assert.match(fu, /Never mention a product they did not ask about/);
+  assert.doesNotMatch(buildSystem(s, { stage: 'interested' }, 'reply'), /How the owner writes follow-ups/, 'live replies are not affected');
 });

@@ -36,7 +36,9 @@ export const DEFAULT_SETTINGS = {
     language: 'Reply in the language and script the customer uses: if they write in Urdu script (اردو), reply in proper Urdu script; if they write Roman Urdu, reply in Roman Urdu; if English, reply in English.',
     purchaseSignal: 'Customer confirms the order or shares a payment proof.',
     prices: 'quote',                     // quote = say prices from this page | link = never say a price, send the product link
-    shopLink: '',                        // sent when a product has no link of its own (link mode)
+    shopLink: '',
+    followupStyle: '',                   // an example follow-up in the owner's words; the agent writes like it
+    links: '',                           // website and channel links the agent may add to follow-ups                        // sent when a product has no link of its own (link mode)
     examples: '',
   },
   human: {

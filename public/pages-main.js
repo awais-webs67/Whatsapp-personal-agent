@@ -100,7 +100,8 @@ export function inbox(openId) {
   const listCol = h('section.listcol', {},
     h('div.list-head', {}, h('h1', {}, 'Inbox'),
       h('input', { type: 'search', placeholder: 'Search name, number or text', 'aria-label': 'Search chats', oninput: (e) => { st.q = e.target.value; clearTimeout(qt); qt = setTimeout(loadList, 250); } }),
-      headChips),
+      headChips,
+      h('a.btn.sm', { href: '/api/chats/export.csv', download: '', title: 'Your customers as a spreadsheet: name, number, stage, tags, summary' }, 'Download customers (CSV)')),
     list);
   el.append(listCol, threadCol, side);
 
@@ -194,6 +195,7 @@ export function inbox(openId) {
       h('div', { style: 'position:relative' }, hints, h('div.composer', {}, input, remindBtn, suggestBtn, sendBtn)));
     if (stick) thread.scrollTop = thread.scrollHeight;
 
+    const tagsBox = h('input', { type: 'text', placeholder: 'vip, ads-eid, canva', value: (chat.tagList || []).join(', '), onblur: (e) => e.target.value !== (chat.tagList || []).join(', ') && patch({ tags: e.target.value }, 'Tags saved') });
     const notes = h('textarea', { rows: 4, placeholder: 'Anything the agent should know about this customer', value: chat.notes || '', onblur: (e) => e.target.value !== (chat.notes || '') && patch({ notes: e.target.value }, 'Notes saved') });
     set(side, 
       h('section', {}, h('h2', {}, 'Stage'), select(Object.entries(STAGES).map(([k, [l]]) => [k, l]), chat.stage, (v) => patch({ stage: v }), { 'aria-label': 'Stage' })),
@@ -201,6 +203,7 @@ export function inbox(openId) {
         select([['auto', `Follow the number's rule`], ['on', 'Always answer'], ['off', 'Never answer']], chat.ai_enabled === null ? 'auto' : chat.ai_enabled ? 'on' : 'off', (v) => patch({ aiEnabled: v === 'auto' ? null : v === 'on' }), { 'aria-label': 'Agent mode' }),
         !chat.auto && chat.autoReason ? h('div.muted', { style: 'font-size:12px' }, `Not answering: ${chat.autoReason}.`) : null),
       h('section', {}, h('h2', {}, 'Summary'), h('div', { style: 'color:var(--ink)' }, chat.summary || h('span.muted', {}, 'The agent writes this as the chat goes on.'))),
+      h('section', {}, h('h2', {}, 'Tags'), tagsBox, h('div.muted', { style: 'font-size:12px' }, 'Your own labels. Later: "vip tag walon ko follow-up bhejo" in Command.')),
       h('section', {}, h('h2', {}, 'Notes for the agent'), notes),
       h('section', {}, h('h2', {}, 'Details'),
         h('div.kv', {}, 'Lead type', h('b', {}, chat.is_new ? 'New (after linking)' : 'Existing contact')),

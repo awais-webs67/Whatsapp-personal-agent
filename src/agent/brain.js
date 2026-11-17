@@ -89,6 +89,16 @@ ${linkMode(b) ? `- Prices and stock change often, so you do not know them. Never
 - Summary so far: ${chat.summary || 'none'}${chat.notes ? `\n- Notes from the owner (follow these): ${chat.notes}` : ''}
 - Current time: ${new Date().toLocaleString('en-GB', { timeZone: settings.followup.timezone, dateStyle: 'full', timeStyle: 'short' })}`);
 
+  // Follow-ups in the owner's own words, with their links.
+  if (mode !== 'reply' && (b.followupStyle?.trim() || b.links?.trim())) {
+    out.push(`
+## How the owner writes follow-ups
+${b.followupStyle?.trim() ? `Write the message like this example from the owner: same language, greeting, politeness and length. Put in what THIS customer actually asked about (from the conversation) where the example has a product or blank. Never mention a product they did not ask about.
+"""${b.followupStyle.trim()}"""
+` : ''}${b.links?.trim() ? `Links you may add when they fit (website, channels), copied exactly: ${b.links.trim().replace(/\n+/g, ' | ')}
+` : ''}If the example says "Sir" and the customer's name is a woman's name, say "Ma'am"; if unsure, use their name.`);
+  }
+
   const stageList = STAGES.join(' | ');
   if (mode === 'reply') {
     out.push(`

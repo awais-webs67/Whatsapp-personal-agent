@@ -1,3 +1,4 @@
+import { tagsIn } from './tags.js';
 // Understands the owner's most common orders directly, without asking a model to decide:
 // "follow-up / reminder bhejo", "rok do", "chats parho aur seekho", "roz 9 baje ...".
 // The owner said it once; that is the go-ahead. Small models tend to ask "should I?" forever,
@@ -101,9 +102,11 @@ export function quickIntent(text, { scheduled = false } = {}) {
     return {
       action: 'start_followups',
       args: {
-        days: parseDays(t), interval_minutes: Math.max(1, parseInterval(t)), instruction: t,
+        // Tagged customers are picked by the tag, not by how recent they are: look back a year unless a period is named.
+        days: tagsIn(t).length ? parseDays(t, 365) : parseDays(t), interval_minutes: Math.max(1, parseInterval(t)), instruction: t,
         stages: /\binterested\b/i.test(t) ? ['interested', 'negotiating'] : [],
         audience: audienceOf(t),
+        tags: tagsIn(t),
         send: !/\b(draft|approval|approve|pehle\s*dikha|review\s*kar(wa|ne))\b/i.test(t),
         ignore_quiet_hours: /raat\s*ko\s*bhi|night\s*too|abhi|foran|fauran|right\s*now|immediately|quiet\s*hours?\s*(ignore|ke\s*bawajood)/i.test(t),
       },

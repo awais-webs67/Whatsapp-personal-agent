@@ -16,6 +16,7 @@ import { startPipeline, onOwner, eligibility, answerNow } from './agent/pipeline
 import { runChatCommand, COMMANDS } from './agent/chat-commands.js';
 import { startFollowups, runCampaign, campaign, whyNotSending, followupStatus } from './agent/followups.js';
 import { learnFromChats, learnFromWebsite, learnFromProfile, learning } from './agent/learn.js';
+import { normTags, tagString, tagsOf } from './agent/tags.js';
 import { importKnowledgeFiles, saveUpload, listFiles, removeFile } from './agent/knowledge-files.js';
 import { handleCommand, startCommander, listThreads, newThread } from './agent/commander.js';
 import { listTasks, createTask, controlTask, startTasks } from './agent/tasks.js';
@@ -219,18 +220,36 @@ app.delete('/api/accounts/:id', wrap(async (req) => {
 const chatView = (c) => {
   const account = get('SELECT * FROM accounts WHERE id = ?', c.account_id);
   const [auto, reason] = eligibility(c, account);
-  return { ...c, title: c.name || (c.phone ? `+${c.phone}` : c.jid.split('@')[0]), accountName: account?.name, accountType: account?.type, auto, autoReason: reason };
+  return { ...c, tagList: tagsOf(c), title: c.name || (c.phone ? `+${c.phone}` : c.jid.split('@')[0]), accountName: account?.name, accountType: account?.type, auto, autoReason: reason };
 };
 app.get('/api/chats', wrap((req) => {
-  const { q = '', stage = '', account = '', filter = '' } = req.query;
+  const { q = '', stage = '', account = '', filter = '', tag = '' } = req.query;
   const where = ['c.last_msg_at IS NOT NULL'];
   const params = [];
+  const t = normTags(tag)[0];
+  if (t) { where.push('c.tags LIKE ?'); params.push(`%,${t},%`); }
   if (q) { where.push('(c.name LIKE ? OR c.phone LIKE ? OR c.last_text LIKE ?)'); params.push(`%${q}%`, `%${q}%`, `%${q}%`); }
   if (STAGES.includes(stage)) { where.push('c.stage = ?'); params.push(stage); }
   if (account) { where.push('c.account_id = ?'); params.push(Number(account)); }
   if (filter === 'needs_human') where.push('c.needs_human = 1');
   if (filter === 'unread') where.push('c.unread > 0');
   return all(`SELECT c.* FROM chats c WHERE ${where.join(' AND ')} ORDER BY c.last_msg_at DESC LIMIT 300`, ...params).map(chatView);
+}));
+/** Your own customers as a spreadsheet (opens in Excel / Google Sheets). Optional ?tag= and ?stage= filters. */
+app.get('/api/chats/export.csv', wrap((req, res) => {
+  const where = ["c.jid NOT LIKE '%@g.us'", "c.jid != COALESCE((SELECT a.self_jid FROM accounts a WHERE a.id = c.account_id), '')"];
+  const params = [];
+  const t = normTags(req.query.tag)[0];
+  if (t) { where.push('c.tags LIKE ?'); params.push(`%,${t},%`); }
+  if (STAGES.includes(req.query.stage)) { where.push('c.stage = ?'); params.push(req.query.stage); }
+  const rows = all(`SELECT c.* FROM chats c WHERE ${where.join(' AND ')} ORDER BY c.last_msg_at DESC`, ...params);
+  const cell = (v) => `"${String(v ?? '').replace(/"/g, '""').replace(/\r?\n/g, ' ')}"`;
+  const date = (ms) => (ms ? new Date(ms).toISOString().slice(0, 16).replace('T', ' ') : '');
+  const lines = [['Name', 'Phone', 'Stage', 'Tags', 'Last message', 'Last message from customer', 'Summary', 'Notes'].map(cell).join(','),
+    ...rows.map((c) => [c.name, c.phone ? `+${c.phone}` : '', c.stage, tagsOf(c).join(' '), date(c.last_msg_at), date(c.last_in_at), c.summary, c.notes].map(cell).join(','))];
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="customers${t ? `-${t}` : ''}-${new Date().toISOString().slice(0, 10)}.csv"`);
+  res.send(`\uFEFF${lines.join('\r\n')}\r\n`); // BOM: Excel shows Urdu correctly
 }));
 app.get('/api/chats/:id', wrap((req) => {
   const chat = need(get('SELECT * FROM chats WHERE id = ?', Number(req.params.id)), 'Chat');
@@ -244,11 +263,12 @@ app.patch('/api/chats/:id', wrap((req) => {
   const patch = {};
   if (b.name !== undefined) patch.name = String(b.name).slice(0, 120);
   if (b.notes !== undefined) patch.notes = String(b.notes).slice(0, 2000);
+  if (b.tags !== undefined) patch.tags = tagString(normTags(b.tags));
   if (STAGES.includes(b.stage)) patch.stage = b.stage;
   if (b.aiEnabled !== undefined) patch.ai_enabled = b.aiEnabled === null ? null : b.aiEnabled ? 1 : 0;
   if (b.resume) Object.assign(patch, { needs_human: 0, handoff_reason: null, paused_until: null });
   if (b.read) patch.unread = 0;
-  update('chats', chat.id, patch, ['name', 'notes', 'stage', 'ai_enabled', 'needs_human', 'handoff_reason', 'paused_until', 'unread']);
+  update('chats', chat.id, patch, ['name', 'notes', 'tags', 'stage', 'ai_enabled', 'needs_human', 'handoff_reason', 'paused_until', 'unread']);
   emit('chat', { chatId: chat.id });
   return { ok: true };
 }));

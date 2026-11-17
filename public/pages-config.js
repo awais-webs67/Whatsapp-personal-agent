@@ -112,6 +112,8 @@ export function knowledge() {
         area('tone', 'Tone', null, 2),
         h('label.f', {}, 'Language', h('div.chips', {}, Object.entries(LANGS).map(([label, text]) => h('button.chip', { type: 'button', onclick: () => { f.language.value = text; } }, label))),
           (f.language = h('textarea', { rows: 2, dir: 'auto', value: b.language || '' })), h('small', {}, 'Pick one or write your own.')),
+        area('followupStyle', 'Your follow-up message', 'The agent writes follow-ups like this, filling in what each customer asked about.', 4, 'Assalam o alaikum Sir, aap ne hum se ___ ke liye rabta kiya tha lekin aap ki taraf se response nahi aaya. Bataiye kya aap ko yeh abhi bhi chahiye, ya koi aur service? Aap hamari site bhi dekh sakte hain.'),
+        area('links', 'Links it may share', 'Website and channels, one per line. Used in follow-ups when they fit.', 3, 'https://sellmetools.com\nhttps://whatsapp.com/channel/...\nhttps://youtube.com/@...'),
         area('examples', 'A few real replies of yours', 'Paste 5 to 15 messages you actually sent customers. This is the strongest way to make it sound like you.', 7))),
       learnCard(f, b),
       h('div.row', {}, save, h('a.btn', { href: '#/playground' }, 'Try it in Live test'))));

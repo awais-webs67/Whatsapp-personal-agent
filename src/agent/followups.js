@@ -7,6 +7,7 @@ import { decide, CLOSED } from './brain.js';
 import { learnFromChats } from './learn.js';
 import { notify, who } from './updates.js';
 import { eligibility, humanSend, scheduleNextFollowup } from './pipeline.js';
+import { hasAnyTag } from './tags.js';
 
 const nextSlot = new Map(); // accountId -> earliest time the next proactive message may go out
 let drafting = false;
@@ -190,11 +191,12 @@ export function whyNotSending(taskId = null) {
   return next > now() ? null : null;
 }
 
-export async function runCampaign({ accountId = null, sinceDays = 90, limit = 200, reanalyze = false, instruction = '', autoApprove = false, intervalMinutes = 0, stages = null, taskId = null, analyzeOnly = false, audience = 'all' } = {}) {
+export async function runCampaign({ accountId = null, sinceDays = 90, limit = 200, reanalyze = false, instruction = '', autoApprove = false, intervalMinutes = 0, stages = null, taskId = null, analyzeOnly = false, audience = 'all', tags = [] } = {}) {
   if (campaign.running) throw new Error('Another batch is still reading chats. Wait for it to finish, or remove it on the Tasks page.');
   const since = now() - sinceDays * 86_400_000;
   // Analysis reads every customer chat in the period (buyers included); it sends nothing.
-  const chats = analyzeOnly ? all(`SELECT c.* FROM chats c
+  const tagged = tags?.length > 0;
+  let chats = analyzeOnly ? all(`SELECT c.* FROM chats c
       WHERE (?1 IS NULL OR c.account_id = ?1) AND c.last_in_at >= ?2
         AND c.jid != COALESCE((SELECT a.self_jid FROM accounts a WHERE a.id = c.account_id), '')
         AND (SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.id AND m.from_me = 0) >= 1
@@ -206,7 +208,8 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
         AND (SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.id AND m.from_me = 0) >= 1
         AND (SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.id) >= 2
         AND NOT EXISTS (SELECT 1 FROM followups f WHERE f.chat_id = c.id AND f.status IN ('pending','approved'))
-      ORDER BY c.last_in_at DESC LIMIT ?4`, accountId, since, reanalyze || instruction ? 1 : 0, limit, stages?.length ? `,${stages.join(',')},` : '', audience === 'buyers' ? 1 : 0);
+      ORDER BY c.last_in_at DESC LIMIT ?4`, accountId, since, reanalyze || instruction ? 1 : 0, tagged ? 5000 : limit, stages?.length ? `,${stages.join(',')},` : '', audience === 'buyers' || tagged ? 1 : 0);
+  if (tagged) chats = chats.filter((c) => hasAnyTag(c, tags)).slice(0, limit);
   const gap = Math.max(0, Number(intervalMinutes) || 0) * 60_000;
   let nextDue = now();
   Object.assign(campaign, { taskId, analyzeOnly, stages: {}, running: true, total: chats.length, done: 0, drafted: 0, skipped: 0, skipReasons: [], failed: 0, cancel: false, startedAt: now(), error: null });
