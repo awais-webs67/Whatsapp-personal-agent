@@ -35,7 +35,7 @@ fi
 
 step "System packages"
 sudo apt-get update -y
-sudo -E apt-get install -y curl git ca-certificates gnupg debian-keyring debian-archive-keyring apt-transport-https iptables-persistent
+sudo -E apt-get install -y curl git ca-certificates gnupg debian-keyring debian-archive-keyring apt-transport-https iptables-persistent cron
 
 step "Node.js 22"
 if ! command -v node >/dev/null || [[ "$(node -p 'process.versions.node.split(".")[0]')" -lt 22 ]]; then
@@ -61,9 +61,12 @@ sudo env PATH="$PATH" pm2 startup systemd -u "$APP_USER" --hp "$HOME" >/dev/null
 pm2 save
 
 step "Auto update: pull new code from GitHub every 5 minutes"
+sudo systemctl enable --now cron >/dev/null 2>&1 || true
 mkdir -p "$APP_DIR/data"
 cron_line="*/5 * * * * bash $APP_DIR/deploy/auto-update.sh >> $APP_DIR/data/update.log 2>&1"
-( crontab -l 2>/dev/null | grep -v 'deploy/auto-update.sh'; echo "$cron_line" ) | crontab -
+# With no crontab yet, "crontab -l" fails; that must not stop this script (set -e / pipefail).
+{ crontab -l 2>/dev/null | grep -v 'deploy/auto-update.sh' || true; echo "$cron_line"; } | crontab -
+crontab -l | grep -q 'deploy/auto-update.sh' || { echo "Could not set up the auto update (cron)."; exit 1; }
 echo "On. Log: $APP_DIR/data/update.log  (private repo? run once: git config credential.helper store && git pull)"
 
 step "Firewall: open ports 80 and 443 on this machine"
