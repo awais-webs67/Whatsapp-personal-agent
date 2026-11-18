@@ -7,8 +7,8 @@ import { complete } from '../llm/router.js';
 import { toolCallToJson } from '../llm/client.js';
 import * as wa from '../wa/manager.js';
 import { STAGES, extractJson } from './brain.js';
-import { runCampaign, campaign, whyNotSending, changeBatch } from './followups.js';
-import { createTask, listTasks, taskView, controlTask, setTaskRunner, setCampaign, nextRun, findTask, editTask } from './tasks.js';
+import { runCampaign, campaign, whyNotSending, changeBatch, resumeBatch } from './followups.js';
+import { createTask, listTasks, taskView, controlTask, setTaskRunner, setCampaign, nextRun, findTask, editTask, setBatchResumer } from './tasks.js';
 import { quickIntent, ASKS_PERMISSION } from './intent.js';
 import { shortcut } from './shortcuts.js';
 import { normTags, hasAnyTag } from './tags.js';
@@ -468,6 +468,7 @@ export function startCommander() {
   adoptLooseCommands();
   setCampaign(campaign, whyNotSending);
   setTaskRunner((t) => handleCommand(t.instruction, { scheduled: true, label: `⏰ Task #${t.id}: ${t.title}` }));
+  setBatchResumer(resumeBatch);
   wa.setHandlers({ onCommand: (chatId, text) => { if (getSettings().commandsViaWhatsApp) handleCommand(text, { chatId }); } });
 }
 

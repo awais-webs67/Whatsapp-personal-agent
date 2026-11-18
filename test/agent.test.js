@@ -97,7 +97,7 @@ before(async () => {
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   baseUrl = `http://127.0.0.1:${server.address().port}/v1`;
   // Near-instant "human" timings so the suite stays fast.
-  saveSettings({ human: { debounceMin: 0.05, debounceMax: 0.05, readMin: 0, readMax: 0, typingCpsMin: 9000, typingCpsMax: 9000, gapMin: 0, gapMax: 0 }, followup: { quietStart: 0, quietEnd: 0, gapMinSec: 0, gapMaxSec: 0, approval: true } });
+  saveSettings({ human: { debounceMin: 0.05, debounceMax: 0.05, readMin: 0, readMax: 0, typingCpsMin: 9000, typingCpsMax: 9000, gapMin: 0, gapMax: 0 }, followup: { quietStart: 0, quietEnd: 0, gapMinSec: 0, gapMaxSec: 0, approval: true, repeatGuardHours: 0 } });
   run('INSERT INTO accounts (id, name, type, reply_mode, connected_at, created_at) VALUES (1, ?, ?, ?, ?, ?)', 'Test line', 'qr', 'new_only', now() - 10_000, now());
   deliver = wa.attachFake(1, fake).deliver;
   pipeline.startPipeline();
@@ -1113,4 +1113,44 @@ test('a running task is changed by command, not replaced by a new one', async ()
   assert.ok(log.some((e) => /^Rewrote the message for/.test(e.text)));
   tasks.controlTask(id, 'remove');
   assert.match(taskEvents(id)[0].text, /Removed by you/);
+});
+
+test('a batch interrupted by a restart carries on by itself, skipping the chats it already did', async () => {
+  const tasks = await import('../src/agent/tasks.js');
+  const { taskEvents } = await import('../src/agent/task-log.js');
+  await until(() => !followups.campaign.running);
+  run("UPDATE followups SET status = 'skipped' WHERE status IN ('pending','approved')");
+  reply = JSON.stringify({ stage: 'interested', summary: 'Asked about the website package', should_followup: true, message: 'Salam! Koi sawal ho to batayein.', reason: 'quiet' });
+  const id = tasks.createTask({ kind: 'batch', instruction: 'nudge everyone', title: 'Resume test' });
+  followups.runCampaign({ taskId: id, sinceDays: 3650, reanalyze: true, instruction: 'nudge everyone', autoApprove: true, intervalMinutes: 5, limit: 3 });
+  await until(() => !followups.campaign.running, 8000);
+  const firstRun = all('SELECT chat_id FROM followups WHERE task_id = ?', id).map((r) => r.chat_id);
+  assert.ok(firstRun.length >= 2, `wrote ${firstRun.length}`);
+  const saved = JSON.parse(get('SELECT params FROM tasks WHERE id = ?', id).params);
+  assert.equal(saved.readDone, true);
+  // As if the agent restarted before it got to the last chat.
+  const lost = firstRun.at(-1);
+  run('DELETE FROM followups WHERE task_id = ? AND chat_id = ?', id, lost);
+  run('DELETE FROM task_events WHERE task_id = ? AND chat_id = ?', id, lost);
+  run('UPDATE tasks SET params = ? WHERE id = ?', JSON.stringify({ ...saved, readDone: false }), id);
+  const before = calls.length;
+  tasks.setBatchResumer(followups.resumeBatch);
+  await tasks._tick();
+  await until(() => !followups.campaign.running, 8000);
+  assert.equal(calls.length - before, 1, 'only the chat it had not done is read');
+  assert.deepEqual(all('SELECT chat_id FROM followups WHERE task_id = ?', id).map((r) => r.chat_id).sort(), [...firstRun].sort());
+  assert.equal(JSON.parse(get('SELECT params FROM tasks WHERE id = ?', id).params).readDone, true);
+  assert.ok(taskEvents(id).some((e) => /restarted: carrying on from where it stopped \(1 chat left/.test(e.text)));
+  // Someone who already got a message from us today is not messaged again by the next batch.
+  const { saveSettings } = await import('../src/core.js');
+  run("UPDATE followups SET status = 'sent', sent_at = ? WHERE task_id = ?", now(), id);
+  saveSettings({ followup: { repeatGuardHours: 24 } });
+  const again = tasks.createTask({ kind: 'batch', instruction: 'second batch', title: 'Second' });
+  followups.runCampaign({ taskId: again, sinceDays: 3650, reanalyze: true, instruction: 'second batch', autoApprove: true, intervalMinutes: 5, limit: 3 });
+  await until(() => !followups.campaign.running, 8000);
+  const twice = all('SELECT chat_id FROM followups WHERE task_id = ?', again).map((r) => r.chat_id).filter((c) => firstRun.includes(c));
+  assert.deepEqual(twice, [], 'nobody gets two batch messages in one day');
+  saveSettings({ followup: { repeatGuardHours: 0 } });
+  tasks.controlTask(again, 'remove');
+  tasks.controlTask(id, 'remove');
 });

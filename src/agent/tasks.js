@@ -10,6 +10,10 @@ const MIN = 60_000;
 export const STATUSES = ['active', 'paused', 'done', 'failed', 'removed'];
 let runner = null; // set by the commander: (task) => Promise<{ reply }>
 export const setTaskRunner = (fn) => { runner = fn; };
+let resumer = null; // set by the commander: carries on a batch that a restart interrupted
+export const setBatchResumer = (fn) => { resumer = fn; };
+/** A batch has finished reading when its saved state says so (tasks from before this was saved count as read). */
+const readDone = (t) => { try { return !t.params || JSON.parse(t.params).readDone !== false; } catch { return true; } };
 let campaignRef = null; // the follow-up batch reader, to report and stop it
 let whyRef = () => null; // explains why queued messages are not going out
 export const setCampaign = (c, why) => { campaignRef = c; if (why) whyRef = why; };
@@ -159,7 +163,12 @@ async function tick() {
     for (const t of all("SELECT * FROM tasks WHERE kind != 'scheduled' AND status = 'active'")) {
       const open = get("SELECT COUNT(*) n FROM followups WHERE task_id = ? AND status IN ('pending','approved')", t.id).n;
       const reading = campaignRef?.taskId === t.id && campaignRef.running;
-      if (!open && !reading && now() - t.created_at > 5000) {
+      // Interrupted while reading (restart): carry on instead of sitting at "running" forever.
+      if (!reading && !readDone(t) && resumer && !campaignRef?.running) {
+        try { await resumer(t); } catch (e) { log('error', 'tasks', `Task #${t.id} could not carry on: ${e.message}`); }
+        continue;
+      }
+      if (!open && !reading && readDone(t) && now() - t.created_at > 5000) {
         const sent = get("SELECT COUNT(*) n FROM followups WHERE task_id = ? AND status = 'sent'", t.id).n;
         const result = t.kind === 'analysis' ? t.last_result || 'Finished' : `${t.last_result ? `${t.last_result} ` : ''}${sent} message${sent === 1 ? '' : 's'} sent.`;
         update('tasks', t.id, { status: 'done', last_result: result.slice(0, 1000), last_run_at: now() }, ['status', 'last_result', 'last_run_at']);

@@ -132,6 +132,25 @@ export async function changeBatch(taskId, { instruction, interval, autoApprove, 
   return { changed, rewriting, waiting: waiting().length };
 }
 
+/**
+ * A batch that was still reading chats when the agent restarted (an update, a crash, a reboot): start it again,
+ * skipping every chat it already handled. Returns how many chats are left, or null if there is nothing to do.
+ */
+export async function resumeBatch(task) {
+  const p = JSON.parse(task.params || 'null');
+  if (!p || p.readDone || campaign.running) return null;
+  const done = new Set([
+    ...all('SELECT DISTINCT chat_id FROM followups WHERE task_id = ?', task.id).map((r) => r.chat_id),
+    ...all("SELECT DISTINCT chat_id FROM task_events WHERE task_id = ? AND chat_id IS NOT NULL AND kind IN ('read','skipped','wrote')", task.id).map((r) => r.chat_id),
+  ]);
+  const { readDone, ...args } = p;
+  await runCampaign({ ...args, taskId: task.id, skipChatIds: done });
+  taskEvent(task.id, campaign.total
+    ? `The agent restarted: carrying on from where it stopped (${campaign.total} chat${campaign.total === 1 ? '' : 's'} left, ${done.size} already done)`
+    : 'The agent restarted: every chat was already handled', { kind: 'info' });
+  return campaign.total;
+}
+
 /** 1) Turn due chats into drafts. */
 /**
  * Find leads who went quiet after we (the agent or the owner) answered, and give each one its next follow-up time.
@@ -302,8 +321,10 @@ export function whyNotSending(taskId = null) {
   return next > now() ? null : null;
 }
 
-export async function runCampaign({ accountId = null, sinceDays = 90, limit = 200, reanalyze = false, instruction = '', autoApprove = false, intervalMinutes = 0, stages = null, taskId = null, analyzeOnly = false, audience = 'all', tags = [] } = {}) {
+export async function runCampaign({ accountId = null, sinceDays = 90, limit = 200, reanalyze = false, instruction = '', autoApprove = false, intervalMinutes = 0, stages = null, taskId = null, analyzeOnly = false, audience = 'all', tags = [], skipChatIds = null } = {}) {
   if (campaign.running) throw new Error('Another batch is still reading chats. Wait for it to finish, or remove it on the Tasks page.');
+  // Saved with the task, so the work carries on by itself after a restart (see resumeBatch).
+  if (taskId) run('UPDATE tasks SET params = ? WHERE id = ?', JSON.stringify({ accountId, sinceDays, limit, reanalyze, instruction, autoApprove, intervalMinutes, stages, analyzeOnly, audience, tags, readDone: false }), taskId);
   const since = now() - sinceDays * 86_400_000;
   // Analysis reads every customer chat in the period (buyers included); it sends nothing.
   const tagged = tags?.length > 0;
@@ -319,8 +340,11 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
         AND (SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.id AND m.from_me = 0) >= 1
         AND (SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.id) >= 2
         AND NOT EXISTS (SELECT 1 FROM followups f WHERE f.chat_id = c.id AND f.status IN ('pending','approved'))
-      ORDER BY c.last_in_at DESC LIMIT ?4`, accountId, since, reanalyze || instruction ? 1 : 0, tagged ? 5000 : limit, stages?.length ? `,${stages.join(',')},` : '', audience === 'buyers' || tagged ? 1 : 0);
+        -- Someone who got a message from us in the last day is not messaged again by another batch.
+        AND NOT EXISTS (SELECT 1 FROM followups f WHERE f.chat_id = c.id AND f.status = 'sent' AND f.sent_at > ?7)
+      ORDER BY c.last_in_at DESC LIMIT ?4`, accountId, since, reanalyze || instruction ? 1 : 0, tagged ? 5000 : limit, stages?.length ? `,${stages.join(',')},` : '', audience === 'buyers' || tagged ? 1 : 0, now() - (getSettings().followup.repeatGuardHours ?? 24) * 3_600_000);
   if (tagged) chats = chats.filter((c) => hasAnyTag(c, tags)).slice(0, limit);
+  if (skipChatIds?.size) chats = chats.filter((c) => !skipChatIds.has(c.id));
   // Chats read before and unchanged since: their stored stage decides who is in, without a model call.
   if (!analyzeOnly && !tagged && !stages?.length) {
     if (audience === 'buyers') chats = chats.filter((c) => !isFresh(c) || c.stage === 'purchased');
@@ -331,7 +355,8 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
   const gap = range?.length ? 0 : Math.max(0, Number(intervalMinutes) || 0) * 60_000;
   // "randomly 6 to 25 minutes apart": each gap is picked at random in that range.
   const nextGap = () => (campaign.range?.length ? rand(campaign.range[0], campaign.range.at(-1)) * 60_000 : campaign.gap * rand(0.8, 1.2));
-  let nextDue = now();
+  // Carrying on after a restart: new messages queue up after the ones already waiting.
+  let nextDue = Math.max(now(), (taskId && get("SELECT MAX(due_at) m FROM followups WHERE task_id = ? AND status IN ('pending','approved')", taskId)?.m) || 0);
   Object.assign(campaign, { taskId, analyzeOnly, waitingUntil: null, instruction, autoApprove, range, gap, stages: {}, running: true, total: chats.length, done: 0, drafted: 0, skipped: 0, skipReasons: [], failed: 0, cancel: false, startedAt: now(), error: null });
   emit('campaign', campaign);
   log('info', 'campaign', `Reviewing ${chats.length} past conversations`);
@@ -385,11 +410,14 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
     } else campaign.failed += failedOnce.length;
     campaign.running = false;
     emit('campaign', campaign);
+    const markRead = () => { if (taskId && !campaign.cancel) { const p = JSON.parse(get('SELECT params FROM tasks WHERE id = ?', taskId)?.params || '{}'); run('UPDATE tasks SET params = ? WHERE id = ?', JSON.stringify({ ...p, readDone: true }), taskId); } };
+    if (!analyzeOnly) markRead();
     if (taskId && analyzeOnly) {
       const mix = Object.entries(campaign.stages).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${n} ${k.replace('_', ' ')}`).join(', ');
       let learned = '';
       try { const l = await learnFromChats({}); learned = ` Now learning your offers, prices and tone from ${l.chats} conversations you answered yourself; the result appears on the Knowledge page.`; } catch (e) { learned = ` Could not learn from them: ${e.message}`; }
       run('UPDATE tasks SET last_result = ? WHERE id = ?', `Read ${campaign.done} chat${campaign.done === 1 ? '' : 's'}${mix ? `: ${mix}` : ''}${campaign.failed ? `; ${campaign.failed} failed (${campaign.error})` : ''}.${learned}`.slice(0, 1000), taskId);
+      markRead();
       emit('tasks');
       notify(`Task #${taskId}: ${get('SELECT last_result FROM tasks WHERE id = ?', taskId)?.last_result || 'finished reading'}`, { threadId: get('SELECT thread_id FROM tasks WHERE id = ?', taskId)?.thread_id });
     } else if (taskId) {

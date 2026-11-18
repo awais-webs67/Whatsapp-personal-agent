@@ -57,6 +57,7 @@ export const DEFAULT_SETTINGS = {
     quietStart: 21, quietEnd: 9,        // no proactive messages between these hours
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
     dailyCap: 40,                       // proactive messages per account per day
+    repeatGuardHours: 24,               // a new batch skips people who got a message from us this recently
     gapMinSec: 60, gapMaxSec: 240,
   },
   reading: { auto: true, perTick: 4 },  // keep reading chats that changed (stage + summary), a few at a time
