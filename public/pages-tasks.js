@@ -8,7 +8,7 @@ const when = (ts) => (!ts ? '—' : ts <= Date.now() + 30_000 ? 'Due now' : `${n
 export function tasks() {
   const box = h('div.stack');
   const el = h('div.page', {},
-    h('div.head', {}, h('div', {}, h('h1', {}, 'Tasks'), h('p', {}, 'Jobs you gave the agent: follow-up batches and things it does on a schedule. Pause, resume, run now or remove any of them.')),
+    h('div.head', {}, h('div', {}, h('h1', {}, 'Tasks'), h('p', {}, 'Jobs you gave the agent: follow-up batches and things it does on a schedule. Pause, resume, run now or remove any of them. To change one, tell Command its number: “task 7 mein gap 10 minute kar do”.')),
       h('button.btn.primary', { onclick: newTask }, 'New task')),
     box);
 
@@ -44,14 +44,14 @@ export function tasks() {
 
   function card(t) {
     const [label, tone] = STATUS[t.status] || [t.status, ''];
-    const ctl = (action, text, cls = '') => h(`button.btn.sm${cls}`, { onclick: (e) => (action !== 'remove' || confirm(`Remove "${t.title}"?${t.kind === 'batch' ? ' Messages it has not sent yet are cancelled.' : ''}`)) && act(e.target, () => PATCH(`/api/tasks/${t.id}`, { action })) }, text);
+    const ctl = (action, text, cls = '') => h(`button.btn.sm${cls}`, { onclick: (e) => (action !== 'remove' || confirm(`Remove task #${t.id} "${t.title}"?${t.kind === 'batch' ? ' Messages it has not sent yet are cancelled.' : ''}`)) && act(e.target, () => PATCH(`/api/tasks/${t.id}`, { action })) }, text);
     const pr = progressOf(t);
     const p = t.progress;
     const steps = t.kind !== 'scheduled' ? h('div.tsteps', {}, (t.kind === 'analysis' ? ['Read chats', 'Learn from them'] : ['Read chats', 'Write messages', 'Send']).map((name, i) => h(`span${pr.step > i + 1 || t.status === 'done' ? '.done' : pr.step === i + 1 ? '.now' : ''}`, {}, h('i.dia'), name))) : null;
     return h(`div.card.task.${t.status}`, {},
       h('div.task-top', {},
         h('div.grow', {},
-          h('div.row.wrap', { style: 'gap:8px' }, h('b.task-title', { dir: 'auto' }, t.title), h(`span.pill.${tone}`, {}, t.status === 'active' ? h('i.dia.hot.live') : null, label)),
+          h('div.row.wrap', { style: 'gap:8px' }, h('span.pill', { title: `In Command, say "task ${t.id}" to change this one`, style: 'font-family:var(--mono, monospace)' }, `#${t.id}`), h('b.task-title', { dir: 'auto' }, t.title), h(`span.pill.${tone}`, {}, t.status === 'active' ? h('i.dia.hot.live') : null, label)),
           h('div.muted', { style: 'font-size:12.5px;margin-top:2px' }, t.kind === 'scheduled' ? t.scheduleText : `${t.scheduleText} · started ${rel(t.created_at)} ago`)),
         h('div.row', {},
           t.status === 'active' ? ctl('pause', 'Pause') : null,
