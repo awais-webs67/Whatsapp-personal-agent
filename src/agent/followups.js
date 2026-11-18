@@ -81,7 +81,7 @@ function queue(chatId, kind, text, reason, status, dueAt = now(), taskId = null)
  * Change a batch that is already running: what the messages say, the gap between them, whether they go out by
  * themselves. Messages already written but not sent yet are spaced again and, for a new instruction, rewritten.
  */
-export async function changeBatch(taskId, { instruction, interval, autoApprove, audience = 'all' } = {}) {
+export async function changeBatch(taskId, { instruction, interval, autoApprove, audience = 'all', startIn = null } = {}) {
   const mine = campaign.taskId === taskId && campaign.running;
   const changed = [];
   if (instruction) { if (mine) campaign.instruction = instruction; changed.push('message instruction'); }
@@ -92,14 +92,26 @@ export async function changeBatch(taskId, { instruction, interval, autoApprove, 
     changed.push(autoApprove ? 'messages go out by themselves' : 'messages wait for your approval');
   }
   const waiting = () => all("SELECT * FROM followups WHERE task_id = ? AND status IN ('pending','approved') ORDER BY due_at, id", taskId);
+  if (startIn != null && !interval) {
+    // Keep the gaps they had, move the whole line so the first one goes out after the wait.
+    const rows = waiting();
+    if (rows.length) {
+      const shift = now() + startIn * 60_000 - rows[0].due_at;
+      for (const f of rows) update('followups', f.id, { due_at: Math.round(f.due_at + shift) }, ['due_at']);
+    }
+    if (mine) campaign.startAt = now() + startIn * 60_000;
+    taskEvent(taskId, `Start moved: the next message goes out in ${startIn} min`, { kind: 'changed' });
+    changed.push(`next message in ${startIn} min`);
+  }
   if (interval) {
     const range = Array.isArray(interval) ? interval : null;
     taskEvent(taskId, `Gap changed to ${range ? `${range[0]} to ${range.at(-1)} min (random)` : `${interval} min`}: messages not sent yet were spaced again`, { kind: 'changed' });
     if (mine) { campaign.range = range; campaign.gap = range ? 0 : interval * 60_000; }
     const gapMs = () => (range ? rand(range[0], range.at(-1)) : interval * rand(0.8, 1.2)) * 60_000;
-    let due = now();
+    let due = now() + (startIn || 0) * 60_000;
     for (const f of waiting()) { update('followups', f.id, { due_at: Math.round(due) }, ['due_at']); due += gapMs(); }
     changed.push(range ? `gap ${range[0]} to ${range.at(-1)} min (random)` : `gap ${interval} min`);
+    if (startIn) changed.push(`first one in ${startIn} min`);
   }
   emit('followups');
   // Rewrite what is written but not sent, one by one, in the background (pauses at model limits like a batch).
@@ -149,6 +161,12 @@ export async function resumeBatch(task) {
     ? `The agent restarted: carrying on from where it stopped (${campaign.total} chat${campaign.total === 1 ? '' : 's'} left, ${done.size} already done)`
     : 'The agent restarted: every chat was already handled', { kind: 'info' });
   return campaign.total;
+}
+
+/** The next messages a task will send, with who and when (for the owner's reply). */
+export function nextOfTask(taskId, n = 3) {
+  return all(`SELECT f.due_at, f.status, c.name, c.phone FROM followups f JOIN chats c ON c.id = f.chat_id
+    WHERE f.task_id = ? AND f.status IN ('pending','approved') ORDER BY f.due_at LIMIT ?`, taskId, n);
 }
 
 /** 1) Turn due chats into drafts. */
@@ -321,7 +339,7 @@ export function whyNotSending(taskId = null) {
   return next > now() ? null : null;
 }
 
-export async function runCampaign({ accountId = null, sinceDays = 90, limit = 200, reanalyze = false, instruction = '', autoApprove = false, intervalMinutes = 0, stages = null, taskId = null, analyzeOnly = false, audience = 'all', tags = [], skipChatIds = null } = {}) {
+export async function runCampaign({ accountId = null, sinceDays = 90, limit = 200, reanalyze = false, instruction = '', autoApprove = false, intervalMinutes = 0, stages = null, taskId = null, analyzeOnly = false, audience = 'all', tags = [], skipChatIds = null, startAt = null } = {}) {
   if (campaign.running) throw new Error('Another batch is still reading chats. Wait for it to finish, or remove it on the Tasks page.');
   // Saved with the task, so the work carries on by itself after a restart (see resumeBatch).
   if (taskId) run('UPDATE tasks SET params = ? WHERE id = ?', JSON.stringify({ accountId, sinceDays, limit, reanalyze, instruction, autoApprove, intervalMinutes, stages, analyzeOnly, audience, tags, readDone: false }), taskId);
@@ -356,7 +374,7 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
   // "randomly 6 to 25 minutes apart": each gap is picked at random in that range.
   const nextGap = () => (campaign.range?.length ? rand(campaign.range[0], campaign.range.at(-1)) * 60_000 : campaign.gap * rand(0.8, 1.2));
   // Carrying on after a restart: new messages queue up after the ones already waiting.
-  let nextDue = Math.max(now(), (taskId && get("SELECT MAX(due_at) m FROM followups WHERE task_id = ? AND status IN ('pending','approved')", taskId)?.m) || 0);
+  let nextDue = Math.max(now(), startAt || 0, (taskId && get("SELECT MAX(due_at) m FROM followups WHERE task_id = ? AND status IN ('pending','approved')", taskId)?.m) || 0);
   Object.assign(campaign, { taskId, analyzeOnly, waitingUntil: null, instruction, autoApprove, range, gap, stages: {}, running: true, total: chats.length, done: 0, drafted: 0, skipped: 0, skipReasons: [], failed: 0, cancel: false, startedAt: now(), error: null });
   emit('campaign', campaign);
   log('info', 'campaign', `Reviewing ${chats.length} past conversations`);

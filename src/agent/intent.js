@@ -41,11 +41,32 @@ export function parseDays(t, fallback = 7) {
 }
 
 /** Minutes between messages. */
+/**
+ * "10 minute baad bhejna", "2 ghante baad", "aadhe ghante baad", "kal subah" (no) -> minutes to wait before the first
+ * message; null when the text only says how far apart they go ("har 10 minute", "10 minute ka gap").
+ */
+export function startDelay(t) {
+  const s = t.toLowerCase();
+  if (/\b(abhi|foran|fauran|right\s*now|immediately)\b/.test(s) && !/baad|bad|after/.test(s)) return 0;
+  const m = /(?<!har\s|every\s|each\s)\b(\d+(?:\.\d+)?|aadh[ae]|adh[ae]|ek|do|teen)\s*(minute|minutes|mins?|mint|mnt|ghante|ghanta|ghantay|hours?|hrs?)\s*(?:ke|k|ka)?\s*(?:baad|bad|after|later)\b/.exec(s);
+  if (!m) return null;
+  if (/\b(gap|waqf|farq|fasl|interval)/.test(s.slice(m.index, m.index + m[0].length + 12))) return null;
+  const n = { aadha: 0.5, aadhe: 0.5, adha: 0.5, adhe: 0.5, ek: 1, do: 2, teen: 3 }[m[1]] ?? Number(m[1]);
+  return Math.round(/^(ghant|hour|hr)/.test(m[2]) ? n * 60 : n);
+}
+
+/** A message about timing only ("ab 30 minute baad bhejna", "gap 10 minute kar do"): no new audience in it. */
+export const TIMING_ONLY = (t) => /(minute|mint|mnt|ghant|hour|baad|gap|waqf|farq|random)/i.test(t)
+  && !/\b(pichle|last|din|days?|hafte|weeks?|logon|logo|sab\s*ko|customers?|leads?|buyers?|khareed|tag)\b/i.test(t) && t.length < 160;
+
 export function parseInterval(t, fallback = 5) {
   const s = t.toLowerCase();
   let m;
   if ((m = s.match(/(?:har|every|each)\s+(\d+)\s*(?:minute|minutes|mins?|mint|mnt)/))) return Number(m[1]);
-  if ((m = s.match(/(\d+)\s*(?:minute|minutes|mins?|mint|mnt)\s*(?:ke|ka|k|ki)?\s*(?:baad|bad|gap|waqfe|waqfa|interval)/))) return Number(m[1]);
+  if ((m = s.match(/(\d+)\s*(?:minute|minutes|mins?|mint|mnt)\s*(?:ke|ka|k|ki)?\s*(?:gap|waqfe|waqfa|waqfay|interval|farq|fasle|fasla)/))) return Number(m[1]);
+  if ((m = s.match(/(?:gap|waqfa|waqfe|waqfay|farq|fasla|fasle|interval)\s*(?:of|ko|ka|ki)?\s*(\d+)\s*(?:minute|minutes|mins?|mint|mnt)/))) return Number(m[1]);
+  // "har 10 minute baad" is a gap; plain "10 minute baad" (no har/every) means start later: see startDelay.
+  if ((m = s.match(/(?:har|every|each)\s+(\d+)\s*(?:minute|minutes|mins?|mint|mnt)\s*(?:ke|ka|k|ki)?\s*(?:baad|bad)/))) return Number(m[1]);
   if ((m = s.match(/(?:har|every)\s+(\d+)?\s*(?:ghante|ghanta|hours?)/))) return 60 * num(m, 1);
   return fallback;
 }
@@ -112,7 +133,8 @@ export function quickIntent(text, { scheduled = false } = {}) {
     const id = /(?:task|kaam)\s*#?\s*(\d+)|#(\d+)/i.exec(t);
     if (id) args.id = Number(id[1] || id[2]);
     const gap = randomMinutes(t) || (/(\d+)\s*(?:minute|minutes|mins?|mint|mnt)/i.test(t) ? parseInterval(t, Number(/(\d+)\s*(?:minute|minutes|mins?|mint|mnt)/i.exec(t)[1])) : null);
-    if (gap) args.interval_minutes = gap;
+    if (gap && !(startDelay(t) && !/\b(har|every|gap|waqf|farq|interval)\b/i.test(t))) args.interval_minutes = gap;
+    if (startDelay(t) != null) args.start_in_minutes = startDelay(t);
     if (/raat\s*ko\s*bhi|night\s*too/i.test(t)) args.ignore_quiet_hours = true;
     if (/\b(pause|rok\s*do|ruk\s*jao)\b/i.test(t)) args.pause = true;
     if (/\b(resume|dobara\s*shuru|phir\s*se\s*chala|continue)\b/i.test(t)) args.resume = true;
@@ -145,7 +167,8 @@ export function quickIntent(text, { scheduled = false } = {}) {
       action: 'start_followups',
       args: {
         // Tagged customers are picked by the tag, not by how recent they are: look back a year unless a period is named.
-        days: tagsIn(t).length ? parseDays(t, 365) : parseDays(t), interval_minutes: randomMinutes(t) || Math.max(1, parseInterval(t)), instruction: t,
+        days: tagsIn(t).length ? parseDays(t, 365) : parseDays(t), interval_minutes: randomMinutes(t) || Math.max(1, parseInterval(t)),
+        ...(startDelay(t) ? { start_in_minutes: startDelay(t) } : {}), instruction: t,
         stages: /\binterested\b/i.test(t) ? ['interested', 'negotiating'] : [],
         audience: audienceOf(t),
         tags: tagsIn(t),

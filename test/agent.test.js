@@ -1154,3 +1154,40 @@ test('a batch interrupted by a restart carries on by itself, skipping the chats 
   tasks.controlTask(again, 'remove');
   tasks.controlTask(id, 'remove');
 });
+
+test('timing orders are followed exactly: "10 minute baad" starts later, "ab 30 minute baad" moves the running batch, "gap 15 minute" respaces it', async () => {
+  const { quickIntent } = await import('../src/agent/intent.js');
+  const { runCommand } = await import('../src/agent/commander.js');
+  const tasks = await import('../src/agent/tasks.js');
+  const q = quickIntent('pichle 5 din ke logon ko 10 minute baad follow up bhejna');
+  assert.equal(q.args.start_in_minutes, 10);
+  assert.equal(quickIntent('pichle 5 din ke logon ko har 10 minute baad follow up bhejo').args.start_in_minutes, undefined, '"har" is the gap, not a delay');
+
+  await until(() => !followups.campaign.running);
+  run("UPDATE followups SET status = 'skipped' WHERE status IN ('pending','approved')");
+  reply = JSON.stringify({ stage: 'interested', summary: 'Asked about the website package', should_followup: true, message: 'Salam! Kya socha?', reason: 'quiet' });
+  const t0 = Date.now();
+  const started = await runCommand('pichle 3650 din ke logon ko 10 minute baad follow up bhejna');
+  assert.match(started.reply, /first message at \d\d:\d\d/);
+  const id = started.steps[0].result.task_id;
+  await until(() => !followups.campaign.running, 8000);
+  const queued = () => all("SELECT * FROM followups WHERE task_id = ? AND status IN ('pending','approved') ORDER BY due_at", id);
+  assert.ok(queued().length >= 2);
+  assert.ok(queued()[0].due_at >= t0 + 9.9 * 60_000, 'nothing goes out before the 10 minutes');
+  const count = tasks.listTasks().length;
+
+  // No "task" word: a timing-only message while a batch runs changes that batch.
+  const gapsBefore = queued().slice(1).map((f, i) => f.due_at - queued()[i].due_at);
+  const moved = await runCommand('ab 30 minute baad bhejna');
+  assert.equal(moved.steps[0].action, 'update_task');
+  assert.match(moved.reply, new RegExp(`Task #${id} changed: next message in 30 min[\\s\\S]*No new task was made[\\s\\S]*🕒 Next: \\d\\d:\\d\\d`));
+  assert.equal(tasks.listTasks().length, count, 'no new task');
+  assert.ok(Math.abs(queued()[0].due_at - (Date.now() + 30 * 60_000)) < 5000, 'first one now in 30 min');
+  assert.deepEqual(queued().slice(1).map((f, i) => f.due_at - queued()[i].due_at), gapsBefore, 'gaps kept');
+
+  const spaced = await runCommand('gap 15 minute kar do');
+  assert.match(spaced.reply, /gap 15 min/);
+  const gaps = queued().slice(1).map((f, i) => (f.due_at - queued()[i].due_at) / 60_000);
+  assert.ok(gaps.every((g) => g >= 11.9 && g <= 18.1), `gaps ${gaps}`);
+  tasks.controlTask(id, 'remove');
+});

@@ -7,9 +7,9 @@ import { complete } from '../llm/router.js';
 import { toolCallToJson } from '../llm/client.js';
 import * as wa from '../wa/manager.js';
 import { STAGES, extractJson } from './brain.js';
-import { runCampaign, campaign, whyNotSending, changeBatch, resumeBatch } from './followups.js';
+import { runCampaign, campaign, whyNotSending, changeBatch, resumeBatch, nextOfTask } from './followups.js';
 import { createTask, listTasks, taskView, controlTask, setTaskRunner, setCampaign, nextRun, findTask, editTask, setBatchResumer } from './tasks.js';
-import { quickIntent, ASKS_PERMISSION } from './intent.js';
+import { quickIntent, ASKS_PERMISSION, TIMING_ONLY, startDelay, parseInterval, randomMinutes } from './intent.js';
 import { shortcut } from './shortcuts.js';
 import { normTags, hasAnyTag } from './tags.js';
 import { humanSend } from './pipeline.js';
@@ -76,7 +76,7 @@ const TOOLS = {
     run: (a) => { const t = targets(a); return { people: t.length, examples: t.slice(0, 5).map(title) }; },
   },
   start_followups: {
-    doc: 'start_followups {"days": 5, "stages": [], "instruction": "what to say / who it is for", "interval_minutes": 5, "limit": 100, "send": true, "ignore_quiet_hours": false, "audience": "all|buyers|non_buyers", "tags": []} - read each matching chat, write a personal message following the instruction, and schedule them one by one with the interval. "send": true queues them to go out automatically; false leaves them as drafts for the owner to approve. Set "ignore_quiet_hours": true only if the owner says to send at night too. "audience": "buyers" when the owner means people who already bought (a renewal or after-sale reminder), "non_buyers" for people who did not buy, "all" otherwise. "tags": only customers with one of these tags (labels the owner put on chats, e.g. ["vip"]); give "days": 365 with tags unless the owner names a period.',
+    doc: 'start_followups {"days": 5, "stages": [], "instruction": "what to say / who it is for", "interval_minutes": 5, "limit": 100, "send": true, "ignore_quiet_hours": false, "audience": "all|buyers|non_buyers", "tags": [], "start_in_minutes": 0} - read each matching chat, write a personal message following the instruction, and schedule them one by one with the interval. "send": true queues them to go out automatically; false leaves them as drafts for the owner to approve. Set "ignore_quiet_hours": true only if the owner says to send at night too. "audience": "buyers" when the owner means people who already bought (a renewal or after-sale reminder), "non_buyers" for people who did not buy, "all" otherwise. "tags": only customers with one of these tags (labels the owner put on chats, e.g. ["vip"]); give "days": 365 with tags unless the owner names a period. "start_in_minutes": wait this long before the FIRST message ("10 minute baad bhejna" = start_in_minutes 10); interval_minutes is the gap BETWEEN messages ("har 10 minute" / "10 minute ka gap").',
     run: async (a) => {
       const audience = ['buyers', 'non_buyers'].includes(a.audience) ? a.audience : 'all';
       const t = targets({ ...a, includePurchased: audience === 'buyers' });
@@ -86,9 +86,9 @@ const TOOLS = {
       const range = nums(a.interval_minutes).filter((n) => n > 0);
       const interval = range.length >= 2 ? [Math.min(...range), Math.max(...range)] : Math.max(1, range[0] || 5);
       const taskId = createTask({ kind: 'batch', threadId: activeThread, ignoreQuiet: !!a.ignore_quiet_hours, title: `${audience === 'buyers' ? 'Reminders to buyers' : 'Follow-ups'}: ${String(a.instruction || 'quiet leads').slice(0, 80)}`, instruction: `${{ buyers: 'People who bought, ', non_buyers: 'People who did not buy, ', all: '' }[audience]}last ${days(a.days)} days${stageList(a.stages).length ? `, stages ${stageList(a.stages).join(', ')}` : ''}, every ${interval} min, ${a.send ? 'sends automatically' : 'drafts for approval'}. ${a.instruction || ''}`.trim() });
-      await runCampaign({ taskId, sinceDays: days(a.days), limit: Math.min(500, Number(a.limit) || 100), reanalyze: true, instruction: String(a.instruction || '').slice(0, 600), autoApprove: !!a.send, intervalMinutes: interval, stages: stageList(a.stages), audience, tags });
+      await runCampaign({ taskId, sinceDays: days(a.days), limit: Math.min(500, Number(a.limit) || 100), reanalyze: true, instruction: String(a.instruction || '').slice(0, 600), autoApprove: !!a.send, intervalMinutes: interval, stages: stageList(a.stages), audience, tags, startAt: Number(a.start_in_minutes) > 0 ? now() + Number(a.start_in_minutes) * 60_000 : null });
       if (!campaign.total) run("UPDATE tasks SET status = 'removed' WHERE id = ?", taskId); // nothing to do: no empty task left behind
-      return { started: campaign.total > 0, ...(campaign.total ? {} : { reason: 'every matching chat already has a follow-up waiting, or has too few messages to follow up on' }), task_id: taskId, chats_being_read: campaign.total, interval_minutes: interval, mode: a.send ? 'sends automatically' : 'drafts wait for approval',
+      return { started: campaign.total > 0, ...(campaign.total ? {} : { reason: 'every matching chat already has a follow-up waiting, or has too few messages to follow up on' }), task_id: taskId, chats_being_read: campaign.total, interval_minutes: interval, first_at: Number(a.start_in_minutes) > 0 ? now() + Number(a.start_in_minutes) * 60_000 : null, mode: a.send ? 'sends automatically' : 'drafts wait for approval',
         limits: `at most ${s.dailyCap} per number per day; nothing is sent between ${s.quietStart}:00 and ${s.quietEnd}:00 (${s.timezone}); people who would not benefit are skipped` };
     },
   },
@@ -146,7 +146,7 @@ const TOOLS = {
     },
   },
   update_task: {
-    doc: 'update_task {"id": 7, "instruction": "the new full instruction for the messages", "interval_minutes": 10 or [6, 25], "send": true, "ignore_quiet_hours": true, "every_minutes": 30, "daily_at": "10:00", "at": "18:30", "pause": false, "resume": false} - CHANGE a task that already exists instead of starting a new one. Use it whenever the owner talks about the running or last task ("is task mein", "isko", "ab se", "message mein yeh bhi likho", "gap 10 minute kar do", "raat ko bhi bhejo"). Leave out "id" to change the latest task of this conversation. Send only what changes; "instruction" replaces the old one, so include what should stay. Messages written but not sent yet are rewritten for a new instruction and spaced again for a new interval.',
+    doc: 'update_task {"id": 7, "instruction": "the new full instruction for the messages", "interval_minutes": 10 or [6, 25], "start_in_minutes": 30, "send": true, "ignore_quiet_hours": true, "every_minutes": 30, "daily_at": "10:00", "at": "18:30", "pause": false, "resume": false} - CHANGE a task that already exists instead of starting a new one. Use it whenever the owner talks about the running or last task ("is task mein", "isko", "ab se", "message mein yeh bhi likho", "gap 10 minute kar do", "raat ko bhi bhejo"). Leave out "id" to change the latest task of this conversation. Send only what changes; "instruction" replaces the old one, so include what should stay. Messages written but not sent yet are rewritten for a new instruction and spaced again for a new interval.',
     run: async (a) => {
       const t = findTask(a.id, activeThread);
       if (!t) return { error: 'No running task to change. Start one first.' };
@@ -160,7 +160,8 @@ const TOOLS = {
       if (t.kind !== 'scheduled') {
         const range = nums(a.interval_minutes).filter((n) => n > 0);
         const interval = range.length >= 2 ? [Math.min(...range), Math.max(...range)] : range[0] || null;
-        const r = await changeBatch(t.id, { instruction: instruction || undefined, interval, autoApprove: typeof a.send === 'boolean' ? a.send : undefined });
+        const startIn = a.start_in_minutes != null && Number(a.start_in_minutes) >= 0 ? Number(a.start_in_minutes) : null;
+        const r = await changeBatch(t.id, { instruction: instruction || undefined, interval, startIn, autoApprove: typeof a.send === 'boolean' ? a.send : undefined });
         out.changed.push(...r.changed);
         Object.assign(out, { waiting_messages: r.waiting, rewriting: r.rewriting });
       }
@@ -242,8 +243,9 @@ export function applySettings(a = {}) {
   if (typeof a.followups === 'boolean') {
     patch.followup = { ...patch.followup, enabled: a.followups };
     let cancelled = 0;
-    if (!a.followups) { campaign.cancel = true; cancelled = Number(run("UPDATE followups SET status = 'skipped', error = 'Follow-ups switched off' WHERE status IN ('approved','pending')").changes); emit('followups'); }
-    done.push(`automatic follow-ups ${onOff(a.followups)}${cancelled ? ` (${cancelled} waiting message${cancelled === 1 ? '' : 's'} cancelled)` : ''}`);
+    // Only the automatic ones: batches you started yourself (tasks) keep going; stop those with "task N rok do".
+    if (!a.followups) { cancelled = Number(run("UPDATE followups SET status = 'skipped', error = 'Automatic follow-ups switched off' WHERE status IN ('approved','pending') AND task_id IS NULL").changes); emit('followups'); }
+    done.push(`automatic follow-ups ${onOff(a.followups)}${cancelled ? ` (${cancelled} waiting message${cancelled === 1 ? '' : 's'} cancelled)` : ''}${a.followups ? '' : '; your own tasks keep running'}`);
   }
   if (typeof a.reading === 'boolean') { patch.reading = { auto: a.reading }; done.push(`reading new chats ${onOff(a.reading)}`); }
   if (typeof a.ask_before_sending === 'boolean') { patch.followup = { ...patch.followup, approval: a.ask_before_sending }; done.push(a.ask_before_sending ? 'follow-ups wait for your approval' : 'follow-ups go out without asking'); }
@@ -299,6 +301,14 @@ const ACTION_ASK = /bhej|send|follow|remind|yaad|confirm|schedule|har \d|every|d
 const CLAIMS_WORK = /kar raha|kar rahi|kar raha hun|working|on it|started|shuru|ho gaya|done|bhej (diya|di|raha|rahi|deta|dunga)|sending|will send|bhejta|bhejun|scheduled|set up|queued|kar diya|kar deta|theek hai|ok\b|okay/i;
 
 /** What really happened, written by the app (not the model), so the owner can trust it. */
+const at = (ts) => new Date(ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: getSettings().followup.timezone });
+/** "Next: 14:20 Ali, 14:30 Sara, 14:41 +92300..." from what is really queued. */
+function nextLine(taskId) {
+  const rows = nextOfTask(taskId, 4);
+  if (!rows.length) return '';
+  return `\n🕒 Next: ${rows.map((r) => `${at(r.due_at)} ${r.name || (r.phone ? `+${r.phone}` : 'someone')}${r.status === 'pending' ? ' (needs your OK)' : ''}`).join(', ')}`;
+}
+
 function facts(steps) {
   const out = [];
   for (const s of steps) {
@@ -308,11 +318,11 @@ function facts(steps) {
       if (!r.started) out.push(`⚠️ Nothing started: ${r.reason || 'no chats matched'}.`);
       else {
         const why = whyNotSending(r.task_id);
-        out.push(`📋 Task #${r.task_id} started: reading ${r.chats_being_read} chat${r.chats_being_read === 1 ? '' : 's'}, one message every ${Array.isArray(r.interval_minutes) ? `${r.interval_minutes[0]} to ${r.interval_minutes[1]} min (random)` : `${r.interval_minutes} min`}, ${r.mode}. Progress is on the Tasks page.${why ? `\n⚠️ Not sending yet: ${why}` : ''}`);
+        out.push(`📋 Task #${r.task_id} started: reading ${r.chats_being_read} chat${r.chats_being_read === 1 ? '' : 's'}, ${r.first_at ? `first message at ${at(r.first_at)}, then ` : ''}one message every ${Array.isArray(r.interval_minutes) ? `${r.interval_minutes[0]} to ${r.interval_minutes[1]} min (random)` : `${r.interval_minutes} min`}, ${r.mode}. Progress is on the Tasks page.${why ? `\n⚠️ Not sending yet: ${why}` : ''}`);
       }
     }
     if (s.action === 'analyse_chats' && !r.started && r.reason) out.push(`ℹ️ ${r.reason[0].toUpperCase()}${r.reason.slice(1)}.`);
-    if (s.action === 'update_task' && !r.error) out.push(r.changed?.length ? `✏️ Task #${r.task_id} changed: ${r.changed.join('; ')}.${r.rewriting ? ` Rewriting the ${r.rewriting} message${r.rewriting === 1 ? '' : 's'} not sent yet.` : ''} No new task was made.` : `⚠️ Task #${r.task_id}: nothing to change.`);
+    if (s.action === 'update_task' && !r.error) out.push(r.changed?.length ? `✏️ Task #${r.task_id} changed: ${r.changed.join('; ')}.${r.rewriting ? ` Rewriting the ${r.rewriting} message${r.rewriting === 1 ? '' : 's'} not sent yet.` : ''} No new task was made.${nextLine(r.task_id)}` : `⚠️ Task #${r.task_id}: nothing to change.`);
     if (s.action === 'change_settings') out.push(r.changed?.length ? `⚙️ Changed: ${r.changed.join('; ')}.` : '⚠️ Nothing was changed.');
     if (s.action === 'remind' && r.reminder_for) out.push(`⏰ Reminder for ${r.reminder_for} at ${new Date(r.at).toLocaleString('en-GB', { timeZone: getSettings().followup.timezone, dateStyle: 'medium', timeStyle: 'short' })}. You get a message when it is sent.`);
     if (s.action === 'analyse_chats') out.push(r.started ? `📋 Task #${r.task_id} started: reading ${r.chats_being_read} chat${r.chats_being_read === 1 ? '' : 's'} in full, then learning from them. Progress is on the Tasks page.` : `⚠️ Nothing started: ${r.reason}.`);
@@ -332,6 +342,23 @@ export async function runCommand(text, history = [], { scheduled = false } = {})
   if (sc?.reply) return { reply: sc.reply, steps: [] };
   if (sc?.text) text = sc.text;
   // Orders the app understands by itself run straight away: no model, no "should I?".
+  // Only about timing, while a batch is running ("ab 30 minute baad bhejna", "gap 10 minute"): it is for that batch.
+  if (!scheduled && TIMING_ONLY(text) && !/\?\s*$|^(kya|kitne|kitni|kab|kyun)\b/i.test(text)) {
+    const t = findTask(null, activeThread);
+    const busy = t && t.kind === 'batch' && (get("SELECT COUNT(*) n FROM followups WHERE task_id = ? AND status IN ('pending','approved')", t.id).n || (campaign.running && campaign.taskId === t.id));
+    if (busy) {
+      const delay = startDelay(text);
+      const gapAsked = randomMinutes(text) || (/\b(har|every|gap|waqf|farq|interval)/i.test(text) ? parseInterval(text, 0) || null : null);
+      const args = { id: t.id, ...(gapAsked ? { interval_minutes: gapAsked } : {}), ...(delay != null ? { start_in_minutes: delay } : {}) };
+      if (args.interval_minutes || args.start_in_minutes != null) {
+        let result;
+        try { result = await TOOLS.update_task.run(args); } catch (e) { result = { error: e.message }; }
+        const steps = [{ action: 'update_task', args, result }];
+        log('info', 'command', `update_task ${JSON.stringify(args)}`);
+        return { reply: withFacts(result.error ? 'Yeh badla nahi ja saka.' : `Theek hai, task #${t.id} mein kar diya.`, steps), steps };
+      }
+    }
+  }
   const quick = quickIntent(text, { scheduled });
   if (quick && TOOLS[quick.action]) {
     let result;
