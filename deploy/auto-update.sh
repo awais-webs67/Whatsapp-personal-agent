@@ -13,9 +13,13 @@ new="$(git rev-parse FETCH_HEAD)"
 
 # npm can rewrite package-lock.json on the server; that is not a real local change, so it never blocks an update.
 git checkout -q -- package-lock.json 2>/dev/null || true
-if ! git merge -q --ff-only FETCH_HEAD; then
-  echo "$(date -Is) update: files were changed on the server, skipped. Run: git status"
-  exit 0
+if ! git merge -q --ff-only FETCH_HEAD 2>/dev/null; then
+  # Files edited on the server would block the update: keep them aside (git stash list) and update anyway.
+  git -c user.name=auto-update -c user.email=auto-update@localhost stash push -q -m "auto-update $(date -Is)" && echo "$(date -Is) update: local file changes kept aside (see: git stash list)"
+  if ! git merge -q --ff-only FETCH_HEAD; then
+    echo "$(date -Is) update: could not update. Run: cd $(pwd) && git status"
+    exit 0
+  fi
 fi
 if git diff --name-only "$old" HEAD | grep -qE '^package(-lock)?\.json$'; then
   if ! npm ci --omit=dev --no-audit --no-fund; then
