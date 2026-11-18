@@ -9,6 +9,7 @@ import { notify, who } from './updates.js';
 import { eligibility, humanSend, scheduleNextFollowup } from './pipeline.js';
 import { hasAnyTag } from './tags.js';
 import { nextReadyAt, outOfModels } from '../llm/router.js';
+import { taskEvent } from './task-log.js';
 
 /** Read before, and nothing new said since: its stored stage and summary are current. */
 export const isFresh = (c) => !!c.analyzed_at && c.analyzed_at >= (c.last_msg_at || 0);
@@ -25,6 +26,7 @@ async function waitForModels(state) {
     if (until <= now()) break;                               // a model is ready (or was reset by hand)
     if (!told) {
       told = true;
+      taskEvent(state.taskId, `Paused: every AI model is at its limit. Continues by itself in about ${Math.ceil((until - now()) / 60_000)} min, from the same chat.`, { kind: 'paused' });
       log('info', 'campaign', `Paused: every model is at its limit. Continuing by itself in about ${Math.ceil((until - now()) / 60_000)} min, from the same chat.`);
     }
     if (state.waitingUntil !== until) { state.waitingUntil = until; emit('campaign', state); emit('tasks'); }
@@ -32,6 +34,7 @@ async function waitForModels(state) {
   }
   state.waitingUntil = null;
   emit('campaign', state);
+  if (told && !state.cancel) taskEvent(state.taskId, 'A model is free again: carrying on', { kind: 'info' });
   return !state.cancel;
 }
 
@@ -84,12 +87,14 @@ export async function changeBatch(taskId, { instruction, interval, autoApprove, 
   if (instruction) { if (mine) campaign.instruction = instruction; changed.push('message instruction'); }
   if (typeof autoApprove === 'boolean') {
     if (mine) campaign.autoApprove = autoApprove;
+    taskEvent(taskId, autoApprove ? 'Messages now go out by themselves' : 'Messages now wait for your approval', { kind: 'changed' });
     run(`UPDATE followups SET status = ? WHERE task_id = ? AND status = ?`, autoApprove ? 'approved' : 'pending', taskId, autoApprove ? 'pending' : 'approved');
     changed.push(autoApprove ? 'messages go out by themselves' : 'messages wait for your approval');
   }
   const waiting = () => all("SELECT * FROM followups WHERE task_id = ? AND status IN ('pending','approved') ORDER BY due_at, id", taskId);
   if (interval) {
     const range = Array.isArray(interval) ? interval : null;
+    taskEvent(taskId, `Gap changed to ${range ? `${range[0]} to ${range.at(-1)} min (random)` : `${interval} min`}: messages not sent yet were spaced again`, { kind: 'changed' });
     if (mine) { campaign.range = range; campaign.gap = range ? 0 : interval * 60_000; }
     const gapMs = () => (range ? rand(range[0], range.at(-1)) : interval * rand(0.8, 1.2)) * 60_000;
     let due = now();
@@ -103,15 +108,16 @@ export async function changeBatch(taskId, { instruction, interval, autoApprove, 
     const rows = waiting();
     rewriting = rows.length;
     (async () => {
-      const state = { cancel: false, waitingUntil: null };
+      const state = { cancel: false, waitingUntil: null, taskId };
       for (const f of rows) {
         for (let tries = 0; ; tries++) {
           const still = get("SELECT status FROM followups WHERE id = ?", f.id);
           if (!still || !['pending', 'approved'].includes(still.status)) break;
           try {
             const d = await decide(f.chat_id, 'analyze', { instruction, audience, history: 12 });
-            if (d.skip) update('followups', f.id, { status: 'skipped', error: d.reason || 'Not right for this person after the change' }, ['status', 'error']);
-            else update('followups', f.id, { text: d.message, reason: d.reason }, ['text', 'reason']);
+            const c = get('SELECT * FROM chats WHERE id = ?', f.chat_id);
+            if (d.skip) { update('followups', f.id, { status: 'skipped', error: d.reason || 'Not right for this person after the change' }, ['status', 'error']); taskEvent(taskId, `Dropped ${who(c)} after the change: ${d.reason || ''}`, { kind: 'skipped', chatId: f.chat_id }); }
+            else { update('followups', f.id, { text: d.message, reason: d.reason }, ['text', 'reason']); taskEvent(taskId, `Rewrote the message for ${who(c)}: "${String(d.message).slice(0, 160)}"`, { kind: 'wrote', chatId: f.chat_id }); }
             break;
           } catch (e) {
             if (outOfModels(e) && tries < 20 && (await waitForModels(state))) continue;
@@ -233,6 +239,7 @@ async function sendApproved() {
           scheduleNextFollowup(chat.id);
         }
         if (f.task_id) {
+          taskEvent(f.task_id, `Sent to ${who(chat)}: "${f.text.slice(0, 160)}"`, { kind: 'sent', chatId: chat.id });
           // Progress the owner can follow without opening the dashboard: the first message, then the halfway point.
           const c = Object.fromEntries(all('SELECT status, COUNT(*) n FROM followups WHERE task_id = ? GROUP BY status', f.task_id).map((r) => [r.status, r.n]));
           const sentN = c.sent || 0;
@@ -244,6 +251,7 @@ async function sendApproved() {
         log('info', 'followup', `Follow-up sent to ${label(chat)}`);
       } catch (e) {
         update('followups', f.id, { status: 'failed', error: e.message.slice(0, 300) }, ['status', 'error']);
+        taskEvent(f.task_id, `Not sent to ${who(chat)}: ${e.message.slice(0, 200)}`, { kind: 'failed', chatId: chat.id });
         log('error', 'followup', `Follow-up to ${label(chat)} failed: ${e.message}`);
       }
       emit('followups');
@@ -334,10 +342,12 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
       const d = await decide(chat.id, 'analyze', { instruction: campaign.instruction, lean: analyzeOnly, audience, history: !analyzeOnly && isFresh(chat) ? 12 : null });
       update('chats', chat.id, { stage: d.stage, summary: d.summary, analyzed_at: now() }, ['stage', 'summary', 'analyzed_at']);
       campaign.stages[d.stage] = (campaign.stages[d.stage] || 0) + 1;
-      if (analyzeOnly) return;
-      if (d.skip) { campaign.skipped++; if (d.reason && campaign.skipReasons.length < 3) campaign.skipReasons.push(`${chat.name || chat.phone || 'someone'}: ${d.reason}`); }
+      if (analyzeOnly) { taskEvent(taskId, `Read ${who(chat)}: ${d.stage.replace('_', ' ')}. ${d.summary || ''}`.trim(), { kind: 'read', chatId: chat.id }); return; }
+      if (d.skip) {
+        taskEvent(taskId, `Skipped ${who(chat)}: ${d.reason || 'not right for this message'}`, { kind: 'skipped', chatId: chat.id }); campaign.skipped++; if (d.reason && campaign.skipReasons.length < 3) campaign.skipReasons.push(`${chat.name || chat.phone || 'someone'}: ${d.reason}`); }
       else {
         queue(chat.id, audience === 'buyers' ? 'reminder' : 'campaign', d.message, d.reason, campaign.autoApprove ? 'approved' : 'pending', nextDue, taskId);
+        taskEvent(taskId, `Wrote a message for ${who(chat)}${campaign.autoApprove ? `, goes out around ${new Date(Math.max(nextDue, now())).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: getSettings().followup.timezone })}` : ', waiting for your approval'}: "${String(d.message).slice(0, 160)}"`, { kind: 'wrote', chatId: chat.id });
         nextDue = Math.max(nextDue, now()) + nextGap();
         campaign.drafted++;
       }
@@ -351,6 +361,7 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
           // Limits reached: pause and resume from this same chat instead of failing the rest.
           if (outOfModels(e) && tries++ < 20 && (await waitForModels(campaign))) continue;
           failedOnce.push(chat);
+          taskEvent(taskId, `Could not read ${who(chat)}: ${String(e.message).slice(0, 200)} (tried again at the end)`, { kind: 'failed', chatId: chat.id });
         campaign.error = e.message;
         // Every model refusing several chats in a row: stop instead of burning through the list.
           if (/No AI model/.test(e.message) || (failedOnce.length >= 4 && failedOnce.length === campaign.done + 1)) { campaign.cancel = true; log('error', 'campaign', `Stopped: ${e.message}`); }

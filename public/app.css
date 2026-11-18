@@ -259,7 +259,14 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--o
   .nav nav { display: flex; padding: 6px; width: 100%; overflow-x: auto; scrollbar-width: none; }
   .nav a span { white-space: nowrap; }
   .nav a { flex-direction: column; gap: 3px; font-size: 10.5px; padding: 6px 10px; border-left: 0; border-top: 2px solid transparent; }
-  .nav a.on { border-top-color: var(--orange); } .nav a .count { display: none; }
+  .nav a.on, .nav .more.on { border-top-color: var(--orange); }
+  .nav a { position: relative; flex: 1 1 0; min-width: 0; }
+  .nav a .count { position: absolute; top: 2px; right: calc(50% - 22px); min-width: 16px; height: 16px; font-size: 10px; line-height: 16px; padding: 0 4px; }
+  .nav a.sec { display: none; }
+  .nav nav { justify-content: space-around; }
+  .nav .more { display: flex; flex: 1 1 0; }
+  #toasts { left: 12px; right: 12px; bottom: 76px; }
+  .toast { max-width: none; }
   .page { padding: 20px 16px 96px; } .head h1 { font-size: 32px; }
   .grid2, .grid3, .qrbox, .fu, .acct { grid-template-columns: minmax(0, 1fr); }
   .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } .tile { border-right: 1px solid var(--line) !important; border-bottom: 1px solid var(--line); }
@@ -327,3 +334,29 @@ label.f { align-content: start; }
 .cmdhints { position: absolute; left: 16px; right: 16px; bottom: 100%; margin-bottom: 6px; background: var(--white); border: 1px solid var(--line-strong); border-radius: var(--r); box-shadow: var(--pop); max-height: 280px; overflow: auto; z-index: 5; }
 .cmdhint { display: grid; grid-template-columns: 170px 1fr; gap: 10px; width: 100%; text-align: left; padding: 8px 12px; border: 0; border-bottom: 1px solid var(--line); background: none; cursor: pointer; font-size: 12.5px; color: var(--body); }
 .cmdhint:hover { background: var(--soft); } .cmdhint b { color: var(--ink); font-weight: 500; }
+
+/* Task step log */
+.tlog-box { border-top: 1px solid var(--line); padding-top: 10px; }
+ol.tlog { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; max-height: 420px; overflow-y: auto; }
+ol.tlog li { display: grid; grid-template-columns: 112px 74px minmax(0, 1fr); gap: 10px; align-items: baseline; font-size: 13px; overflow-wrap: anywhere; }
+ol.tlog time { color: var(--muted); font-size: 12px; white-space: nowrap; }
+ol.tlog .pill { justify-self: start; }
+@media (max-width: 640px) {
+  ol.tlog li { grid-template-columns: auto auto; }
+  ol.tlog li > span:last-child { grid-column: 1 / -1; }
+}
+
+/* "More" on phones: the bottom bar's extra button and its sheet */
+.nav .more { display: flex; flex-direction: column; align-items: center; gap: 3px; background: none; border: 0; border-top: 2px solid transparent; color: inherit; font: inherit; font-size: 10.5px; padding: 6px 10px; cursor: pointer; opacity: .78; }
+.nav .more.on { opacity: 1; }
+@media (min-width: 761px) { .nav .more { display: none; } }
+.nav .more svg, .sheet-links svg { flex: none; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: square; }
+.nav .more svg { width: 16px; height: 16px; }
+.sheet-veil { position: fixed; inset: 0; background: rgba(10, 14, 20, .45); z-index: 70; display: flex; align-items: flex-end; animation: rise .2s var(--ease); }
+.sheet { width: 100%; max-height: 85vh; overflow-y: auto; background: var(--ink); color: #C9CED2; border-radius: 12px 12px 0 0; padding: 14px 14px calc(14px + env(safe-area-inset-bottom)); display: grid; gap: 12px; }
+.sheet-links { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.sheet-links a { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 12px 6px; border-radius: 8px; color: inherit; text-decoration: none; font-size: 12.5px; background: rgba(255, 255, 255, .05); text-align: center; }
+.sheet-links a.on { background: rgba(255, 90, 54, .18); color: #fff; }
+.sheet-links svg { width: 20px; height: 20px; }
+.sheet .foot { display: grid; gap: 12px; padding: 12px 4px 4px; border-top: 1px solid rgba(255, 255, 255, .1); }
+.sheet .btn { justify-self: stretch; }

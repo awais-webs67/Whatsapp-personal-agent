@@ -20,6 +20,7 @@ import { normTags, tagString, tagsOf } from './agent/tags.js';
 import { importKnowledgeFiles, saveUpload, listFiles, removeFile } from './agent/knowledge-files.js';
 import { handleCommand, startCommander, listThreads, newThread } from './agent/commander.js';
 import { listTasks, createTask, controlTask, startTasks } from './agent/tasks.js';
+import { taskEvents } from './agent/task-log.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // On slow or IPv6-broken connections Node's fetch gives up after 250 ms per address and reports
@@ -418,6 +419,7 @@ app.post('/api/learn/profile', wrap(async () => learnFromProfile(await wa.profil
 // ---------- tasks ----------
 app.get('/api/tasks', wrap(() => listTasks()));
 app.post('/api/tasks', wrap((req) => ({ id: createTask({ kind: 'scheduled', title: req.body.title, instruction: req.body.instruction, schedule: req.body.schedule }) })));
+app.get('/api/tasks/:id/events', wrap((req) => taskEvents(Number(req.params.id), Number(req.query.limit) || 300)));
 app.patch('/api/tasks/:id', wrap((req) => controlTask(Number(req.params.id), String(req.body.action || ''))));
 
 // ---------- owner commands ----------

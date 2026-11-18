@@ -125,6 +125,16 @@ CREATE TABLE IF NOT EXISTS tasks (
   created_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS task_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER NOT NULL,
+  ts INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  text TEXT NOT NULL,
+  chat_id INTEGER
+);
+CREATE INDEX IF NOT EXISTS task_events_task ON task_events(task_id, id);
+
 CREATE TABLE IF NOT EXISTS command_threads (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   title TEXT NOT NULL,

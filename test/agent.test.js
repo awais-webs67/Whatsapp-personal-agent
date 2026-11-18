@@ -1102,5 +1102,15 @@ test('a running task is changed by command, not replaced by a new one', async ()
   assert.ok(changed.rewriting >= 2);
   await until(() => queued().every((f) => /10% discount/.test(f.text)), 8000);
   assert.match(tasks.listTasks().find((t) => t.id === id).instruction || get('SELECT instruction FROM tasks WHERE id = ?', id).instruction, /10% discount/);
+  // Every step is in the task's log with its time.
+  const { taskEvents } = await import('../src/agent/task-log.js');
+  const log = taskEvents(id);
+  const kinds = new Set(log.map((e) => e.kind));
+  for (const k of ['info', 'wrote', 'changed']) assert.ok(kinds.has(k), `log has ${k}: ${[...kinds]}`);
+  assert.ok(log.every((e) => e.ts > 0 && e.text));
+  assert.ok(log.some((e) => /Gap changed to 10 min/.test(e.text)));
+  assert.ok(log.some((e) => /^Wrote a message for .+goes out around \d\d:\d\d/.test(e.text) && e.chat_id));
+  assert.ok(log.some((e) => /^Rewrote the message for/.test(e.text)));
   tasks.controlTask(id, 'remove');
+  assert.match(taskEvents(id)[0].text, /Removed by you/);
 });

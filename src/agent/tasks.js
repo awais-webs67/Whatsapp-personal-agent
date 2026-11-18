@@ -4,6 +4,7 @@
 import { all, get, run, now, parse, update } from '../db.js';
 import { getSettings, emit, log } from '../core.js';
 import { notify, announce, maybeDigest } from './updates.js';
+import { taskEvent } from './task-log.js';
 
 const MIN = 60_000;
 export const STATUSES = ['active', 'paused', 'done', 'failed', 'removed'];
@@ -60,6 +61,7 @@ export function createTask({ title, instruction, kind = 'scheduled', schedule = 
   const { lastInsertRowid } = run('INSERT INTO tasks (title, instruction, kind, schedule, status, next_run_at, runs, ignore_quiet, thread_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
     String(title || text).slice(0, 120), text.slice(0, 1000), kind, JSON.stringify(sched), 'active', kind !== 'scheduled' ? null : nextRun(sched), 0, ignoreQuiet ? 1 : 0, threadId, now());
   const id = Number(lastInsertRowid);
+  taskEvent(id, `Task created${sched ? ` (${describeSchedule(sched)})` : ''}: ${text.slice(0, 300)}`, { kind: 'info' });
   log('info', 'tasks', `Task #${id} created: ${String(title || text).slice(0, 80)}${sched ? ` (${describeSchedule(sched)})` : ''}`);
   emit('tasks');
   return id;
@@ -85,6 +87,9 @@ export function editTask(t, { instruction, schedule, ignoreQuiet, title } = {}) 
   }
   if (Object.keys(patch).length) update('tasks', t.id, patch, Object.keys(patch));
   log('info', 'tasks', `Task #${t.id} changed: ${Object.keys(patch).join(', ') || 'nothing'}`);
+  if (patch.instruction) taskEvent(t.id, `New instruction: ${patch.instruction.slice(0, 300)}`, { kind: 'changed' });
+  if (patch.schedule) taskEvent(t.id, `New schedule: ${describeSchedule(JSON.parse(patch.schedule))}`, { kind: 'changed' });
+  if ('ignore_quiet' in patch) taskEvent(t.id, patch.ignore_quiet ? 'Now sends at night too' : 'Now keeps quiet at night', { kind: 'changed' });
   emit('tasks');
   return get('SELECT * FROM tasks WHERE id = ?', t.id);
 }
@@ -140,6 +145,7 @@ export function controlTask(id, action) {
     if (changes) emit('followups');
   } else throw new Error('Unknown action');
   log('info', 'tasks', `Task #${t.id} ${{ pause: 'paused', resume: 'resumed', run: 'started now', remove: 'removed' }[action]}`);
+  taskEvent(t.id, { pause: 'Paused by you', resume: 'Resumed by you', run: 'Started now by you', remove: 'Removed by you' }[action], { kind: action === 'remove' ? 'skipped' : 'changed' });
   emit('tasks');
   return taskView(get('SELECT * FROM tasks WHERE id = ?', t.id));
 }
@@ -157,6 +163,7 @@ async function tick() {
         const sent = get("SELECT COUNT(*) n FROM followups WHERE task_id = ? AND status = 'sent'", t.id).n;
         const result = t.kind === 'analysis' ? t.last_result || 'Finished' : `${t.last_result ? `${t.last_result} ` : ''}${sent} message${sent === 1 ? '' : 's'} sent.`;
         update('tasks', t.id, { status: 'done', last_result: result.slice(0, 1000), last_run_at: now() }, ['status', 'last_result', 'last_run_at']);
+        taskEvent(t.id, `Finished: ${result.slice(0, 400)}`, { kind: 'done' });
         emit('tasks');
         notify(`Task #${t.id} finished (${t.title}). ${result}`, { threadId: t.thread_id });
         continue;
@@ -189,6 +196,7 @@ async function tick() {
       next_run_at: fresh.status === 'paused' ? nextRun(sched, now(), { ranBefore: true }) : next,
       status: fresh.status === 'paused' ? 'paused' : next ? 'active' : failed ? 'failed' : 'done',
     }, ['runs', 'last_result', 'next_run_at', 'status']);
+    taskEvent(due.id, `${failed ? 'Run failed' : 'Ran'}: ${String(result || '').slice(0, 400)}`, { kind: failed ? 'failed' : 'done' });
     emit('tasks');
     announce(`Task #${due.id} (${due.title}) ran: ${String(result || '').slice(0, 600)}`);
     try { maybeDigest(); } catch (e) { log('error', 'updates', e.message); }

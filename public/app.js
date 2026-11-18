@@ -8,6 +8,7 @@ import { tasks } from './pages-tasks.js';
 import { clients, viewingBanner } from './pages-hub.js';
 
 const root = document.getElementById('root');
+const PRIMARY = ['overview', 'inbox', 'command', 'tasks']; // in the phone's bottom bar
 
 const ROUTES = [
   ['overview', 'Overview', 'M2 2h5v6H2zM9 2h5v3H9zM9 7h5v7H9zM2 10h5v4H2z', overview],
@@ -37,15 +38,30 @@ function shell(me) {
   const reader = toggle(true, async (on) => {
     await act(null, () => PUT('/api/settings', { reading: { auto: on } }), on ? 'The agent keeps reading chats that change' : 'Reading new chats is off');
   }, 'Read new chats');
+  const foot = h('div.foot', {},
+    h('div.pilot', {}, h('span', {}, 'Autopilot', h('small', {}, 'Agent replies on its own')), pilot),
+    h('div.pilot', {}, h('span', {}, 'Read chats', h('small', {}, 'Keeps notes on chats that change')), reader),
+    who,
+    h('button.linkbtn', { onclick: () => POST('/api/auth/logout').then(() => location.reload()) }, 'Sign out'));
+  // Phones: four main pages in the bottom bar; everything else (and the switches) under "More".
+  const more = h('button.more', { type: 'button', 'aria-label': 'More pages and switches', onclick: () => openMore() }, svg('M3 4h10M3 8h10M3 12h10'), h('span', {}, 'More'));
+  const aside = h('aside.nav', {},
+    h('div.brand', {}, h('img', { src: '/favicon.svg', alt: '' }), h('div', {}, h('b', {}, 'AivraSol'), h('small', {}, 'Agent desk'))),
+    h('nav', { 'aria-label': 'Main' }, ROUTES.map(([id, label, icon]) => (navLinks[id] = h(`a${PRIMARY.includes(id) ? '' : '.sec'}`, { href: `#/${id}` }, svg(icon), h('span', {}, label)))), more),
+    foot);
+  function openMore() {
+    const close = () => { veil.remove(); aside.append(foot); removeEventListener('hashchange', close); };
+    const veil = h('div.sheet-veil', { onmousedown: (e) => e.target === veil && close() },
+      h('div.sheet', { role: 'dialog', 'aria-label': 'More' },
+        h('div.sheet-links', {}, ROUTES.filter(([id]) => !PRIMARY.includes(id)).map(([id, label, icon]) =>
+          h(`a${location.hash.startsWith(`#/${id}`) ? '.on' : ''}`, { href: `#/${id}` }, svg(icon), h('span', {}, label)))),
+        foot,
+        h('button.btn', { type: 'button', onclick: () => close() }, 'Close')));
+    addEventListener('hashchange', close);
+    document.body.append(veil);
+  }
   const el = h('div.shell', {},
-    h('aside.nav', {},
-      h('div.brand', {}, h('img', { src: '/favicon.svg', alt: '' }), h('div', {}, h('b', {}, 'AivraSol'), h('small', {}, 'Agent desk'))),
-      h('nav', { 'aria-label': 'Main' }, ROUTES.map(([id, label, icon]) => (navLinks[id] = h('a', { href: `#/${id}` }, svg(icon), h('span', {}, label))))),
-      h('div.foot', {},
-        h('div.pilot', {}, h('span', {}, 'Autopilot', h('small', {}, 'Agent replies on its own')), pilot),
-        h('div.pilot', {}, h('span', {}, 'Read chats', h('small', {}, 'Keeps notes on chats that change')), reader),
-        who,
-        h('button.linkbtn', { onclick: () => POST('/api/auth/logout').then(() => location.reload()) }, 'Sign out'))),
+    aside,
     banner ? h('div', { style: 'display:flex;flex-direction:column;min-width:0' }, banner, outlet) : outlet);
 
   const badge = (id, n) => {
@@ -70,6 +86,7 @@ function shell(me) {
     const r = ROUTES.find((x) => x[0] === id) || ROUTES[0];
     subs.clear();
     for (const [key, a] of Object.entries(navLinks)) { a.classList.toggle('on', key === r[0]); a.toggleAttribute('aria-current', key === r[0]); }
+    more.classList.toggle('on', !PRIMARY.includes(r[0]));
     set(outlet, r[3](arg));
     document.title = `${r[1]} · AivraSol Agent Desk`;
   }

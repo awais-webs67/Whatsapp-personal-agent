@@ -42,7 +42,22 @@ export function tasks() {
     return { pct: left <= 0 ? 100 : Math.max(0, Math.min(100, (1 - left / period) * 100)), label: left <= 30_000 ? 'Running now…' : `Next run ${rel(t.next_run_at)} (${new Date(t.next_run_at).toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' })})` };
   }
 
+  // Step-by-step log of a task: what it did and when, newest first.
+  const openIds = new Set();
+  const KIND = { read: ['Read', ''], wrote: ['Wrote', 'hot'], sent: ['Sent', 'ok'], skipped: ['Skipped', ''], failed: ['Failed', 'bad'], paused: ['Paused', 'warn'], changed: ['Changed', 'warn'], done: ['Done', 'ok'], info: ['Info', ''] };
+  const when = (ts) => new Date(ts).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  async function loadSteps(id, box) {
+    const rows = await GET(`/api/tasks/${id}/events`).catch(() => []);
+    set(box, rows.length ? h('ol.tlog', {}, rows.map((r) => {
+      const [label, tone] = KIND[r.kind] || [r.kind, ''];
+      return h('li', {}, h('time', { title: new Date(r.ts).toLocaleString() }, when(r.ts)), h(`span.pill${tone ? `.${tone}` : ''}`, {}, label),
+        h('span', { dir: 'auto' }, r.text, r.chat_id ? h('a', { href: `#/inbox/${r.chat_id}`, style: 'margin-left:6px' }, 'open chat') : null));
+    })) : h('div.muted', {}, 'No steps recorded yet.'));
+  }
+
   function card(t) {
+    const steps_ = h('div.tlog-box');
+    if (openIds.has(t.id)) loadSteps(t.id, steps_);
     const [label, tone] = STATUS[t.status] || [t.status, ''];
     const ctl = (action, text, cls = '') => h(`button.btn.sm${cls}`, { onclick: (e) => (action !== 'remove' || confirm(`Remove task #${t.id} "${t.title}"?${t.kind === 'batch' ? ' Messages it has not sent yet are cancelled.' : ''}`)) && act(e.target, () => PATCH(`/api/tasks/${t.id}`, { action })) }, text);
     const pr = progressOf(t);
@@ -63,11 +78,13 @@ export function tasks() {
       t.waiting ? h('div.note.warn', { style: 'margin:0 18px 14px' }, h('b', {}, 'Not sending right now. '), t.waiting) : null,
       p && (p.drafts || p.skipped || p.failed) ? h('div.muted', { style: 'font-size:12.5px;padding:0 18px 12px' }, [p.drafts ? `${num(p.drafts)} waiting for approval` : null, p.skipped ? `${num(p.skipped)} skipped` : null, p.failed ? `${num(p.failed)} failed` : null].filter(Boolean).join(' · '),
         p.drafts ? h('a', { href: '#/followups', style: 'margin-left:8px' }, 'Review drafts') : null) : null,
-      h('details.task-more', {}, h('summary', {}, 'Details'),
+      h('details.task-more', { open: openIds.has(t.id), ontoggle: (e) => { if (e.target.open) { openIds.add(t.id); loadSteps(t.id, steps_); } else openIds.delete(t.id); } }, h('summary', {}, 'Details and step-by-step log'),
         h('div.stack', { style: 'gap:8px;padding-top:8px' },
           h('div', { dir: 'auto' }, h('span.muted', {}, 'Task: '), t.instruction),
           t.kind === 'scheduled' ? h('div', {}, h('span.muted', {}, 'Runs so far: '), `${num(t.runs)}${t.last_run_at ? `, last ${rel(t.last_run_at)} ago` : ''}`) : null,
-          t.last_result ? h('div', { dir: 'auto', style: 'white-space:pre-wrap' }, h('span.muted', {}, 'Last result: '), t.last_result) : null)));
+          t.last_result ? h('div', { dir: 'auto', style: 'white-space:pre-wrap' }, h('span.muted', {}, 'Last result: '), t.last_result) : null,
+          h('div', {}, h('span.muted', {}, 'Created: '), when(t.created_at)),
+          steps_)));
   }
 
   function draw(list) {
