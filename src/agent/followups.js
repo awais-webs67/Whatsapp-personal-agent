@@ -74,6 +74,58 @@ function queue(chatId, kind, text, reason, status, dueAt = now(), taskId = null)
   emit('followups');
 }
 
+/**
+ * Change a batch that is already running: what the messages say, the gap between them, whether they go out by
+ * themselves. Messages already written but not sent yet are spaced again and, for a new instruction, rewritten.
+ */
+export async function changeBatch(taskId, { instruction, interval, autoApprove, audience = 'all' } = {}) {
+  const mine = campaign.taskId === taskId && campaign.running;
+  const changed = [];
+  if (instruction) { if (mine) campaign.instruction = instruction; changed.push('message instruction'); }
+  if (typeof autoApprove === 'boolean') {
+    if (mine) campaign.autoApprove = autoApprove;
+    run(`UPDATE followups SET status = ? WHERE task_id = ? AND status = ?`, autoApprove ? 'approved' : 'pending', taskId, autoApprove ? 'pending' : 'approved');
+    changed.push(autoApprove ? 'messages go out by themselves' : 'messages wait for your approval');
+  }
+  const waiting = () => all("SELECT * FROM followups WHERE task_id = ? AND status IN ('pending','approved') ORDER BY due_at, id", taskId);
+  if (interval) {
+    const range = Array.isArray(interval) ? interval : null;
+    if (mine) { campaign.range = range; campaign.gap = range ? 0 : interval * 60_000; }
+    const gapMs = () => (range ? rand(range[0], range.at(-1)) : interval * rand(0.8, 1.2)) * 60_000;
+    let due = now();
+    for (const f of waiting()) { update('followups', f.id, { due_at: Math.round(due) }, ['due_at']); due += gapMs(); }
+    changed.push(range ? `gap ${range[0]} to ${range.at(-1)} min (random)` : `gap ${interval} min`);
+  }
+  emit('followups');
+  // Rewrite what is written but not sent, one by one, in the background (pauses at model limits like a batch).
+  let rewriting = 0;
+  if (instruction) {
+    const rows = waiting();
+    rewriting = rows.length;
+    (async () => {
+      const state = { cancel: false, waitingUntil: null };
+      for (const f of rows) {
+        for (let tries = 0; ; tries++) {
+          const still = get("SELECT status FROM followups WHERE id = ?", f.id);
+          if (!still || !['pending', 'approved'].includes(still.status)) break;
+          try {
+            const d = await decide(f.chat_id, 'analyze', { instruction, audience, history: 12 });
+            if (d.skip) update('followups', f.id, { status: 'skipped', error: d.reason || 'Not right for this person after the change' }, ['status', 'error']);
+            else update('followups', f.id, { text: d.message, reason: d.reason }, ['text', 'reason']);
+            break;
+          } catch (e) {
+            if (outOfModels(e) && tries < 20 && (await waitForModels(state))) continue;
+            break; // keeps the old text
+          }
+        }
+        emit('followups');
+      }
+      log('info', 'tasks', `Task #${taskId}: ${rows.length} waiting message${rows.length === 1 ? '' : 's'} rewritten for the new instruction`);
+    })();
+  }
+  return { changed, rewriting, waiting: waiting().length };
+}
+
 /** 1) Turn due chats into drafts. */
 /**
  * Find leads who went quiet after we (the agent or the owner) answered, and give each one its next follow-up time.
@@ -270,22 +322,22 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
   const range = Array.isArray(intervalMinutes) ? intervalMinutes.map(Number).filter((n) => n > 0).sort((a, b) => a - b) : null;
   const gap = range?.length ? 0 : Math.max(0, Number(intervalMinutes) || 0) * 60_000;
   // "randomly 6 to 25 minutes apart": each gap is picked at random in that range.
-  const nextGap = () => (range?.length ? rand(range[0], range.at(-1)) * 60_000 : gap * rand(0.8, 1.2));
+  const nextGap = () => (campaign.range?.length ? rand(campaign.range[0], campaign.range.at(-1)) * 60_000 : campaign.gap * rand(0.8, 1.2));
   let nextDue = now();
-  Object.assign(campaign, { taskId, analyzeOnly, waitingUntil: null, stages: {}, running: true, total: chats.length, done: 0, drafted: 0, skipped: 0, skipReasons: [], failed: 0, cancel: false, startedAt: now(), error: null });
+  Object.assign(campaign, { taskId, analyzeOnly, waitingUntil: null, instruction, autoApprove, range, gap, stages: {}, running: true, total: chats.length, done: 0, drafted: 0, skipped: 0, skipReasons: [], failed: 0, cancel: false, startedAt: now(), error: null });
   emit('campaign', campaign);
   log('info', 'campaign', `Reviewing ${chats.length} past conversations`);
   (async () => {
     // Read one chat; true when it worked.
     const handle = async (chat) => {
       // Already read and unchanged: its summary is in the prompt, so the latest messages are enough to write from.
-      const d = await decide(chat.id, 'analyze', { instruction, lean: analyzeOnly, audience, history: !analyzeOnly && isFresh(chat) ? 12 : null });
+      const d = await decide(chat.id, 'analyze', { instruction: campaign.instruction, lean: analyzeOnly, audience, history: !analyzeOnly && isFresh(chat) ? 12 : null });
       update('chats', chat.id, { stage: d.stage, summary: d.summary, analyzed_at: now() }, ['stage', 'summary', 'analyzed_at']);
       campaign.stages[d.stage] = (campaign.stages[d.stage] || 0) + 1;
       if (analyzeOnly) return;
       if (d.skip) { campaign.skipped++; if (d.reason && campaign.skipReasons.length < 3) campaign.skipReasons.push(`${chat.name || chat.phone || 'someone'}: ${d.reason}`); }
       else {
-        queue(chat.id, audience === 'buyers' ? 'reminder' : 'campaign', d.message, d.reason, autoApprove ? 'approved' : 'pending', nextDue, taskId);
+        queue(chat.id, audience === 'buyers' ? 'reminder' : 'campaign', d.message, d.reason, campaign.autoApprove ? 'approved' : 'pending', nextDue, taskId);
         nextDue = Math.max(nextDue, now()) + nextGap();
         campaign.drafted++;
       }

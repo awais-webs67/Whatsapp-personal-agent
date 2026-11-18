@@ -1064,3 +1064,43 @@ test('when every model hits its limit a batch pauses and carries on from the sam
     for (const p of on) run('UPDATE providers SET enabled = 1 WHERE id = ?', p);
   }
 });
+
+test('a running task is changed by command, not replaced by a new one', async () => {
+  const { quickIntent } = await import('../src/agent/intent.js');
+  const { runCommand } = await import('../src/agent/commander.js');
+  const tasks = await import('../src/agent/tasks.js');
+  assert.deepEqual(quickIntent('is task mein gap 10 minute kar do'), { action: 'update_task', args: { interval_minutes: 10 } });
+  assert.deepEqual(quickIntent('task 7 ko raat ko bhi bhejne do').args, { id: 7, ignore_quiet_hours: true });
+  assert.deepEqual(quickIntent('isko 6 se 25 minute random kar do').args, { interval_minutes: [6, 25] });
+  assert.equal(quickIntent('is task ke message mein discount ka zikr bhi karo'), null, 'wording changes go to the model with update_task');
+  assert.equal(quickIntent('is task mein kitne messages gaye?'), null, 'a question is not a change');
+
+  await until(() => !followups.campaign.running);
+  run("UPDATE followups SET status = 'skipped' WHERE status IN ('pending','approved')");
+  reply = JSON.stringify({ stage: 'interested', summary: 'Asked about the website package', should_followup: true, message: 'Salam! Website package ka kya socha?', reason: 'interested' });
+  const started = await runCommand('pichle 3650 din ke sab logon ko har 5 minute baad follow up bhejo');
+  assert.equal(started.steps[0].action, 'start_followups');
+  const id = started.steps[0].result.task_id;
+  await until(() => !followups.campaign.running, 8000);
+  const queued = () => all("SELECT * FROM followups WHERE task_id = ? AND status IN ('pending','approved') ORDER BY due_at", id);
+  assert.ok(queued().length >= 2, `queued ${queued().length}`);
+  const taskCount = tasks.listTasks().length;
+
+  const r = await runCommand('is task mein gap 10 minute kar do');
+  assert.equal(r.steps[0].action, 'update_task');
+  assert.match(r.reply, new RegExp(`Task #${id} changed: gap 10 min[\\s\\S]*No new task was made`));
+  assert.equal(tasks.listTasks().length, taskCount, 'no new task');
+  const q = queued();
+  const gaps = q.slice(1).map((f, i) => (f.due_at - q[i].due_at) / 60_000);
+  assert.ok(gaps.every((g) => g >= 7.9 && g <= 12.1), `gaps ${gaps}`);
+
+  // A new wording: the messages not sent yet are rewritten, still in the same task.
+  reply = JSON.stringify({ stage: 'interested', summary: 'Asked about the website package', should_followup: true, message: 'Salam! Is hafte 10% discount hai website package par.', reason: 'offer' });
+  const { TOOLS_FOR_TEST } = await import('../src/agent/commander.js');
+  const changed = await TOOLS_FOR_TEST.update_task.run({ instruction: 'Sab ko batao ke is hafte 10% discount hai' });
+  assert.equal(changed.task_id, id);
+  assert.ok(changed.rewriting >= 2);
+  await until(() => queued().every((f) => /10% discount/.test(f.text)), 8000);
+  assert.match(tasks.listTasks().find((t) => t.id === id).instruction || get('SELECT instruction FROM tasks WHERE id = ?', id).instruction, /10% discount/);
+  tasks.controlTask(id, 'remove');
+});

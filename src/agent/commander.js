@@ -7,8 +7,8 @@ import { complete } from '../llm/router.js';
 import { toolCallToJson } from '../llm/client.js';
 import * as wa from '../wa/manager.js';
 import { STAGES, extractJson } from './brain.js';
-import { runCampaign, campaign, whyNotSending } from './followups.js';
-import { createTask, listTasks, taskView, controlTask, setTaskRunner, setCampaign, nextRun } from './tasks.js';
+import { runCampaign, campaign, whyNotSending, changeBatch } from './followups.js';
+import { createTask, listTasks, taskView, controlTask, setTaskRunner, setCampaign, nextRun, findTask, editTask } from './tasks.js';
 import { quickIntent, ASKS_PERMISSION } from './intent.js';
 import { shortcut } from './shortcuts.js';
 import { normTags, hasAnyTag } from './tags.js';
@@ -145,6 +145,30 @@ const TOOLS = {
         : { started: false, reason: 'no customer chats are stored for that period yet. Link a WhatsApp number and let its history sync' };
     },
   },
+  update_task: {
+    doc: 'update_task {"id": 7, "instruction": "the new full instruction for the messages", "interval_minutes": 10 or [6, 25], "send": true, "ignore_quiet_hours": true, "every_minutes": 30, "daily_at": "10:00", "at": "18:30", "pause": false, "resume": false} - CHANGE a task that already exists instead of starting a new one. Use it whenever the owner talks about the running or last task ("is task mein", "isko", "ab se", "message mein yeh bhi likho", "gap 10 minute kar do", "raat ko bhi bhejo"). Leave out "id" to change the latest task of this conversation. Send only what changes; "instruction" replaces the old one, so include what should stay. Messages written but not sent yet are rewritten for a new instruction and spaced again for a new interval.',
+    run: async (a) => {
+      const t = findTask(a.id, activeThread);
+      if (!t) return { error: 'No running task to change. Start one first.' };
+      const out = { task_id: t.id, title: t.title, changed: [] };
+      const sched = a.every_minutes ? { type: 'every', minutes: Number(a.every_minutes) } : a.daily_at ? { type: 'daily', time: String(a.daily_at) } : a.at ? { type: 'once', at: String(a.at) } : null;
+      const instruction = a.instruction ? String(a.instruction).slice(0, 600) : '';
+      editTask(t, { instruction: instruction || undefined, schedule: sched, ignoreQuiet: typeof a.ignore_quiet_hours === 'boolean' ? a.ignore_quiet_hours : undefined });
+      if (instruction && t.kind === 'scheduled') out.changed.push('what it does each time');
+      if (sched) out.changed.push(`schedule`);
+      if (typeof a.ignore_quiet_hours === 'boolean') out.changed.push(a.ignore_quiet_hours ? 'sends at night too' : 'keeps quiet at night');
+      if (t.kind !== 'scheduled') {
+        const range = nums(a.interval_minutes).filter((n) => n > 0);
+        const interval = range.length >= 2 ? [Math.min(...range), Math.max(...range)] : range[0] || null;
+        const r = await changeBatch(t.id, { instruction: instruction || undefined, interval, autoApprove: typeof a.send === 'boolean' ? a.send : undefined });
+        out.changed.push(...r.changed);
+        Object.assign(out, { waiting_messages: r.waiting, rewriting: r.rewriting });
+      }
+      if (a.pause && t.status === 'active') { controlTask(t.id, 'pause'); out.changed.push('paused'); }
+      if (a.resume && t.status === 'paused') { controlTask(t.id, 'resume'); out.changed.push('resumed'); }
+      return out;
+    },
+  },
   change_settings: {
     doc: 'change_settings {"autopilot": true, "followups": true, "reading": true, "ask_before_sending": false, "followup_gap_minutes": [6, 25], "followup_after_hours": [24, 72, 168], "quiet_hours": [21, 9], "daily_cap": 40, "reply_delay_seconds": [2, 4]} - switch things on/off and change timings; send only the keys the owner mentioned. autopilot = the agent answers customers by itself; followups = automatic follow-ups for quiet leads; reading = keep reading chats that changed; followup_gap_minutes = random gap between two follow-up messages; followup_after_hours = when to nudge a quiet lead; quiet_hours = [start, end] hours with no proactive messages; reply_delay_seconds = how long it waits before answering.',
     run: (a) => applySettings(a),
@@ -238,6 +262,12 @@ export function applySettings(a = {}) {
   return { changed: done };
 }
 
+/** A line for the prompt: tasks that can still be changed, newest first. */
+function runningTasks() {
+  const rows = all("SELECT id, title, status, kind FROM tasks WHERE status IN ('active','paused') ORDER BY id DESC LIMIT 5");
+  return rows.length ? `\n- Tasks that exist now: ${rows.map((r) => `#${r.id} ${clip(r.title, 70)} (${r.kind}, ${r.status})`).join('; ')}.` : '';
+}
+
 function systemPrompt(scheduled = false) {
   const s = getSettings();
   return `You are the operations assistant of ${s.business.name || 'a business'}'s WhatsApp agent. The business OWNER is talking to you (not a customer). Carry out what they ask using the actions below, then report back briefly in the owner's language.
@@ -258,6 +288,7 @@ You get the result back and can then take another action or reply. At most ${MAX
 - Never promise the owner something an action result did not confirm. Report what the tool result says, including limits.
 - Batches skip people who bought or opted out unless the owner asks for a stage by name; people who asked not to be contacted are never messaged.
 - "Every N minutes" means interval_minutes N. Only use the actions listed above.
+- If the owner is talking about a task that already exists (this one, the running one, "is task mein", "isko", "ab se"), change it with update_task. Never start a new task for a change.${runningTasks()}
 - Talk to the owner in plain words. Never mention action names, arguments or JSON in your reply; say what you did or what you need instead ("I could not open the site: …", not "use the remember tool").`;
 }
 
@@ -281,6 +312,7 @@ function facts(steps) {
       }
     }
     if (s.action === 'analyse_chats' && !r.started && r.reason) out.push(`ℹ️ ${r.reason[0].toUpperCase()}${r.reason.slice(1)}.`);
+    if (s.action === 'update_task' && !r.error) out.push(r.changed?.length ? `✏️ Task #${r.task_id} changed: ${r.changed.join('; ')}.${r.rewriting ? ` Rewriting the ${r.rewriting} message${r.rewriting === 1 ? '' : 's'} not sent yet.` : ''} No new task was made.` : `⚠️ Task #${r.task_id}: nothing to change.`);
     if (s.action === 'change_settings') out.push(r.changed?.length ? `⚙️ Changed: ${r.changed.join('; ')}.` : '⚠️ Nothing was changed.');
     if (s.action === 'remind' && r.reminder_for) out.push(`⏰ Reminder for ${r.reminder_for} at ${new Date(r.at).toLocaleString('en-GB', { timeZone: getSettings().followup.timezone, dateStyle: 'medium', timeStyle: 'short' })}. You get a message when it is sent.`);
     if (s.action === 'analyse_chats') out.push(r.started ? `📋 Task #${r.task_id} started: reading ${r.chats_being_read} chat${r.chats_being_read === 1 ? '' : 's'} in full, then learning from them. Progress is on the Tasks page.` : `⚠️ Nothing started: ${r.reason}.`);
@@ -438,3 +470,6 @@ export function startCommander() {
   setTaskRunner((t) => handleCommand(t.instruction, { scheduled: true, label: `⏰ Task #${t.id}: ${t.title}` }));
   wa.setHandlers({ onCommand: (chatId, text) => { if (getSettings().commandsViaWhatsApp) handleCommand(text, { chatId }); } });
 }
+
+// For tests: run one action directly.
+export const TOOLS_FOR_TEST = TOOLS;

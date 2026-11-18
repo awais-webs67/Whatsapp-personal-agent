@@ -79,6 +79,7 @@ function namesOnePerson(t) {
  * Returns { action, args } for an order the app can carry out by itself, or null.
  * `scheduled` = this text is a scheduled task running now (so do not schedule it again).
  */
+const TASK_REF = /\b(is|iss|isi|ye|yeh|us|usi|wahi|current|running|same)\s+(task|kaam|batch)\b|\b(task|kaam|batch)\s*#?\s*\d+|#\d+\b|chal(ta|te|ti|ne)\s*(hue|hua|wale|wala|wali)?\s*(task|kaam|batch)|\b(isko|isse|isme|is\s*mein|is\s*me)\b/i;
 const OFF = /\b(band|off|bnd|disable)\b/i;
 const HALT = /\b(rok|ruk|stop)\b/i; // "follow ups rok do" stops the running batch (stop_followups), it does not switch them off
 const ON = /\b(on|chalu|start|shuru|enable|chala|khol)\b/i;
@@ -104,6 +105,21 @@ export function randomMinutes(t) {
 export function quickIntent(text, { scheduled = false } = {}) {
   const t = String(text || '').trim();
   if (!t || t.length > 600) return null;
+  // "is task mein gap 10 minute kar do", "chalte task ko raat ko bhi bhejne do": change, never a new task.
+  // ("is task ..." starts like an English question, so questions are told apart by ? and question words only.)
+  if (TASK_REF.test(t) && !/\?\s*$|^(kya|kitne|kitni|kis|kab|kaun|kyun|kahan|how|what|which|why)\b|\bkitne\b|\bkitni\b/i.test(t)) {
+    const args = {};
+    const id = /(?:task|kaam)\s*#?\s*(\d+)|#(\d+)/i.exec(t);
+    if (id) args.id = Number(id[1] || id[2]);
+    const gap = randomMinutes(t) || (/(\d+)\s*(?:minute|minutes|mins?|mint|mnt)/i.test(t) ? parseInterval(t, Number(/(\d+)\s*(?:minute|minutes|mins?|mint|mnt)/i.exec(t)[1])) : null);
+    if (gap) args.interval_minutes = gap;
+    if (/raat\s*ko\s*bhi|night\s*too/i.test(t)) args.ignore_quiet_hours = true;
+    if (/\b(pause|rok\s*do|ruk\s*jao)\b/i.test(t)) args.pause = true;
+    if (/\b(resume|dobara\s*shuru|phir\s*se\s*chala|continue)\b/i.test(t)) args.resume = true;
+    // Only what can be read for sure goes straight through; anything about the wording goes to the model.
+    const wording = /likh|bol|mention|zikr|message\s*mein|msg\s*mein|text|offer|discount|link|naam|tone|andaz/i.test(t);
+    return !wording && Object.keys(args).some((k) => k !== 'id') ? { action: 'update_task', args } : null;
+  }
   const sw = switchIntent(t);
   if (sw) return { action: 'change_settings', args: sw };
   const gap = randomMinutes(t);

@@ -65,6 +65,30 @@ export function createTask({ title, instruction, kind = 'scheduled', schedule = 
   return id;
 }
 
+/** The task a request like "is task mein..." means: the one given, else the latest one from this conversation, else the latest running one. */
+export function findTask(id, threadId = null) {
+  if (id) return get("SELECT * FROM tasks WHERE id = ? AND status != 'removed'", Number(id));
+  return (threadId && get("SELECT * FROM tasks WHERE thread_id = ? AND status IN ('active','paused') ORDER BY id DESC LIMIT 1", threadId))
+    || get("SELECT * FROM tasks WHERE status IN ('active','paused') ORDER BY id DESC LIMIT 1");
+}
+
+/** Change the text, schedule or night setting of a task without making a new one. */
+export function editTask(t, { instruction, schedule, ignoreQuiet, title } = {}) {
+  const patch = {};
+  if (instruction) patch.instruction = String(instruction).slice(0, 1000);
+  if (title) patch.title = String(title).slice(0, 120);
+  if (typeof ignoreQuiet === 'boolean') patch.ignore_quiet = ignoreQuiet ? 1 : 0;
+  if (schedule && t.kind === 'scheduled') {
+    const s = normaliseSchedule(schedule);
+    patch.schedule = JSON.stringify(s);
+    if (t.status === 'active') patch.next_run_at = nextRun(s);
+  }
+  if (Object.keys(patch).length) update('tasks', t.id, patch, Object.keys(patch));
+  log('info', 'tasks', `Task #${t.id} changed: ${Object.keys(patch).join(', ') || 'nothing'}`);
+  emit('tasks');
+  return get('SELECT * FROM tasks WHERE id = ?', t.id);
+}
+
 export function normaliseSchedule(s = {}) {
   if (s.type === 'every') {
     const minutes = Math.round(Number(s.minutes));
