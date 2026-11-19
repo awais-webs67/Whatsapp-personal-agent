@@ -37,6 +37,16 @@ export const DEFAULT_SETTINGS = {
     purchaseSignal: 'Customer confirms the order or shares a payment proof.',
     prices: 'quote',                     // quote = say prices from this page | link = never say a price, send the product link
     shopLink: '',
+    // How every message is laid out. Changed on the Knowledge page or by command ("format: ...").
+    format: [
+      'Greeting on its own line when you greet (Assalam o alaikum Sir / Ma\'am, or their name).',
+      'One idea per line. Put a blank line between the greeting, the main point and the question.',
+      'A link always goes on its own line, never inside a sentence.',
+      'At most 4 short lines per message. No long paragraphs.',
+      'Answer what they asked first, then one helpful detail, then end with one easy question or next step (for example: Order karna chahenge?).',
+      'Warm and respectful (aap, Sir/Ma\'am). Sound like a helpful person, not an advert. No pressure, no fake urgency.',
+      'At most one emoji, and only if the customer uses emojis.',
+    ].join('\n'),
     followupStyle: '',                   // an example follow-up in the owner's words; the agent writes like it
     links: '',                           // website and channel links the agent may add to follow-ups                        // sent when a product has no link of its own (link mode)
     examples: '',

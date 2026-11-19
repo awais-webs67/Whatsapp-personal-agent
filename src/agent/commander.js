@@ -2,7 +2,7 @@
 // The model picks one tool at a time, sees the result, and continues until it can answer.
 // Works with any provider: tools are requested as plain JSON, no vendor tool-calling API needed.
 import { all, get, run, now, update } from '../db.js';
-import { getSettings, saveSettings, emit, log } from '../core.js';
+import { getSettings, saveSettings, emit, log, DEFAULT_SETTINGS } from '../core.js';
 import { complete } from '../llm/router.js';
 import { toolCallToJson } from '../llm/client.js';
 import * as wa from '../wa/manager.js';
@@ -170,8 +170,16 @@ const TOOLS = {
       return out;
     },
   },
+  help: {
+    doc: 'help {} - list what the owner can say in Command.',
+    run: () => ({ help: HELP }),
+  },
+  show_format: {
+    doc: 'show_format {} - the rules every message is laid out by.',
+    run: () => ({ format: getSettings().business.format || '(none)' }),
+  },
   change_settings: {
-    doc: 'change_settings {"autopilot": true, "followups": true, "reading": true, "ask_before_sending": false, "followup_gap_minutes": [6, 25], "followup_after_hours": [24, 72, 168], "quiet_hours": [21, 9], "daily_cap": 40, "reply_delay_seconds": [2, 4]} - switch things on/off and change timings; send only the keys the owner mentioned. autopilot = the agent answers customers by itself; followups = automatic follow-ups for quiet leads; reading = keep reading chats that changed; followup_gap_minutes = random gap between two follow-up messages; followup_after_hours = when to nudge a quiet lead; quiet_hours = [start, end] hours with no proactive messages; reply_delay_seconds = how long it waits before answering.',
+    doc: 'change_settings {"format_rule": "Links hamesha aakhir mein", "format_reset": false, "autopilot": true, "followups": true, "reading": true, "ask_before_sending": false, "followup_gap_minutes": [6, 25], "followup_after_hours": [24, 72, 168], "quiet_hours": [21, 9], "daily_cap": 40, "reply_delay_seconds": [2, 4]} - switch things on/off and change timings; send only the keys the owner mentioned. autopilot = the agent answers customers by itself; followups = automatic follow-ups for quiet leads; reading = keep reading chats that changed; followup_gap_minutes = random gap between two follow-up messages; followup_after_hours = when to nudge a quiet lead; quiet_hours = [start, end] hours with no proactive messages; reply_delay_seconds = how long it waits before answering.',
     run: (a) => applySettings(a),
   },
   stop_followups: {
@@ -258,6 +266,12 @@ export function applySettings(a = {}) {
   if (Number(a.daily_cap) > 0) { patch.followup = { ...patch.followup, dailyCap: Math.round(Number(a.daily_cap)) }; done.push(`at most ${Math.round(Number(a.daily_cap))} follow-ups a day per number`); }
   const delay = nums(a.reply_delay_seconds);
   if (delay.length) { const lo = Math.min(...delay), hi = Math.max(...delay); patch.human = { debounceMin: lo, debounceMax: Math.max(hi, lo) }; done.push(`replies after ${lo} to ${hi} seconds`); }
+  if (a.format_reset) { patch.business = { ...patch.business, format: DEFAULT_SETTINGS.business.format }; done.push('message format back to the default'); }
+  if (a.format_rule) {
+    const cur = getSettings().business.format || '';
+    patch.business = { ...patch.business, format: `${cur ? `${cur}\n` : ''}${String(a.format_rule).trim().slice(0, 600)}` };
+    done.push(`message format rule added: "${String(a.format_rule).trim().slice(0, 120)}"`);
+  }
   if (!done.length) return { changed: [], note: 'Nothing recognised to change' };
   saveSettings(patch);
   emit('settings');
@@ -309,6 +323,27 @@ function nextLine(taskId) {
   return `\n🕒 Next: ${rows.map((r) => `${at(r.due_at)} ${r.name || (r.phone ? `+${r.phone}` : `chat ${r.chat_id}`)}${r.status === 'pending' ? ' (needs your OK)' : ''}`).join(', ')}`;
 }
 
+/** What the owner can say; all of these work without an AI request. */
+const HELP = [
+  'Yeh sab bina AI request ke chalte hain:',
+  '• follow up band karo / on karo  (automatic follow-ups)',
+  '• auto reply band karo / on karo',
+  '• chats parhna band karo / on karo',
+  '• follow up randomly 6 se 25 minute  (automatic follow-ups ka gap)',
+  '• pichle 5 din ke logon ko har 10 minute baad follow up bhejo',
+  '• pichle 5 din ke logon ko 30 minute baad follow up bhejna  (shuru 30 min baad)',
+  '• vip tag walon ko follow up bhejo',
+  '• task 7 mein 5 to 7 minutes gap kar do / task 7 rok do / dobara shuru karo',
+  '• ab 30 minute baad bhejna  (chalta task)',
+  '• saari chats parho / saari chats dobara parho',
+  '• format: link hamesha alag line mein  (likhne ka qanoon add)',
+  '• format dikhao / format reset',
+  '• yaad rakho: Eid offer 20% off 30 June tak',
+  '• jab main "report" kahun to pichle 1 din ki stats batao  (apna shortcut)',
+  '• shortcuts  (apne shortcuts ki list)',
+  'Baqi kuch bhi aam zubaan mein likhein: us ke liye AI lagti hai.',
+].join('\n');
+
 function facts(steps) {
   const out = [];
   for (const s of steps) {
@@ -323,6 +358,8 @@ function facts(steps) {
     }
     if (s.action === 'analyse_chats' && !r.started && r.reason) out.push(`ℹ️ ${r.reason[0].toUpperCase()}${r.reason.slice(1)}.`);
     if (s.action === 'update_task' && !r.error) out.push(r.changed?.length ? `✏️ Task #${r.task_id} changed: ${r.changed.join('; ')}.${r.rewriting ? ` Rewriting the ${r.rewriting} message${r.rewriting === 1 ? '' : 's'} not sent yet.` : ''} No new task was made.${nextLine(r.task_id)}` : `⚠️ Task #${r.task_id}: nothing to change.`);
+    if (s.action === 'help') out.push(r.help);
+    if (s.action === 'show_format') out.push(`📝 Message format:\n${r.format}`);
     if (s.action === 'change_settings') out.push(r.changed?.length ? `⚙️ Changed: ${r.changed.join('; ')}.` : '⚠️ Nothing was changed.');
     if (s.action === 'remind' && r.reminder_for) out.push(`⏰ Reminder for ${r.reminder_for} at ${new Date(r.at).toLocaleString('en-GB', { timeZone: getSettings().followup.timezone, dateStyle: 'medium', timeStyle: 'short' })}. You get a message when it is sent.`);
     if (s.action === 'analyse_chats') out.push(r.started ? `📋 Task #${r.task_id} started: reading ${r.chats_being_read} chat${r.chats_being_read === 1 ? '' : 's'} in full, then learning from them. Progress is on the Tasks page.` : `⚠️ Nothing started: ${r.reason}.`);
@@ -366,7 +403,7 @@ export async function runCommand(text, history = [], { scheduled = false } = {})
     log('info', 'command', `${quick.action} ${JSON.stringify(quick.args).slice(0, 200)}`);
     const steps = [{ action: quick.action, args: quick.args, result }];
     const ok = !result?.error && result?.started !== false;
-    const said = quick.action === 'change_settings' ? 'Theek hai, kar diya.' : result?.already_read ? 'Yeh chats pehle se parhi hui hain.' : ok ? 'Theek hai, shuru kar diya.' : 'Yeh shuru nahi ho saka.';
+    const said = ['help', 'show_format'].includes(quick.action) ? '' : quick.action === 'change_settings' || quick.action === 'remember' ? 'Theek hai, kar diya.' : result?.already_read ? 'Yeh chats pehle se parhi hui hain.' : ok ? 'Theek hai, shuru kar diya.' : 'Yeh shuru nahi ho saka.';
     return { reply: withFacts(said, steps), steps };
   }
   const messages = [...history, { role: 'user', content: text }];

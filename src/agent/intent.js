@@ -145,6 +145,13 @@ export function quickIntent(text, { scheduled = false } = {}) {
     const wording = /likh|bol|mention|zikr|message\s*mein|msg\s*mein|text|offer|discount|link|naam|tone|andaz/i.test(t);
     return !wording && Object.keys(args).some((k) => k !== 'id') ? { action: 'update_task', args } : null;
   }
+  // Writing format, memory and help: plain text in, setting out. No model needed.
+  if (/^\s*(help|commands|madad|kya\s*kya\s*(kar\s*sakte|commands))\b/i.test(t)) return { action: 'help', args: {} };
+  let m;
+  if ((m = /^\s*(?:writing\s*)?(?:format|likhne\s*ka\s*(?:tareeqa|tarika|andaz|format)|message\s*format)\s*(dikhao|batao|show)\s*$/i.exec(t))) return { action: 'show_format', args: {} };
+  if ((m = /^\s*(?:writing\s*)?(?:format|likhne\s*ka\s*(?:tareeqa|tarika|andaz|format)|message\s*format)\s*(reset|default|pehle\s*jaisa)\s*$/i.exec(t))) return { action: 'change_settings', args: { format_reset: true } };
+  if ((m = /^\s*(?:writing\s*)?(?:format|likhne\s*ka\s*(?:tareeqa|tarika|andaz|format)|message\s*format)\s*(?:mein\s*add\s*karo|add)?\s*[:=\-]\s*([\s\S]{3,600})$/i.exec(t))) return { action: 'change_settings', args: { format_rule: m[1].trim() } };
+  if ((m = /^\s*(?:yaad\s*rakh(?:o|na|en|ein)|remember(?:\s*that)?|note\s*kar(?:o|lo))\s*:?\s*([\s\S]{3,600})$/i.exec(t))) return { action: 'remember', args: { text: m[1].trim() } };
   const sw = switchIntent(t);
   if (sw) return { action: 'change_settings', args: sw };
   const gap = randomMinutes(t);

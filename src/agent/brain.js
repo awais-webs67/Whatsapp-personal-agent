@@ -57,7 +57,9 @@ export function buildSystem(settings, chat, mode, query = '') {
 - ${b.tone}
 - ${b.language}
 - Urdu must be written in Urdu (Arabic) script with correct Urdu spelling, never in Hindi (Devanagari) script. Prices and product names may stay in English letters and digits.
-- Write like a person texting: 1 to 3 short bubbles, plain text, no markdown, no headings, no lists. Ask at most one question at a time.
+- Plain WhatsApp text: no markdown, no headings, no bullet lists, no asterisks. 1 to 3 bubbles. Ask at most one question at a time.
+- Layout rules from the owner (follow them exactly; use real line breaks "\n" inside a message where they ask for separate lines):
+${String(b.format || '').split('\n').filter((l) => l.trim()).map((l) => `  - ${l.replace(/^[-•]\s*/, '')}`).join('\n')}
 - Read the whole conversation first. Never repeat something already answered, never re-greet mid-conversation.
 - Move the conversation one step toward your job above, without pressure.
 
@@ -151,7 +153,21 @@ export function extractJson(text) {
   }
 }
 
-const cleanText = (s) => String(s ?? '').replace(/\*\*(.+?)\*\*/g, '$1').trim().slice(0, 1200);
+/**
+ * Tidy a message for WhatsApp: links on their own line, no markdown stars, no runs of blank lines.
+ * Models sometimes put everything in one line; this keeps links readable whatever they do.
+ */
+export function tidy(s) {
+  return String(s ?? '')
+    .replace(/\\n/g, '\n')                                   // a literal "\n" written by the model
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/[ \t]*(https?:\/\/[^\s<>"')]+[^\s<>"').,!?])[ \t]*/g, '\n$1\n')
+    .split('\n').map((l) => l.replace(/[ \t]+/g, ' ').trim()).join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/^\n+|\n+$/g, '')
+    .replace(/\n([,.!?])/g, '$1');
+}
+const cleanText = (s) => tidy(s).slice(0, 1200);
 const cleanStage = (s, fallback) => (STAGES.includes(s) ? s : fallback);
 
 export function parseDecision(text, mode, chat, { instructed = false } = {}) {

@@ -269,10 +269,11 @@ test('owner command: remember adds a standing instruction the agent sees', async
   const { runCommand } = await import('../src/agent/commander.js');
   const { buildSystem } = await import('../src/agent/brain.js');
   const { getSettings } = await import('../src/core.js');
-  cmdReplies = [JSON.stringify({ action: 'remember', args: { text: '10% off this week' } }), JSON.stringify({ reply: 'Yaad rakh liya.' })];
+  const before = calls.length;
   const out = await runCommand('yaad rakho is hafte 10% discount hai');
-  assert.equal(out.reply, 'Yaad rakh liya.\n📝 Saved: 10% off this week');
-  assert.match(buildSystem(getSettings(), { stage: 'new' }, 'reply'), /10% off this week/);
+  assert.match(out.reply, /^Theek hai, kar diya\.\n📝 Saved: is hafte 10% discount hai/);
+  assert.equal(calls.length, before, 'no model needed');
+  assert.match(buildSystem(getSettings(), { stage: 'new' }, 'reply'), /is hafte 10% discount hai/);
 });
 
 test('a message typed in "Message yourself" is run as a command and answered there', async () => {
@@ -1215,4 +1216,26 @@ test('your task keeps its own gap: the random gap from Settings only spaces the 
   run("UPDATE followups SET status = 'skipped' WHERE id = ?", auto2);
   tasks.controlTask(id, 'remove');
   saveSettings({ followup: { gapMinSec: 0, gapMaxSec: 0 } });
+});
+
+test('messages are laid out by the owner\'s format rules; links get their own line; format, memory and help work without a model', async () => {
+  const { tidy, buildSystem } = await import('../src/agent/brain.js');
+  const { runCommand } = await import('../src/agent/commander.js');
+  const { getSettings } = await import('../src/core.js');
+  assert.equal(tidy('Assalam o alaikum Sir! Canva Pro yahan dekhein https://shop.test/canva aur bataiye.'), 'Assalam o alaikum Sir! Canva Pro yahan dekhein\nhttps://shop.test/canva\naur bataiye.');
+  assert.equal(tidy('Salam\\n\\nLink: https://a.test/x.'), 'Salam\n\nLink:\nhttps://a.test/x.');
+  assert.equal(tidy('**Price** hai\n\n\n\nok'), 'Price hai\n\nok');
+  const sys = buildSystem(getSettings(), { stage: 'new' }, 'reply');
+  assert.match(sys, /A link always goes on its own line/);
+  const before = calls.length;
+  assert.match((await runCommand('help')).reply, /bina AI request/);
+  assert.match((await runCommand('format: Har message ke aakhir mein "JazakAllah" likho')).reply, /format rule added/);
+  assert.match(getSettings().business.format, /JazakAllah/);
+  assert.match(buildSystem(getSettings(), { stage: 'new' }, 'followup'), /JazakAllah/);
+  assert.match((await runCommand('format dikhao')).reply, /JazakAllah/);
+  assert.match((await runCommand('yaad rakho: Eid offer 20% off 30 June tak')).reply, /📝 Saved: Eid offer/);
+  assert.match(getSettings().business.memory, /Eid offer 20% off/);
+  await runCommand('format reset');
+  assert.doesNotMatch(getSettings().business.format, /JazakAllah/);
+  assert.equal(calls.length, before, 'none of these needed a model');
 });
