@@ -90,7 +90,7 @@ export function editTask(t, { instruction, schedule, ignoreQuiet, title } = {}) 
     if (t.status === 'active') patch.next_run_at = nextRun(s);
   }
   if (Object.keys(patch).length) update('tasks', t.id, patch, Object.keys(patch));
-  log('info', 'tasks', `Task #${t.id} changed: ${Object.keys(patch).join(', ') || 'nothing'}`);
+  if (Object.keys(patch).length) log('info', 'tasks', `Task #${t.id} changed: ${Object.keys(patch).join(', ')}`);
   if (patch.instruction) taskEvent(t.id, `New instruction: ${patch.instruction.slice(0, 300)}`, { kind: 'changed' });
   if (patch.schedule) taskEvent(t.id, `New schedule: ${describeSchedule(JSON.parse(patch.schedule))}`, { kind: 'changed' });
   if ('ignore_quiet' in patch) taskEvent(t.id, patch.ignore_quiet ? 'Now sends at night too' : 'Now keeps quiet at night', { kind: 'changed' });

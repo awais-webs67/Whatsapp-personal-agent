@@ -63,7 +63,10 @@ export async function readChanged() {
   return n;
 }
 
-const nextSlot = new Map(); // accountId -> earliest time the next proactive message may go out
+// Per number: the random gap from Settings spaces the AUTOMATIC follow-ups; your own tasks follow their own
+// gap (set when you gave the order) and only keep a short anti-burst pause between any two messages.
+const nextSlot = new Map();  // accountId -> earliest time the next automatic follow-up may go out
+const burstSlot = new Map(); // accountId -> earliest time any proactive message may go out
 let drafting = false;
 let sending = false;
 // A follow-up that belongs to a task only goes out while that task is active (not paused or removed).
@@ -165,7 +168,7 @@ export async function resumeBatch(task) {
 
 /** The next messages a task will send, with who and when (for the owner's reply). */
 export function nextOfTask(taskId, n = 3) {
-  return all(`SELECT f.due_at, f.status, c.name, c.phone FROM followups f JOIN chats c ON c.id = f.chat_id
+  return all(`SELECT f.due_at, f.status, c.name, c.phone, c.id chat_id FROM followups f JOIN chats c ON c.id = f.chat_id
     WHERE f.task_id = ? AND f.status IN ('pending','approved') ORDER BY f.due_at LIMIT ?`, taskId, n);
 }
 
@@ -255,13 +258,15 @@ async function sendApproved() {
     const quietOk = isQuiet(hourIn(s.timezone), s.quietStart, s.quietEnd) ? " AND (f.kind = 'reminder' OR f.task_id IN (SELECT id FROM tasks WHERE ignore_quiet = 1))" : '';
     const accounts = all(`SELECT DISTINCT c.account_id id FROM followups f JOIN chats c ON c.id = f.chat_id WHERE f.status = 'approved' AND f.due_at <= ? AND ${TASK_ACTIVE}${quietOk}`, now());
     for (const { id: accountId } of accounts) {
-      if ((nextSlot.get(accountId) || 0) > now()) continue;
+      if ((burstSlot.get(accountId) || 0) > now()) continue;
       if (wa.statusOf(accountId).state !== 'connected') continue;
       const sentToday = get("SELECT COUNT(*) n FROM followups f JOIN chats c ON c.id = f.chat_id WHERE c.account_id = ? AND f.status = 'sent' AND f.sent_at > ?", accountId, now() - 86_400_000).n;
       if (sentToday >= s.dailyCap) continue;
       const f = get(`SELECT f.* FROM followups f JOIN chats c ON c.id = f.chat_id WHERE c.account_id = ? AND f.status = 'approved' AND f.due_at <= ? AND ${TASK_ACTIVE}${quietOk} ORDER BY f.due_at, f.id LIMIT 1`, accountId, now());
       if (!f) continue;
-      nextSlot.set(accountId, now() + rand(s.gapMinSec, s.gapMaxSec) * 1000);
+      if (!f.task_id && (nextSlot.get(accountId) || 0) > now()) continue;
+      burstSlot.set(accountId, now() + (process.env.NODE_ENV === 'test' ? 0 : rand(30, 60) * 1000));
+      if (!f.task_id) nextSlot.set(accountId, now() + rand(s.gapMinSec, s.gapMaxSec) * 1000);
       const chat = get('SELECT * FROM chats WHERE id = ?', f.chat_id);
       if (chat.stage === 'opted_out' || (chat.stage === 'purchased' && f.kind !== 'reminder')) {
         update('followups', f.id, { status: 'skipped', error: `Customer is ${chat.stage.replace('_', ' ')}` }, ['status', 'error']);

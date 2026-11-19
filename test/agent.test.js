@@ -1191,3 +1191,28 @@ test('timing orders are followed exactly: "10 minute baad" starts later, "ab 30 
   assert.ok(gaps.every((g) => g >= 11.9 && g <= 18.1), `gaps ${gaps}`);
   tasks.controlTask(id, 'remove');
 });
+
+test('your task keeps its own gap: the random gap from Settings only spaces the automatic follow-ups', async () => {
+  const { saveSettings } = await import('../src/core.js');
+  const tasks = await import('../src/agent/tasks.js');
+  await until(() => !followups.campaign.running);
+  run("UPDATE followups SET status = 'skipped' WHERE status IN ('pending','approved')");
+  saveSettings({ followup: { gapMinSec: 1500, gapMaxSec: 1500 } }); // "random 25 minutes" for automatic ones
+  const chats = all('SELECT id FROM chats WHERE account_id = 1 AND jid NOT LIKE ? LIMIT 3', '%@g.us').map((r) => r.id);
+  const id = tasks.createTask({ kind: 'batch', instruction: 'gap test', title: 'Gap test' });
+  const add = (chat, taskId, text, due) => Number(run("INSERT INTO followups (chat_id, kind, text, reason, status, due_at, task_id, created_at) VALUES (?, 'campaign', ?, '', 'approved', ?, ?, ?)", chat, text, due, taskId, now()).lastInsertRowid);
+  const auto1 = add(chats[0], null, 'auto one', now() - 3000);
+  const mine = add(chats[1], id, 'task one', now() - 2000);
+  const auto2 = add(chats[2], null, 'auto two', now() - 1000);
+  run("UPDATE chats SET stage = 'interested' WHERE id IN (?, ?, ?)", ...chats);
+  const status = (fid) => get('SELECT status FROM followups WHERE id = ?', fid).status;
+  await followups._tick();
+  await until(() => status(auto1) === 'sent');
+  await followups._tick();
+  await until(() => status(mine) === 'sent', 3000);
+  await followups._tick();
+  assert.equal(status(auto2), 'approved', 'the next automatic one still waits its 25 minutes');
+  run("UPDATE followups SET status = 'skipped' WHERE id = ?", auto2);
+  tasks.controlTask(id, 'remove');
+  saveSettings({ followup: { gapMinSec: 0, gapMaxSec: 0 } });
+});

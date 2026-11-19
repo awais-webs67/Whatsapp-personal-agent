@@ -306,7 +306,7 @@ const at = (ts) => new Date(ts).toLocaleTimeString('en-GB', { hour: '2-digit', m
 function nextLine(taskId) {
   const rows = nextOfTask(taskId, 4);
   if (!rows.length) return '';
-  return `\n🕒 Next: ${rows.map((r) => `${at(r.due_at)} ${r.name || (r.phone ? `+${r.phone}` : 'someone')}${r.status === 'pending' ? ' (needs your OK)' : ''}`).join(', ')}`;
+  return `\n🕒 Next: ${rows.map((r) => `${at(r.due_at)} ${r.name || (r.phone ? `+${r.phone}` : `chat ${r.chat_id}`)}${r.status === 'pending' ? ' (needs your OK)' : ''}`).join(', ')}`;
 }
 
 function facts(steps) {
