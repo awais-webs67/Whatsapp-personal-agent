@@ -98,6 +98,25 @@ asked about filled in.
   safety limits (daily cap, quiet hours, one batch message per person per day), which apply to all campaigns.
 - In Command: `naya campaign: jo canva ad se aayein ...`, `campaign 4 mein gap 5 to 7 minute kar do`, `campaign 4 rok do`.
 
+**Customer memory card.** For every customer the agent keeps what they asked about, what holds them back, what
+they bought, what was promised and the next step (Inbox → Customer card). It is stored in the database, so it is
+used in every reply and follow-up whichever AI model answers.
+
+**WhatsApp Business labels** (QR-linked Business app). Labels on the phone become tags in the agent
+("Paid Customer" → `paid-customer`), and follow renames and removals. A campaign can take leads by label and put
+its own label on every lead that joins (made on the phone if missing; your own labels are never removed).
+
+**Voice notes** are turned into text with Whisper (needs a Groq or OpenAI key); the reply waits for the text.
+
+**Alerts.** A number disconnected for 10 minutes, no AI model able to answer, or a number at its daily cap shows as
+a red bar on every page and is sent to you once (again every 3 hours while it lasts).
+
+**Template fallback.** When no AI model can write an automatic follow-up, your example follow-up goes out with the
+customer's name and product filled in (switch per campaign).
+
+**Reports.** Lead-to-sale funnel, each campaign and ad (leads, replies, sales), follow-up reply rate, time to first
+answer and AI requests per model, for 7, 30, 90 or 365 days.
+
 **Prices that change.** On the Knowledge page, "When a customer asks the price" → "Send the product link" makes the
 agent never write a price or stock (prices are removed from everything it reads, and a price that still slips
 into a reply is caught); it sends the product's link, where the website shows the current price.

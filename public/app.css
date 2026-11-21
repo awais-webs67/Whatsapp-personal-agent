@@ -370,3 +370,11 @@ ol.tlog .pill { justify-self: start; }
 .ctile b { font: 400 22px/1 var(--display); color: var(--ink); }
 .ctile small { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
 @media (max-width: 640px) { .ctiles { grid-template-columns: repeat(3, minmax(0, 1fr)); } .ctile:nth-child(3) { border-right: 0; } }
+
+/* Report tables */
+.rtable { overflow-x: auto; }
+.rtable table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.rtable th { text-align: left; font-size: 11px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); font-weight: 600; padding: 6px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.rtable td { padding: 8px 10px; border-bottom: 1px solid var(--line); color: var(--ink); }
+.rtable th:not(:first-child), .rtable td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.rtable tr:last-child td { border-bottom: 0; }

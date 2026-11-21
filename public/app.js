@@ -6,6 +6,7 @@ import { playground, knowledge, settings, activity } from './pages-config.js';
 import { command } from './pages-command.js';
 import { tasks } from './pages-tasks.js';
 import { clients, viewingBanner } from './pages-hub.js';
+import { reports } from './pages-reports.js';
 
 const root = document.getElementById('root');
 const PRIMARY = ['overview', 'inbox', 'command', 'tasks']; // in the phone's bottom bar
@@ -21,6 +22,7 @@ const ROUTES = [
   ['playground', 'Live test', 'M4 2l9 6-9 6z', playground],
   ['knowledge', 'Knowledge', 'M3 2h8l2 2v10H3zM5 6h6M5 9h6M5 12h4', knowledge],
   ['settings', 'Settings', 'M2 4h8M12 4h2M2 8h2M6 8h8M2 12h6M10 12h4M10 2v4M4 6v4M8 10v4', settings],
+  ['reports', 'Reports', 'M2 14h12M4 12V8M8 12V4M12 12V6', reports],
   ['activity', 'Activity', 'M1 8h3l2-5 3 10 2-5h4', activity],
 ];
 

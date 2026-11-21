@@ -1421,3 +1421,17 @@ test('no AI model can write: an automatic follow-up still goes out from your own
     saveSettings({ business: { followupStyle: '' } });
   }
 });
+
+test('reports: funnel, campaigns, ads, follow-ups, answer speed and AI use add up', async () => {
+  const { report } = await import('../src/agent/reports.js');
+  const r = report(3650);
+  assert.ok(r.leads > 0);
+  assert.equal(r.funnel[0].n, r.leads);
+  for (let i = 1; i < r.funnel.length; i++) assert.ok(r.funnel[i].n <= r.funnel[i - 1].n, 'each step has no more people than the one before');
+  assert.equal(r.funnel.at(-1).n, r.stages.purchased);
+  assert.ok(r.ads.some((a) => a.ad === 'Eid Sale on tools'), 'the lead from the ad is counted under its ad');
+  assert.ok(r.campaigns.some((c) => c.kind === 'auto'));
+  assert.ok(r.followups.sent >= r.followups.replied);
+  assert.ok(r.ai.length > 0 && r.ai[0].requests > 0);
+  assert.ok(r.replies.answered > 0 && r.replies.medianSeconds >= 0);
+});

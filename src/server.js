@@ -22,6 +22,7 @@ import { handleCommand, startCommander, listThreads, newThread } from './agent/c
 import { listTasks, createTask, controlTask, startTasks } from './agent/tasks.js';
 import { taskEvents } from './agent/task-log.js';
 import { startWatchdog, health } from './agent/watchdog.js';
+import { report } from './agent/reports.js';
 import { ensureDefaultCampaign, updateAuto, createAuto, changesOf, AUTO_FIELDS, setLabeler } from './agent/campaigns.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -423,6 +424,7 @@ app.get('/api/tasks', wrap(() => listTasks()));
 app.post('/api/tasks', wrap((req) => ({ id: createTask({ kind: 'scheduled', title: req.body.title, instruction: req.body.instruction, schedule: req.body.schedule }) })));
 // Automatic campaigns: their own settings, entry rules and history.
 app.get('/api/health', wrap(() => health()));
+app.get('/api/reports', wrap((req) => report(Number(req.query.days) || 30)));
 app.get('/api/labels', wrap(() => all('SELECT a.id account_id, a.name account, l.label_id id, l.name, l.color FROM wa_labels l JOIN accounts a ON a.id = l.account_id WHERE l.deleted = 0 ORDER BY a.id, l.name')));
 app.get('/api/campaigns/fields', wrap(() => AUTO_FIELDS));
 app.post('/api/campaigns', wrap((req) => createAuto(req.body || {}, 'dashboard')));
