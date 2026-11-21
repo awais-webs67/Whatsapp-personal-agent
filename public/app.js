@@ -13,7 +13,7 @@ const PRIMARY = ['overview', 'inbox', 'command', 'tasks']; // in the phone's bot
 const ROUTES = [
   ['overview', 'Overview', 'M2 2h5v6H2zM9 2h5v3H9zM9 7h5v7H9zM2 10h5v4H2z', overview],
   ['command', 'Command', 'M2 3h12v10H2zM4 6l3 2-3 2M8 10h4', command],
-  ['tasks', 'Tasks', 'M3 3h10v10H3zM5 6l1.5 1.5L9 5M5 10.5h6', tasks],
+  ['tasks', 'Campaigns', 'M3 3h10v10H3zM5 6l1.5 1.5L9 5M5 10.5h6', tasks],
   ['inbox', 'Inbox', 'M2 3h12v8H7l-3 3v-3H2z', inbox],
   ['followups', 'Follow-ups', 'M8 2a6 6 0 1 0 6 6M8 5v3l2 2M11 2h3v3', followups],
   ['numbers', 'Numbers', 'M5 1h6v14H5zM7 12h2', numbers],

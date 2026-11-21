@@ -376,6 +376,11 @@ const HELP = [
   '• yaad rakho: Eid offer 20% off 30 June tak',
   '• jab main "report" kahun to pichle 1 din ki stats batao  (apna shortcut)',
   '• shortcuts  (apne shortcuts ki list)',
+  '',
+  'Campaigns (AI samajhta hai, misaal):',
+  '• naya campaign: jo canva ad se aayein unhein 2 ghante, 1 din, 3 din baad follow up, Canva offer batao',
+  '• campaign 4 mein gap 5 to 7 minute kar do / campaign 4 rok do / campaign 4 ke follow up 1 ghante baad',
+  '• campaign 4 ki hidayat: Eid discount ka zikr karo',
   'Baqi kuch bhi aam zubaan mein likhein: us ke liye AI lagti hai.',
 ].join('\n');
 

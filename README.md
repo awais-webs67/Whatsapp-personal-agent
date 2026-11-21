@@ -88,6 +88,16 @@ customers (people who messaged you; groups are left out) with number, stage, tag
 and "Links it may share" (website, channels). Every follow-up is written like your example, with what that customer
 asked about filled in.
 
+**Campaigns.** Every follow-up flow is a campaign with its own settings, log and history (Campaigns page).
+- *Automatic campaigns* run all the time. A new lead joins one by its entry rules (the Meta ad it came from,
+  words in its first message, the number) and gets that campaign's reply instructions, follow-up steps
+  (e.g. 2 h, 1 day, 3 days), gap between follow-ups, approval and night setting. Everyone else joins the
+  default campaign, whose timings are the ones in Settings.
+- *One-time tasks* message people already in your chats (from Command or the Campaigns page).
+- Every change is recorded with who made it (dashboard or Command). Settings only holds the per-number
+  safety limits (daily cap, quiet hours, one batch message per person per day), which apply to all campaigns.
+- In Command: `naya campaign: jo canva ad se aayein ...`, `campaign 4 mein gap 5 to 7 minute kar do`, `campaign 4 rok do`.
+
 **Prices that change.** On the Knowledge page, "When a customer asks the price" → "Send the product link" makes the
 agent never write a price or stock (prices are removed from everything it reads, and a price that still slips
 into a reply is caught); it sends the product's link, where the website shows the current price.

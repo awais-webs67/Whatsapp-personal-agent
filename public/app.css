@@ -338,7 +338,7 @@ label.f { align-content: start; }
 /* Task step log */
 .tlog-box { border-top: 1px solid var(--line); padding-top: 10px; }
 ol.tlog { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; max-height: 420px; overflow-y: auto; }
-ol.tlog li { display: grid; grid-template-columns: 112px 74px minmax(0, 1fr); gap: 10px; align-items: baseline; font-size: 13px; overflow-wrap: anywhere; }
+ol.tlog li { display: grid; grid-template-columns: 112px 96px minmax(0, 1fr); gap: 10px; align-items: baseline; font-size: 13px; overflow-wrap: anywhere; }
 ol.tlog time { color: var(--muted); font-size: 12px; white-space: nowrap; }
 ol.tlog .pill { justify-self: start; }
 @media (max-width: 640px) {
@@ -360,3 +360,13 @@ ol.tlog .pill { justify-self: start; }
 .sheet-links svg { width: 20px; height: 20px; }
 .sheet .foot { display: grid; gap: 12px; padding: 12px 4px 4px; border-top: 1px solid rgba(255, 255, 255, .1); }
 .sheet .btn { justify-self: stretch; }
+
+/* Campaign cards */
+.camp-set { padding: 0 18px 10px; flex-wrap: wrap; overflow: visible; }
+.camp-set .chip { cursor: default; }
+.ctiles { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border-top: 1px solid var(--line); }
+.ctile { padding: 10px 14px; border-right: 1px solid var(--line); display: grid; gap: 2px; }
+.ctile:last-child { border-right: 0; }
+.ctile b { font: 400 22px/1 var(--display); color: var(--ink); }
+.ctile small { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+@media (max-width: 640px) { .ctiles { grid-template-columns: repeat(3, minmax(0, 1fr)); } .ctile:nth-child(3) { border-right: 0; } }

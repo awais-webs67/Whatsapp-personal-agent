@@ -210,8 +210,6 @@ export function settings() {
     const saver = toggle(s.llm.tokenSaver !== false, () => {}, 'Token saver');
     const notifyWa = toggle(s.notifyWhatsApp !== false, () => {}, 'Send agent updates to my WhatsApp');
     const digest = h('input', { type: 'number', min: -1, max: 23, value: s.digestHour ?? 21 });
-    const fuOn = toggle(s.followup.enabled, () => {}, 'Automatic follow-ups'), fuApprove = toggle(s.followup.approval, () => {}, 'Approve before sending');
-    const steps = h('input', { type: 'text', value: s.followup.stepsHours.join(', ') });
     const tz = h('input', { type: 'text', value: s.followup.timezone });
     const save = h('button.btn.primary', { onclick: () => act(save, async () => {
       const patch = { human: {}, followup: {}, llm: {} };
@@ -219,8 +217,7 @@ export function settings() {
       patch.llm.tokenSaver = saver.querySelector('input').checked;
       patch.notifyWhatsApp = notifyWa.querySelector('input').checked;
       patch.digestHour = Number(digest.value);
-      Object.assign(patch.followup, { enabled: fuOn.querySelector('input').checked, approval: fuApprove.querySelector('input').checked, timezone: tz.value.trim(),
-        stepsHours: steps.value.split(/[,\s]+/).map(Number).filter((x) => x > 0) });
+      Object.assign(patch.followup, { timezone: tz.value.trim() });
       await PUT('/api/settings', patch);
     }, 'Settings saved') }, 'Save settings');
     const cur = h('input', { type: 'password', autocomplete: 'current-password' }), next = h('input', { type: 'password', autocomplete: 'new-password' });
@@ -236,12 +233,10 @@ export function settings() {
           pair('human', 'gapMin', 'gapMax', 'Pause between bubbles (sec)'),
           n('human', 'maxRepliesPerHour', 'Max AI replies per hour, per number', 'A safety brake. Past this, chats wait for you.')),
         h('div.grid3', {}, n('human', 'handoffMinutes', 'Stay quiet after I reply (min)', 'When you answer from your phone, the agent steps back.')))),
-      h('div.card', {}, h('header', {}, h('h2', {}, 'Follow-ups')), h('div.pad.stack', {},
-        h('div.row', {}, fuOn, h('div.grow', {}, h('b', { style: 'color:var(--ink)' }, 'Follow up automatically when a lead goes quiet'))),
-        h('div.row', {}, fuApprove, h('div.grow', {}, h('b', { style: 'color:var(--ink)' }, 'Ask me before sending'), h('div.muted', {}, 'Drafts wait in Follow-ups until you approve them. Recommended.'))),
-        h('div.grid3', {}, field('Follow up after (hours)', steps, 'One entry per follow-up. “24, 72, 168” = after 1, 3 and 7 days of silence, then stop.'),
-          n('followup', 'dailyCap', 'Max follow-ups per day, per number'), pair('followup', 'gapMinSec', 'gapMaxSec', 'Gap between follow-ups (sec)')),
-        h('div.grid3', {}, pair('followup', 'quietStart', 'quietEnd', 'Quiet hours (24h clock)', 'No follow-ups are sent between these hours.'), field('Time zone', tz, 'e.g. Asia/Karachi')))),
+      h('div.card', {}, h('header', {}, h('h2', {}, 'Number safety (every campaign)')), h('div.pad.stack', {},
+        h('div.note', {}, 'When and how often follow-ups go out is set per campaign on the ', h('a', { href: '#/tasks' }, 'Campaigns'), ' page. These limits protect each number and apply to every campaign and task.'),
+        h('div.grid3', {}, n('followup', 'dailyCap', 'Max proactive messages per day, per number'), n('followup', 'repeatGuardHours', 'One batch message per person per (hours)', 'A new batch skips people messaged this recently.'), field('Time zone', tz, 'e.g. Asia/Karachi')),
+        h('div.grid3', {}, pair('followup', 'quietStart', 'quietEnd', 'Quiet hours (24h clock)', 'Nothing proactive goes out between these hours, unless a campaign or task is allowed to send at night.')))),
       h('div.card', {}, h('header', {}, h('h2', {}, 'Agent updates')), h('div.pad.stack', {},
         h('div.row', {}, notifyWa, h('div.grow', {}, h('b', { style: 'color:var(--ink)' }, 'Also send updates to my WhatsApp'), h('div.muted', {}, 'Task progress, customers who need you, sales and the daily summary go to your “Message yourself” chat (write anything there once so the agent knows it). They always appear on the Command page.'))),
         h('div.grid3', {}, field('Daily summary at (hour, 0–23; -1 = off)', digest, 'Uses the time zone below.')))),
