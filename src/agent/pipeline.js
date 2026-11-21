@@ -36,7 +36,7 @@ export function scheduleNextFollowup(chatId, hoursOverride = null) {
   const camp = campaignOf(chat);
   const step = camp.config.steps[chat.followup_count];
   const hours = chat.followup_count === 0 && hoursOverride ? hoursOverride : step;
-  const due = s.enabled && camp.task.status === 'active' && hours && !CLOSED.includes(chat.stage) ? now() + hours * 3_600_000 : null;
+  const due = s.enabled && camp.task.status === 'active' && camp.config.followups !== false && hours && !CLOSED.includes(chat.stage) ? now() + hours * 3_600_000 : null;
   update('chats', chatId, { next_followup_at: due }, ['next_followup_at']);
 }
 
@@ -109,6 +109,8 @@ async function answer(chatId) {
     chat = get('SELECT * FROM chats WHERE id = ?', chatId);
     const [ok, why] = eligibility(chat, account, settings);
     if (!ok) return log('info', 'agent', `Not replying to ${chat.name || chat.phone || chat.jid}: ${why}`);
+    const camp = campaignOf(chat);
+    if (camp.config.autoReply === false) return log('info', 'agent', `Not replying to ${chat.name || chat.phone || chat.jid}: auto reply is off in the campaign "${camp.task.title}"`);
 
     const sentLastHour = get("SELECT COUNT(*) n FROM messages m JOIN chats c ON c.id = m.chat_id WHERE c.account_id = ? AND m.by = 'ai' AND m.ts > ?", account.id, now() - 3_600_000).n;
     if (sentLastHour >= h.maxRepliesPerHour) {

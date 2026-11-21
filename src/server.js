@@ -23,7 +23,7 @@ import { listTasks, createTask, controlTask, startTasks } from './agent/tasks.js
 import { taskEvents } from './agent/task-log.js';
 import { startWatchdog, health } from './agent/watchdog.js';
 import { report } from './agent/reports.js';
-import { ensureDefaultCampaign, updateAuto, createAuto, changesOf, AUTO_FIELDS, setLabeler } from './agent/campaigns.js';
+import { ensureDefaultCampaign, updateAuto, createAuto, changesOf, AUTO_FIELDS, setLabeler, statsOf as campaignStats } from './agent/campaigns.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // On slow or IPv6-broken connections Node's fetch gives up after 250 ms per address and reports
@@ -426,6 +426,43 @@ app.post('/api/tasks', wrap((req) => ({ id: createTask({ kind: 'scheduled', titl
 app.get('/api/health', wrap(() => health()));
 app.get('/api/reports', wrap((req) => report(Number(req.query.days) || 30)));
 app.get('/api/labels', wrap(() => all('SELECT a.id account_id, a.name account, l.label_id id, l.name, l.color FROM wa_labels l JOIN accounts a ON a.id = l.account_id WHERE l.deleted = 0 ORDER BY a.id, l.name')));
+// One campaign's own dashboard: its numbers, people, messages.
+const campaignRow = (id) => need(get("SELECT * FROM tasks WHERE id = ? AND status != 'removed'", Number(id)), 'Campaign');
+app.get('/api/campaigns/:id/view', wrap((req) => {
+  const t = campaignRow(req.params.id);
+  let params = {};
+  try { params = JSON.parse(t.params || '{}') || {}; } catch { /* none */ }
+  return { ...listTasks().find((x) => x.id === t.id), params, stats: campaignStats(t.id) };
+}));
+app.get('/api/campaigns/:id/people', wrap((req) => {
+  const t = campaignRow(req.params.id);
+  const rows = t.kind === 'auto'
+    ? all('SELECT c.* FROM chats c WHERE c.campaign_id = ? ORDER BY c.last_msg_at DESC LIMIT 500', t.id)
+    : all('SELECT DISTINCT c.* FROM chats c JOIN followups f ON f.chat_id = c.id WHERE f.task_id = ? ORDER BY c.last_msg_at DESC LIMIT 500', t.id);
+  return rows.map((c) => {
+    const f = get('SELECT status, due_at, sent_at FROM followups WHERE task_id = ? AND chat_id = ? ORDER BY id DESC LIMIT 1', t.id, c.id);
+    return { id: c.id, title: c.name || (c.phone ? `+${c.phone}` : `chat ${c.id}`), stage: c.stage, tags: tagsOf(c), lastAt: c.last_msg_at, lastIn: c.last_in_at, ad: c.ad_title, nextFollowup: c.next_followup_at, followups: c.followup_count, message: f || null };
+  });
+}));
+app.get('/api/campaigns/:id/messages', wrap((req) => {
+  const t = campaignRow(req.params.id);
+  return all(`SELECT f.id, f.chat_id, f.kind, f.text, f.reason, f.status, f.error, f.due_at, f.sent_at, COALESCE(c.name, '+' || c.phone, 'chat ' || c.id) who
+              FROM followups f JOIN chats c ON c.id = f.chat_id WHERE f.task_id = ? ORDER BY COALESCE(f.sent_at, f.due_at) DESC LIMIT 500`, t.id);
+}));
+// A one-time campaign from the wizard: people already in your chats, picked by number, period, products, stage or tag.
+app.post('/api/campaigns/once', wrap(async (req) => {
+  const b = req.body || {};
+  const instruction = String(b.instruction || '').trim();
+  if (!instruction) throw bad('Write what the message should say');
+  const list = (v) => (Array.isArray(v) ? v : String(v ?? '').split(',')).map((x) => String(x).trim()).filter(Boolean);
+  const lo = Math.max(1, Number(b.gapMin) || 5), hi = Math.max(lo, Number(b.gapMax) || lo);
+  const id = createTask({ kind: 'batch', title: String(b.name || instruction).slice(0, 120), instruction, ignoreQuiet: !!b.night });
+  const c = await runCampaign({ taskId: id, sinceDays: Math.max(1, Number(b.days) || 7), limit: Math.min(500, Number(b.limit) || 200), reanalyze: true, instruction,
+    autoApprove: b.send !== false, intervalMinutes: lo === hi ? lo : [lo, hi], stages: list(b.stages), audience: ['buyers', 'non_buyers'].includes(b.audience) ? b.audience : 'all',
+    tags: normTags(b.tags), accountIds: list(b.accountIds).map(Number), keywords: list(b.keywords), startAt: Number(b.startInMinutes) > 0 ? now() + Number(b.startInMinutes) * 60_000 : null });
+  if (!c.total) { run("UPDATE tasks SET status = 'removed' WHERE id = ?", id); throw bad('No chats match. Try more days, other words, or another number.'); }
+  return { id, chats: c.total };
+}));
 app.get('/api/campaigns/fields', wrap(() => AUTO_FIELDS));
 app.post('/api/campaigns', wrap((req) => createAuto(req.body || {}, 'dashboard')));
 app.patch('/api/campaigns/:id', wrap((req) => updateAuto(Number(req.params.id), req.body || {}, 'dashboard')));

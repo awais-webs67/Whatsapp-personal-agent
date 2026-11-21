@@ -210,7 +210,7 @@ export function sweepQuiet() {
     if (!account || !eligibility({ ...c, paused_until: null }, account)[0]) continue; // e.g. an old contact on a "new leads only" number
     const camp = campaignOf(c);
     const hours = camp.config.steps[c.followup_count];
-    if (camp.task.status !== 'active' || !hours) continue;
+    if (camp.task.status !== 'active' || camp.config.followups === false || !hours) continue;
     // Counted from our last message, so a lead who has been quiet for a while is due straight away.
     const due = Math.max(now(), c.last_out_at + hours * 3_600_000);
     update('chats', c.id, { next_followup_at: due }, ['next_followup_at']);
@@ -380,10 +380,10 @@ export function whyNotSending(taskId = null) {
   return next > now() ? null : null;
 }
 
-export async function runCampaign({ accountId = null, sinceDays = 90, limit = 200, reanalyze = false, instruction = '', autoApprove = false, intervalMinutes = 0, stages = null, taskId = null, analyzeOnly = false, audience = 'all', tags = [], skipChatIds = null, startAt = null } = {}) {
+export async function runCampaign({ accountId = null, sinceDays = 90, limit = 200, reanalyze = false, instruction = '', autoApprove = false, intervalMinutes = 0, stages = null, taskId = null, analyzeOnly = false, audience = 'all', tags = [], skipChatIds = null, startAt = null, accountIds = [], keywords = [] } = {}) {
   if (campaign.running) throw new Error('Another batch is still reading chats. Wait for it to finish, or remove it on the Tasks page.');
   // Saved with the task, so the work carries on by itself after a restart (see resumeBatch).
-  if (taskId) run('UPDATE tasks SET params = ? WHERE id = ?', JSON.stringify({ accountId, sinceDays, limit, reanalyze, instruction, autoApprove, intervalMinutes, stages, analyzeOnly, audience, tags, readDone: false }), taskId);
+  if (taskId) run('UPDATE tasks SET params = ? WHERE id = ?', JSON.stringify({ accountId, sinceDays, limit, reanalyze, instruction, autoApprove, intervalMinutes, stages, analyzeOnly, audience, tags, accountIds, keywords, readDone: false }), taskId);
   const since = now() - sinceDays * 86_400_000;
   // Analysis reads every customer chat in the period (buyers included); it sends nothing.
   const tagged = tags?.length > 0;
@@ -404,6 +404,17 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
       ORDER BY c.last_in_at DESC LIMIT ?4`, accountId, since, reanalyze || instruction ? 1 : 0, tagged ? 5000 : limit, stages?.length ? `,${stages.join(',')},` : '', audience === 'buyers' || tagged ? 1 : 0, now() - (getSettings().followup.repeatGuardHours ?? 24) * 3_600_000);
   if (tagged) chats = chats.filter((c) => hasAnyTag(c, tags)).slice(0, limit);
   if (skipChatIds?.size) chats = chats.filter((c) => !skipChatIds.has(c.id));
+  // Only these numbers, and only chats about these products or words (in the messages, summary or customer card).
+  const nums_ = (accountIds || []).map(Number).filter(Boolean);
+  if (nums_.length) chats = chats.filter((c) => nums_.includes(c.account_id));
+  const words_ = (keywords || []).map((w) => String(w).toLowerCase().trim()).filter(Boolean);
+  if (words_.length) {
+    chats = chats.filter((c) => {
+      const known = `${c.summary || ''} ${c.profile || ''} ${c.ad_title || ''}`.toLowerCase();
+      if (words_.some((w) => known.includes(w))) return true;
+      return words_.some((w) => get('SELECT 1 x FROM messages WHERE chat_id = ? AND lower(text) LIKE ? LIMIT 1', c.id, `%${w}%`));
+    });
+  }
   // Chats read before and unchanged since: their stored stage decides who is in, without a model call.
   if (!analyzeOnly && !tagged && !stages?.length) {
     if (audience === 'buyers') chats = chats.filter((c) => !isFresh(c) || c.stage === 'purchased');

@@ -1435,3 +1435,32 @@ test('reports: funnel, campaigns, ads, follow-ups, answer speed and AI use add u
   assert.ok(r.ai.length > 0 && r.ai[0].requests > 0);
   assert.ok(r.replies.answered > 0 && r.replies.medianSeconds >= 0);
 });
+
+test('campaign filters and switches: only chats about a product or on a number; auto reply off leaves answering to you', async () => {
+  const camps = await import('../src/agent/campaigns.js');
+  const tasks = await import('../src/agent/tasks.js');
+  await until(() => !followups.campaign.running);
+  run("UPDATE followups SET status = 'skipped' WHERE status IN ('pending','approved')");
+  reply = JSON.stringify({ stage: 'interested', summary: 'x', should_followup: true, message: 'Salam!', reason: 'r' });
+  const aboutIt = new Set(all('SELECT id, summary, profile, ad_title FROM chats').filter((r) => /website package/i.test(`${r.summary} ${r.profile} ${r.ad_title}`) || get("SELECT 1 x FROM messages WHERE chat_id = ? AND lower(text) LIKE '%website package%'", r.id)).map((r) => r.id));
+  const id = tasks.createTask({ kind: 'batch', instruction: 'website wale', title: 'Website people' });
+  await followups.runCampaign({ taskId: id, sinceDays: 3650, reanalyze: true, instruction: 'website wale', autoApprove: true, intervalMinutes: 5, keywords: ['website package'] });
+  await until(() => !followups.campaign.running, 8000);
+  const picked = all('SELECT DISTINCT chat_id FROM followups WHERE task_id = ?', id).map((r) => r.chat_id);
+  assert.ok(picked.length >= 1);
+  for (const c of picked) assert.ok(aboutIt.has(c), `chat ${c} is about the website package`);
+  assert.deepEqual(JSON.parse(get('SELECT params FROM tasks WHERE id = ?', id).params).keywords, ['website package']);
+  const none = tasks.createTask({ kind: 'batch', instruction: 'other number', title: 'Other number' });
+  await followups.runCampaign({ taskId: none, sinceDays: 3650, reanalyze: true, instruction: 'x', autoApprove: true, accountIds: [999] });
+  assert.equal(followups.campaign.total, 0, 'nobody on a number that is not theirs');
+  tasks.controlTask(id, 'remove');
+
+  // A campaign with auto reply off: its leads are not answered by the agent.
+  const t = camps.createAuto({ name: 'Manual answers', keywords: ['manualonly'], autoReply: false }, 'test');
+  const before = calls.length;
+  deliver([{ jid: '923336660001@s.whatsapp.net', waId: 'man-1', fromMe: false, text: 'manualonly please call me', type: 'text', ts: now() }]);
+  await until(() => get("SELECT campaign_id FROM chats WHERE jid = '923336660001@s.whatsapp.net'")?.campaign_id === t.id);
+  await new Promise((r) => setTimeout(r, 400));
+  assert.ok(!calls.slice(before).some((c) => JSON.stringify(c.body?.messages || '').includes('manualonly')), 'no AI reply for this campaign');
+  tasks.controlTask(t.id, 'remove');
+});
