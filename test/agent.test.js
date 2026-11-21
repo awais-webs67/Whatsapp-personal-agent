@@ -1495,3 +1495,73 @@ test('every campaign carries its own instructions, message format and files into
   assert.match(get("SELECT tags FROM chats WHERE jid = '923331110002@s.whatsapp.net'").tags, /,eid-lead,/);
   assert.doesNotMatch(get("SELECT tags FROM chats WHERE jid = '923331110003@s.whatsapp.net'").tags || '', /eid-lead/, 'only the ad leads');
 });
+
+test('email campaigns: import a list, write each email, send through SMTP with unsubscribe and footer, bounce, stop on reply, never mail an unsubscribed address again', async () => {
+  const net = await import('node:net');
+  const em = await import('../src/email/index.js');
+  const tasks = await import('../src/agent/tasks.js');
+  const { kvSet } = await import('../src/core.js');
+  // A tiny SMTP server: accepts mail, refuses bounce@ like a real server would.
+  const got = [];
+  const smtp = net.createServer((sock) => {
+    let data = false, buf = '', msg = '', rcpt = '';
+    sock.write('220 test ESMTP\r\n');
+    sock.on('data', (chunk) => {
+      buf += chunk.toString();
+      let i;
+      while ((i = buf.indexOf('\r\n')) >= 0) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 2);
+        if (data) { if (line === '.') { data = false; got.push({ rcpt, msg }); msg = ''; sock.write('250 OK queued\r\n'); } else msg += `${line}\n`; continue; }
+        if (/^(EHLO|HELO)/i.test(line)) sock.write('250-test\r\n250 AUTH PLAIN LOGIN\r\n');
+        else if (/^AUTH/i.test(line)) sock.write('235 OK\r\n');
+        else if (/^MAIL FROM/i.test(line)) sock.write('250 OK\r\n');
+        else if (/^RCPT TO/i.test(line)) { rcpt = line; sock.write(/bounce@/.test(line) ? '550 5.1.1 User unknown\r\n' : '250 OK\r\n'); }
+        else if (/^DATA/i.test(line)) { data = true; sock.write('354 go\r\n'); }
+        else if (/^QUIT/i.test(line)) { sock.write('221 bye\r\n'); sock.end(); }
+        else sock.write('250 OK\r\n');
+      }
+    });
+  });
+  await new Promise((r) => smtp.listen(0, '127.0.0.1', r));
+  kvSet('publicUrl', 'https://agent.test');
+  const writer = Number(run('INSERT INTO providers (preset, name, kind, base_url, api_key, model, priority, created_at) VALUES (?,?,?,?,?,?,?,?)', 'custom', 'Writer', 'openai', baseUrl, encrypt('good'), 'fake-1', -100, now()).lastInsertRowid);
+  try {
+    assert.throws(() => em.saveAccount({ from_email: 'me@shop.test', smtp_host: '127.0.0.1', smtp_pass: 'x' }), /footer/i, 'the footer (business address) is required');
+    const acc = em.saveAccount({ name: 'Sales', from_name: 'Awais Khan', from_email: 'me@shop.test', smtp_host: '127.0.0.1', smtp_port: smtp.address().port, smtp_secure: 0, smtp_user: 'me@shop.test', smtp_pass: 'secret', footer: 'Shop Ltd, Lahore, Pakistan', warmup: 1 });
+    assert.equal(acc.smtp_pass, undefined, 'the password is never sent to the browser');
+    const imp = em.importContacts('Leads Nov', 'Email,First Name,Company\nali@acme.test,Ali,Acme\nnot-an-email,X,Y\nbounce@acme.test,Bob,Acme\nsara@beta.test,Sara,Beta\n');
+    assert.deepEqual([imp.added, imp.invalid], [3, 1]);
+    assert.equal(em.listLists()[0].active, 3);
+    assert.equal(em.fillEmail('{Hi|Hi} {first_name} at {company}', { first_name: 'Ali', company: 'Acme' }), 'Hi Ali at Acme');
+
+    reply = JSON.stringify({ subject: 'quick question', body: 'Hi Ali,\n\nSaw Acme is growing. We help teams like yours get design tools cheaper.\n\nWorth a quick chat?\n\nAwais' });
+    const c = em.createEmailCampaign({ name: 'Cold Nov', accountIds: [acc.id], lists: ['Leads Nov'], steps: [{ instruction: 'Introduce our design tools' }, { days: 3, instruction: 'Short nudge' }] }, tasks.createTask);
+    assert.equal(c.contacts, 3);
+    for (let i = 0; i < 3; i++) await em.sendTick();
+    assert.equal(got.length, 2, 'two delivered, one refused');
+    const mail = got.find((g) => /ali@acme/.test(g.rcpt)).msg;
+    assert.match(mail, /Subject: quick question/);
+    assert.match(mail, /List-Unsubscribe: <https:\/\/agent\.test\/u\/\d+\.[\w-]+>/);
+    assert.match(mail, /Shop Ltd, Lahore, Pakistan/);
+    assert.doesNotMatch(mail, /<img|text\/html/i, 'plain text only, no tracking pixel');
+    assert.equal(get("SELECT status FROM email_contacts WHERE email = 'bounce@acme.test'").status, 'bounced');
+    const st = em.emailStats(c.id);
+    assert.deepEqual([st.sent, st.bounced], [2, 1]);
+    // Follow-up 2 waits about 3 days, in the same thread.
+    const next = get("SELECT * FROM email_sends WHERE task_id = ? AND step = 2 AND contact_id = (SELECT id FROM email_contacts WHERE email = 'ali@acme.test')", c.id);
+    assert.ok(next.due_at > Date.now() + 2.9 * 86_400_000);
+    // Ali replies: his follow-up is cancelled. Sara unsubscribes: never emailed again, from any list.
+    assert.equal(em.markReplied('ali@acme.test', 'yes tell me more'), 1);
+    assert.equal(get('SELECT status FROM email_sends WHERE id = ?', next.id).status, 'skipped');
+    const sara = get("SELECT id FROM email_contacts WHERE email = 'sara@beta.test'");
+    assert.equal(em.unsubscribe(em.unsubToken(sara.id)), 'sara@beta.test');
+    assert.equal(em.unsubscribe(`${sara.id}.forged`), null);
+    assert.equal(em.importContacts('Other list', 'email\nsara@beta.test\n').suppressed, 1);
+    // Nothing left to send: the campaign finishes by itself.
+    await em.sendTick();
+    assert.equal(get('SELECT status FROM tasks WHERE id = ?', c.id).status, 'done');
+  } finally {
+    smtp.close();
+    run('DELETE FROM providers WHERE id = ?', writer);
+  }
+});

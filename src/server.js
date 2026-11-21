@@ -22,6 +22,8 @@ import { taskEvent } from './agent/task-log.js';
 import { importKnowledgeFiles, saveUpload, listFiles, removeFile, fileToText } from './agent/knowledge-files.js';
 import { updateCampaign } from './agent/campaign-edit.js';
 import { labelChats } from './agent/labeling.js';
+import * as email from './email/index.js';
+import { setEmailStats } from './agent/tasks.js';
 import { handleCommand, startCommander, listThreads, newThread } from './agent/commander.js';
 import { listTasks, createTask, controlTask, startTasks } from './agent/tasks.js';
 import { taskEvents } from './agent/task-log.js';
@@ -132,10 +134,24 @@ app.post('/internal/ai', wrap(async (req) => {
   return { text: out.text, model: out.model, usage: out.usage };
 }));
 
+// Unsubscribe from email campaigns: a link in every email and the one-click header (no sign-in).
+const unsubPage = (msg) => `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Unsubscribe</title><body style="font:16px/1.5 system-ui,sans-serif;max-width:480px;margin:15vh auto;padding:0 20px;color:#191F24"><h1 style="font-size:22px">${msg}</h1></body>`;
+app.get('/u/:token', (req, res) => { const who = email.unsubscribe(req.params.token); res.type('html').send(unsubPage(who ? 'You are unsubscribed. You will not get these emails again.' : 'This link is not valid any more.')); });
+app.post('/u/:token', (req, res) => { email.unsubscribe(req.params.token); res.sendStatus(200); });
+
 app.use(express.static(path.join(here, '../public'), { extensions: ['html'] }));
 // Lucide icons (ISC licence), used by the dashboard as CSS masks so they take the text colour.
 app.use('/icons', express.static(path.join(here, '../node_modules/lucide-static/icons'), { maxAge: '7d' }));
 app.use('/api', (req, res, next) => (authed(req) ? next() : res.status(401).json({ error: 'Sign in required' })));
+// The address people use to open the dashboard, for links that go out in emails (unsubscribe).
+let knownUrl = null;
+app.use('/api', (req, _res, next) => {
+  const host = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim();
+  const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'https').split(',')[0].trim();
+  const url = host && !/^(127\.|localhost|\[::1\])/.test(host) ? `${proto}://${host}` : null;
+  if (url && url !== knownUrl) { knownUrl = url; kvSet('publicUrl', url); }
+  next();
+});
 
 // ---------- live events ----------
 app.get('/api/events', (req, res) => {
@@ -445,6 +461,7 @@ app.get('/api/campaigns/:id/people', wrap((req) => {
   const rows = t.kind === 'auto'
     ? all('SELECT c.* FROM chats c WHERE c.campaign_id = ? ORDER BY c.last_msg_at DESC LIMIT 500', t.id)
     : all('SELECT DISTINCT c.* FROM chats c JOIN followups f ON f.chat_id = c.id WHERE f.task_id = ? ORDER BY c.last_msg_at DESC LIMIT 500', t.id);
+  if (t.kind === 'email') return email.emailPeople(t.id);
   return rows.map((c) => {
     const f = get('SELECT status, due_at, sent_at FROM followups WHERE task_id = ? AND chat_id = ? ORDER BY id DESC LIMIT 1', t.id, c.id);
     return { id: c.id, title: c.name || (c.phone ? `+${c.phone}` : `chat ${c.id}`), stage: c.stage, tags: tagsOf(c), lastAt: c.last_msg_at, lastIn: c.last_in_at, ad: c.ad_title, nextFollowup: c.next_followup_at, followups: c.followup_count, message: f || null };
@@ -452,6 +469,7 @@ app.get('/api/campaigns/:id/people', wrap((req) => {
 }));
 app.get('/api/campaigns/:id/messages', wrap((req) => {
   const t = campaignRow(req.params.id);
+  if (t.kind === 'email') return email.emailMessages(t.id);
   return all(`SELECT f.id, f.chat_id, f.kind, f.text, f.reason, f.status, f.error, f.due_at, f.sent_at, COALESCE(c.name, '+' || c.phone, 'chat ' || c.id) who
               FROM followups f JOIN chats c ON c.id = f.chat_id WHERE f.task_id = ? ORDER BY COALESCE(f.sent_at, f.due_at) DESC LIMIT 500`, t.id);
 }));
@@ -469,6 +487,24 @@ app.post('/api/campaigns/once', wrap(async (req) => {
   if (!c.total) { run("UPDATE tasks SET status = 'removed' WHERE id = ?", id); throw bad('No chats match. Try more days, other words, or another number.'); }
   return { id, chats: c.total };
 }));
+// ---------- email ----------
+app.get('/api/email/presets', wrap(() => email.PRESETS));
+app.get('/api/email/accounts', wrap(() => email.listAccounts()));
+app.post('/api/email/accounts', wrap((req) => email.saveAccount(req.body || {})));
+app.patch('/api/email/accounts/:id', wrap((req) => email.saveAccount(req.body || {}, Number(req.params.id))));
+app.delete('/api/email/accounts/:id', wrap((req) => email.deleteAccount(Number(req.params.id))));
+app.post('/api/email/accounts/:id/test', wrap((req) => email.testAccount(Number(req.params.id))));
+app.get('/api/email/check', wrap((req) => email.checkDomain(String(req.query.email || ''), String(req.query.selector || ''))));
+app.get('/api/email/lists', wrap(() => email.listLists()));
+app.post('/api/email/lists/import', express.raw({ type: () => true, limit: '20mb' }), wrap((req) => email.importContacts(String(req.query.list || ''), req.body.toString('utf8'))));
+app.get('/api/email/lists/:list/export.csv', wrap((req, res) => {
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${req.params.list.replace(/[^\w.-]+/g, '-')}.csv"`);
+  res.send(email.exportList(req.params.list));
+}));
+app.delete('/api/email/lists/:list', wrap((req) => email.deleteList(req.params.list)));
+app.post('/api/campaigns/email', wrap((req) => email.createEmailCampaign(req.body || {}, createTask)));
+
 app.get('/api/campaigns/fields', wrap(() => AUTO_FIELDS));
 app.post('/api/campaigns', wrap((req) => createAuto(req.body || {}, 'dashboard')));
 app.patch('/api/campaigns/:id', wrap((req) => updateCampaign(Number(req.params.id), req.body || {}, 'dashboard')));
@@ -633,6 +669,8 @@ export function start(port = Number(process.env.PORT) || 3000) {
   startFollowups();
   startRouterTicker();
   startWatchdog();
+  setEmailStats(email.emailStats);
+  email.startEmail();
   wa.startAll();
   syncBalances().catch(() => {});
   // HOST=127.0.0.1 keeps the app reachable only through the HTTPS proxy on a server.

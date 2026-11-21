@@ -13,6 +13,8 @@ let runner = null; // set by the commander: (task) => Promise<{ reply }>
 export const setTaskRunner = (fn) => { runner = fn; };
 let resumer = null; // set by the commander: carries on a batch that a restart interrupted
 export const setBatchResumer = (fn) => { resumer = fn; };
+let emailStatsRef = null; // set by the server (email module), so tasks stays free of email code
+export const setEmailStats = (fn) => { emailStatsRef = fn; };
 /** A batch has finished reading when its saved state says so (tasks from before this was saved count as read). */
 const readDone = (t) => { try { return !t.params || JSON.parse(t.params).readDone !== false; } catch { return true; } };
 let campaignRef = null; // the follow-up batch reader, to report and stop it
@@ -116,6 +118,7 @@ export function normaliseSchedule(s = {}) {
 export function taskView(t) {
   const schedule = parse(t.schedule, null);
   const view = { ...t, schedule, scheduleText: t.kind === 'auto' ? 'Automatic: always on' : t.kind === 'batch' ? 'Follow-up batch' : t.kind === 'analysis' ? 'Reading and learning from chats' : describeSchedule(schedule) };
+  if (t.kind === 'email') return { ...view, scheduleText: 'Email campaign', stats: emailStatsRef ? emailStatsRef(t.id) : null, progress: null, waiting: null };
   if (t.kind === 'auto') {
     const c = configOf(t);
     return { ...view, config: c, stats: statsOf(t.id), progress: null, waiting: null };

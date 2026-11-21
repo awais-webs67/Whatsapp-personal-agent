@@ -269,6 +269,13 @@ app.use('/w/:key/webhook', (req, res) => {
   return forward(req, res, p, req.originalUrl.slice(`/w/${req.params.key}`.length));
 });
 app.use('/webhook', (req, res) => forward(req, res, startWorkspace(workspaceOf(null))));
+// Unsubscribe links in emails (no sign-in), for the main workspace and for each account's.
+app.use('/w/:key/u', (req, res) => {
+  const p = procs.get(req.params.key);
+  if (!p || req.params.key === 'main') return res.sendStatus(404);
+  return forward(req, res, p, req.originalUrl.slice(`/w/${req.params.key}`.length));
+});
+app.use('/u', (req, res) => forward(req, res, startWorkspace(workspaceOf(null))));
 
 // --- sign in ---
 app.get('/api/auth', (req, res) => res.json({ multi: true, setup: !get('SELECT 1 FROM users LIMIT 1'), authed: !!sessionUser(req) }));

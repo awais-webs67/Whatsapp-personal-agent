@@ -144,6 +144,40 @@ CREATE TABLE IF NOT EXISTS wa_labels (
   PRIMARY KEY (account_id, label_id)
 );
 
+-- Email: your own sending accounts (SMTP, and IMAP to see replies), contact lists, and every email a campaign sends.
+CREATE TABLE IF NOT EXISTS email_accounts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL, from_name TEXT NOT NULL, from_email TEXT NOT NULL,
+  smtp_host TEXT NOT NULL, smtp_port INTEGER NOT NULL, smtp_secure INTEGER NOT NULL DEFAULT 1, smtp_user TEXT NOT NULL, smtp_pass TEXT NOT NULL,
+  imap_host TEXT, imap_port INTEGER, imap_user TEXT, imap_pass TEXT,
+  daily_limit INTEGER NOT NULL DEFAULT 40,
+  warmup INTEGER NOT NULL DEFAULT 1,          -- start low and add a few a day until daily_limit
+  footer TEXT,                                -- your business name and address, shown under every email
+  enabled INTEGER NOT NULL DEFAULT 1,
+  last_error TEXT, last_ok_at INTEGER, imap_checked_at INTEGER,
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS email_contacts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  list TEXT NOT NULL, email TEXT NOT NULL COLLATE NOCASE,
+  first_name TEXT, last_name TEXT, company TEXT, website TEXT, title TEXT, phone TEXT, extra TEXT,
+  status TEXT NOT NULL DEFAULT 'active',      -- active | replied | unsubscribed | bounced
+  created_at INTEGER NOT NULL,
+  UNIQUE(list, email)
+);
+CREATE INDEX IF NOT EXISTS email_contacts_email ON email_contacts(email);
+CREATE TABLE IF NOT EXISTS email_sends (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER NOT NULL, contact_id INTEGER NOT NULL, account_id INTEGER,
+  step INTEGER NOT NULL DEFAULT 1,
+  subject TEXT, body TEXT,
+  status TEXT NOT NULL DEFAULT 'queued',      -- queued | sent | failed | skipped
+  due_at INTEGER NOT NULL, sent_at INTEGER, message_id TEXT, error TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS email_sends_due ON email_sends(status, due_at);
+CREATE INDEX IF NOT EXISTS email_sends_task ON email_sends(task_id, contact_id);
+
 CREATE TABLE IF NOT EXISTS campaign_changes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   task_id INTEGER NOT NULL,
