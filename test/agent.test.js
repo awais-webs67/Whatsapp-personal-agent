@@ -1239,3 +1239,63 @@ test('messages are laid out by the owner\'s format rules; links get their own li
   assert.doesNotMatch(getSettings().business.format, /JazakAllah/);
   assert.equal(calls.length, before, 'none of these needed a model');
 });
+
+test('campaigns: a lead from an ad or with its words joins that campaign and gets its replies, follow-up times and gap; changes are kept in its history', async () => {
+  const camps = await import('../src/agent/campaigns.js');
+  const { buildSystem } = await import('../src/agent/brain.js');
+  const { getSettings } = await import('../src/core.js');
+  const { runCommand, TOOLS_FOR_TEST } = await import('../src/agent/commander.js');
+  const { scheduleNextFollowup } = pipeline;
+  const def = camps.ensureDefaultCampaign();
+  assert.equal(camps.configOf(def).isDefault, true);
+
+  const made = TOOLS_FOR_TEST.create_campaign.run({ name: 'Eid Canva ad', keywords: ['canva'], ad_text: ['eid'], steps_hours: [2, 24], interval_minutes: [5, 7], instruction: 'Canva Pro yearly offer batao aur link bhejo', send: true });
+  const id = made.campaign_id;
+  const cfg = camps.configOf(get('SELECT * FROM tasks WHERE id = ?', id));
+  assert.deepEqual([cfg.steps, cfg.gapMin, cfg.gapMax, cfg.approval, cfg.keywords], [[2, 24], 5, 7, false, ['canva']]);
+
+  // A new lead whose first message mentions Canva, and one that came from an ad titled "Eid ...".
+  reply = JSON.stringify({ messages: ['Ji bilkul!'], stage: 'interested', summary: 'Canva', handoff: false });
+  deliver([{ jid: '923331110001@s.whatsapp.net', waId: 'camp-1', fromMe: false, text: 'Canva Pro ka offer chahiye', type: 'text', ts: now() }]);
+  deliver([{ jid: '923331110002@s.whatsapp.net', waId: 'camp-2', fromMe: false, text: 'Hi, details?', type: 'text', ts: now(), ad: { id: '9988', title: 'Eid Sale on tools', url: null } }]);
+  deliver([{ jid: '923331110003@s.whatsapp.net', waId: 'camp-3', fromMe: false, text: 'Salam', type: 'text', ts: now() }]);
+  const chatOf = (jid) => get('SELECT * FROM chats WHERE jid = ?', jid);
+  await until(() => chatOf('923331110003@s.whatsapp.net')?.campaign_id);
+  assert.equal(chatOf('923331110001@s.whatsapp.net').campaign_id, id, 'joined by its words');
+  assert.equal(chatOf('923331110002@s.whatsapp.net').campaign_id, id, 'joined by the ad');
+  assert.equal(chatOf('923331110002@s.whatsapp.net').ad_title, 'Eid Sale on tools');
+  assert.equal(chatOf('923331110003@s.whatsapp.net').campaign_id, def.id, 'everyone else: the default campaign');
+
+  // Its replies carry the campaign's instructions; its follow-up comes after its own 2 hours.
+  assert.match(buildSystem(getSettings(), chatOf('923331110002@s.whatsapp.net'), 'reply'), /campaign "Eid Canva ad" \(they came from the ad "Eid Sale on tools"\)[\s\S]*Canva Pro yearly offer/);
+  assert.doesNotMatch(buildSystem(getSettings(), chatOf('923331110003@s.whatsapp.net'), 'reply'), /Canva Pro yearly offer/);
+  const c1 = chatOf('923331110001@s.whatsapp.net');
+  run('UPDATE chats SET followup_count = 0, stage = ? WHERE id = ?', 'interested', c1.id);
+  scheduleNextFollowup(c1.id);
+  const due = get('SELECT next_followup_at FROM chats WHERE id = ?', c1.id).next_followup_at;
+  assert.ok(Math.abs(due - (Date.now() + 2 * 3_600_000)) < 5000, 'after 2 hours, not the default 24');
+
+  // Changed by command, by its number; the change is in its history.
+  const r = await runCommand(`campaign ${id} mein gap 10 to 12 minute kar do`);
+  assert.equal(r.steps[0].action, 'update_task');
+  const after = camps.configOf(get('SELECT * FROM tasks WHERE id = ?', id));
+  assert.deepEqual([after.gapMin, after.gapMax], [10, 12]);
+  const hist = camps.changesOf(id);
+  assert.ok(hist.some((h) => h.field === 'gapMin' && h.before === 5 && h.after === 10 && h.source === 'command'));
+
+  // The default campaign keeps its timings in Settings, so both stay the same.
+  camps.updateAuto(def.id, { steps: [12, 48] }, 'dashboard');
+  assert.deepEqual(getSettings().followup.stepsHours, [12, 48]);
+  camps.updateAuto(def.id, { steps: [24, 72, 168] }, 'dashboard');
+
+  // Switching automatic follow-ups off pauses every automatic campaign: nothing gets scheduled.
+  await runCommand('follow up band karo');
+  assert.equal(get('SELECT status FROM tasks WHERE id = ?', id).status, 'paused');
+  scheduleNextFollowup(c1.id);
+  assert.equal(get('SELECT next_followup_at FROM chats WHERE id = ?', c1.id).next_followup_at, null);
+  await runCommand('follow up on karo');
+  assert.equal(get('SELECT status FROM tasks WHERE id = ?', def.id).status, 'active');
+  const tasks = await import('../src/agent/tasks.js');
+  assert.throws(() => tasks.controlTask(def.id, 'remove'), /cannot be removed/);
+  tasks.controlTask(id, 'remove');
+});

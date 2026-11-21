@@ -5,6 +5,7 @@ import * as wa from '../wa/manager.js';
 import { decide, CLOSED } from './brain.js';
 import { notify, who } from './updates.js';
 import { parseChatCommand, runChatCommand } from './chat-commands.js';
+import { assignCampaign, campaignOf } from './campaigns.js';
 
 const timers = new Map(); // chatId -> debounce timer
 const busy = new Set();   // chats currently being answered
@@ -28,16 +29,19 @@ export function eligibility(chat, account, settings = getSettings()) {
 
 export function scheduleNextFollowup(chatId, hoursOverride = null) {
   const s = getSettings().followup;
-  const chat = get('SELECT stage, followup_count FROM chats WHERE id = ?', chatId);
+  const chat = get('SELECT * FROM chats WHERE id = ?', chatId);
   if (!chat) return;
-  const step = s.stepsHours[chat.followup_count];
+  // The lead's campaign decides when (and whether) to follow up.
+  const camp = campaignOf(chat);
+  const step = camp.config.steps[chat.followup_count];
   const hours = chat.followup_count === 0 && hoursOverride ? hoursOverride : step;
-  const due = s.enabled && hours && !CLOSED.includes(chat.stage) ? now() + hours * 3_600_000 : null;
+  const due = s.enabled && camp.task.status === 'active' && hours && !CLOSED.includes(chat.stage) ? now() + hours * 3_600_000 : null;
   update('chats', chatId, { next_followup_at: due }, ['next_followup_at']);
 }
 
 /** Called for every live customer message. */
 export function onCustomer(chatId) {
+  assignCampaign(chatId); // a new lead joins the campaign its ad, words or number point to
   const chat = get('SELECT * FROM chats WHERE id = ?', chatId);
   if (!chat) return;
   const last = get('SELECT text FROM messages WHERE chat_id = ? AND from_me = 0 ORDER BY ts DESC, id DESC LIMIT 1', chatId);

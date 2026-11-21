@@ -135,6 +135,17 @@ CREATE TABLE IF NOT EXISTS task_events (
 );
 CREATE INDEX IF NOT EXISTS task_events_task ON task_events(task_id, id);
 
+CREATE TABLE IF NOT EXISTS campaign_changes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER NOT NULL,
+  ts INTEGER NOT NULL,
+  source TEXT NOT NULL,             -- dashboard | command | system
+  field TEXT NOT NULL,
+  before TEXT,
+  after TEXT
+);
+CREATE INDEX IF NOT EXISTS campaign_changes_task ON campaign_changes(task_id, id);
+
 CREATE TABLE IF NOT EXISTS command_threads (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   title TEXT NOT NULL,
@@ -152,7 +163,7 @@ CREATE TABLE IF NOT EXISTS commands (
 );
 `);
 // Additive migrations for databases created by earlier versions.
-for (const sql of ['ALTER TABLE accounts ADD COLUMN self_jid TEXT', "ALTER TABLE providers ADD COLUMN use_for TEXT NOT NULL DEFAULT 'all'", 'ALTER TABLE followups ADD COLUMN task_id INTEGER', 'ALTER TABLE tasks ADD COLUMN ignore_quiet INTEGER NOT NULL DEFAULT 0', 'ALTER TABLE commands ADD COLUMN thread_id INTEGER', 'ALTER TABLE tasks ADD COLUMN thread_id INTEGER', 'ALTER TABLE chats ADD COLUMN tags TEXT', 'ALTER TABLE tasks ADD COLUMN params TEXT']) {
+for (const sql of ['ALTER TABLE accounts ADD COLUMN self_jid TEXT', "ALTER TABLE providers ADD COLUMN use_for TEXT NOT NULL DEFAULT 'all'", 'ALTER TABLE followups ADD COLUMN task_id INTEGER', 'ALTER TABLE tasks ADD COLUMN ignore_quiet INTEGER NOT NULL DEFAULT 0', 'ALTER TABLE commands ADD COLUMN thread_id INTEGER', 'ALTER TABLE tasks ADD COLUMN thread_id INTEGER', 'ALTER TABLE chats ADD COLUMN tags TEXT', 'ALTER TABLE tasks ADD COLUMN params TEXT', 'ALTER TABLE chats ADD COLUMN campaign_id INTEGER', 'ALTER TABLE chats ADD COLUMN ad_id TEXT', 'ALTER TABLE chats ADD COLUMN ad_title TEXT']) {
   try { db.exec(sql); } catch { /* column already exists */ }
 }
 

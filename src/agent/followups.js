@@ -10,6 +10,7 @@ import { eligibility, humanSend, scheduleNextFollowup } from './pipeline.js';
 import { hasAnyTag } from './tags.js';
 import { nextReadyAt, outOfModels } from '../llm/router.js';
 import { taskEvent } from './task-log.js';
+import { campaignOf, configOf } from './campaigns.js';
 
 /** Read before, and nothing new said since: its stored stage and summary are current. */
 export const isFresh = (c) => !!c.analyzed_at && c.analyzed_at >= (c.last_msg_at || 0);
@@ -193,8 +194,11 @@ export function sweepQuiet() {
   for (const c of rows) {
     const account = get('SELECT * FROM accounts WHERE id = ?', c.account_id);
     if (!account || !eligibility({ ...c, paused_until: null }, account)[0]) continue; // e.g. an old contact on a "new leads only" number
+    const camp = campaignOf(c);
+    const hours = camp.config.steps[c.followup_count];
+    if (camp.task.status !== 'active' || !hours) continue;
     // Counted from our last message, so a lead who has been quiet for a while is due straight away.
-    const due = Math.max(now(), c.last_out_at + s.stepsHours[c.followup_count] * 3_600_000);
+    const due = Math.max(now(), c.last_out_at + hours * 3_600_000);
     update('chats', c.id, { next_followup_at: due }, ['next_followup_at']);
     n++;
   }
@@ -233,10 +237,13 @@ async function draftDue() {
       const account = get('SELECT * FROM accounts WHERE id = ?', chat.account_id);
       if (CLOSED.includes(chat.stage) || !eligibility(chat, account, settings)[0]) continue;
       try {
+        const camp = campaignOf(chat);
+        if (camp.task.status !== 'active') continue;
         const d = await decide(chat.id, 'followup');
         update('chats', chat.id, { stage: d.stage, summary: d.summary }, ['stage', 'summary']);
-        if (d.skip) { log('info', 'followup', `Skipped ${label(chat)}: ${d.reason || 'not worth a follow-up'}`); continue; }
-        queue(chat.id, 'auto', d.message, d.reason, settings.followup.approval ? 'pending' : 'approved');
+        if (d.skip) { log('info', 'followup', `Skipped ${label(chat)}: ${d.reason || 'not worth a follow-up'}`); taskEvent(camp.task.id, `Skipped ${who(chat)}: ${d.reason || 'not worth a follow-up'}`, { kind: 'skipped', chatId: chat.id }); continue; }
+        queue(chat.id, 'auto', d.message, d.reason, camp.config.approval ? 'pending' : 'approved', now(), camp.task.id);
+        taskEvent(camp.task.id, `Wrote follow-up ${chat.followup_count + 1} for ${who(chat)}${camp.config.approval ? ', waiting for your OK' : ''}: "${String(d.message).slice(0, 160)}"`, { kind: 'wrote', chatId: chat.id });
       } catch (e) {
         log('error', 'followup', `Could not draft a follow-up for ${label(chat)}: ${e.message}`);
         update('chats', chat.id, { next_followup_at: now() + 3_600_000 }, ['next_followup_at']); // try again in an hour
@@ -264,9 +271,15 @@ async function sendApproved() {
       if (sentToday >= s.dailyCap) continue;
       const f = get(`SELECT f.* FROM followups f JOIN chats c ON c.id = f.chat_id WHERE c.account_id = ? AND f.status = 'approved' AND f.due_at <= ? AND ${TASK_ACTIVE}${quietOk} ORDER BY f.due_at, f.id LIMIT 1`, accountId, now());
       if (!f) continue;
-      if (!f.task_id && (nextSlot.get(accountId) || 0) > now()) continue;
+      // Automatic campaigns space their own follow-ups by the campaign's gap; one-time batches follow their own times.
+      const auto = f.kind === 'auto' || !f.task_id;
+      const slotKey = `${accountId}:${f.task_id || 0}`;
+      if (auto && (nextSlot.get(slotKey) || 0) > now()) continue;
       burstSlot.set(accountId, now() + (process.env.NODE_ENV === 'test' ? 0 : rand(30, 60) * 1000));
-      if (!f.task_id) nextSlot.set(accountId, now() + rand(s.gapMinSec, s.gapMaxSec) * 1000);
+      if (auto) {
+        const cfg = f.task_id ? configOf(get('SELECT * FROM tasks WHERE id = ?', f.task_id)) : { gapMin: s.gapMinSec / 60, gapMax: s.gapMaxSec / 60 };
+        nextSlot.set(slotKey, now() + rand(cfg.gapMin, cfg.gapMax) * 60_000);
+      }
       const chat = get('SELECT * FROM chats WHERE id = ?', f.chat_id);
       if (chat.stage === 'opted_out' || (chat.stage === 'purchased' && f.kind !== 'reminder')) {
         update('followups', f.id, { status: 'skipped', error: `Customer is ${chat.stage.replace('_', ' ')}` }, ['status', 'error']);

@@ -21,6 +21,7 @@ import { importKnowledgeFiles, saveUpload, listFiles, removeFile } from './agent
 import { handleCommand, startCommander, listThreads, newThread } from './agent/commander.js';
 import { listTasks, createTask, controlTask, startTasks } from './agent/tasks.js';
 import { taskEvents } from './agent/task-log.js';
+import { ensureDefaultCampaign, updateAuto, createAuto, changesOf, AUTO_FIELDS } from './agent/campaigns.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // On slow or IPv6-broken connections Node's fetch gives up after 250 ms per address and reports
@@ -419,6 +420,11 @@ app.post('/api/learn/profile', wrap(async () => learnFromProfile(await wa.profil
 // ---------- tasks ----------
 app.get('/api/tasks', wrap(() => listTasks()));
 app.post('/api/tasks', wrap((req) => ({ id: createTask({ kind: 'scheduled', title: req.body.title, instruction: req.body.instruction, schedule: req.body.schedule }) })));
+// Automatic campaigns: their own settings, entry rules and history.
+app.get('/api/campaigns/fields', wrap(() => AUTO_FIELDS));
+app.post('/api/campaigns', wrap((req) => createAuto(req.body || {}, 'dashboard')));
+app.patch('/api/campaigns/:id', wrap((req) => updateAuto(Number(req.params.id), req.body || {}, 'dashboard')));
+app.get('/api/campaigns/:id/changes', wrap((req) => changesOf(Number(req.params.id))));
 app.get('/api/tasks/:id/events', wrap((req) => taskEvents(Number(req.params.id), Number(req.query.limit) || 300)));
 app.patch('/api/tasks/:id', wrap((req) => controlTask(Number(req.params.id), String(req.body.action || ''))));
 
@@ -521,6 +527,7 @@ export function syncSharedAI(url = process.env.SHARED_AI_URL, key = process.env.
 export function start(port = Number(process.env.PORT) || 3000) {
   migrateSettings();
   syncSharedAI();
+  ensureDefaultCampaign();
   // Started by the hub: stop together with it, and tell it when requests can be forwarded.
   if (process.send) process.on('disconnect', () => process.exit(0));
   // Once on upgrade: re-read saved shop files so an existing install also picks up the price mode they imply.

@@ -62,7 +62,8 @@ export class CloudConnector {
             || (m[m.type]?.caption ? `[${m.type}] ${m[m.type].caption}` : `[${m.type === 'audio' ? 'voice note' : m.type}]`);
           const ts = Number(m.timestamp) * 1000 || Date.now();
           this.lastInbound.set(m.from, { id: m.id, ts });
-          out.push({ jid: m.from, phone: m.from, name: names.get(m.from) || null, waId: m.id, fromMe: false, text, type: m.type === 'text' ? 'text' : 'media', ts });
+          const ad = m.referral ? { id: m.referral.source_id ? String(m.referral.source_id) : null, title: m.referral.headline || m.referral.body || null, url: m.referral.source_url || null } : null;
+          out.push({ jid: m.from, phone: m.from, name: names.get(m.from) || null, waId: m.id, fromMe: false, text, type: m.type === 'text' ? 'text' : 'media', ts, ad });
         }
       }
     }

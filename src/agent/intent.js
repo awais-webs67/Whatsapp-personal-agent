@@ -100,7 +100,7 @@ function namesOnePerson(t) {
  * Returns { action, args } for an order the app can carry out by itself, or null.
  * `scheduled` = this text is a scheduled task running now (so do not schedule it again).
  */
-const TASK_REF = /\b(is|iss|isi|ye|yeh|us|usi|wahi|current|running|same)\s+(task|kaam|batch)\b|\b(task|kaam|batch)\s*#?\s*\d+|#\d+\b|chal(ta|te|ti|ne)\s*(hue|hua|wale|wala|wali)?\s*(task|kaam|batch)|\b(isko|isse|isme|is\s*mein|is\s*me)\b/i;
+const TASK_REF = /\b(is|iss|isi|ye|yeh|us|usi|wahi|current|running|same)\s+(task|kaam|batch|campaign|campain|campaing)\b|\b(task|kaam|batch|campaign|campain|campaing)\s*#?\s*\d+|#\d+\b|chal(ta|te|ti|ne)\s*(hue|hua|wale|wala|wali)?\s*(task|kaam|batch)|\b(isko|isse|isme|is\s*mein|is\s*me)\b/i;
 const OFF = /\b(band|off|bnd|disable)\b/i;
 const HALT = /\b(rok|ruk|stop)\b/i; // "follow ups rok do" stops the running batch (stop_followups), it does not switch them off
 const ON = /\b(on|chalu|start|shuru|enable|chala|khol)\b/i;
@@ -133,7 +133,7 @@ export function quickIntent(text, { scheduled = false } = {}) {
   // ("is task ..." starts like an English question, so questions are told apart by ? and question words only.)
   if (TASK_REF.test(t) && !/\?\s*$|^(kya|kitne|kitni|kis|kab|kaun|kyun|kahan|how|what|which|why)\b|\bkitne\b|\bkitni\b/i.test(t)) {
     const args = {};
-    const id = /(?:task|kaam)\s*#?\s*(\d+)|#(\d+)/i.exec(t);
+    const id = /(?:task|kaam|batch|campaign|campain|campaing)\s*#?\s*(\d+)|#(\d+)/i.exec(t);
     if (id) args.id = Number(id[1] || id[2]);
     const gap = randomMinutes(t) || (/(\d+)\s*(?:minute|minutes|mins?|mint|mnt)/i.test(t) ? parseInterval(t, Number(/(\d+)\s*(?:minute|minutes|mins?|mint|mnt)/i.exec(t)[1])) : null);
     if (gap && !(startDelay(t) && !/\b(har|every|gap|waqf|farq|interval)\b/i.test(t))) args.interval_minutes = gap;

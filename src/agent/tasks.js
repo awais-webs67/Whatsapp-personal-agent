@@ -5,6 +5,7 @@ import { all, get, run, now, parse, update } from '../db.js';
 import { getSettings, emit, log } from '../core.js';
 import { notify, announce, maybeDigest } from './updates.js';
 import { taskEvent } from './task-log.js';
+import { configOf, statsOf, recordChange } from './campaigns.js';
 
 const MIN = 60_000;
 export const STATUSES = ['active', 'paused', 'done', 'failed', 'removed'];
@@ -114,7 +115,11 @@ export function normaliseSchedule(s = {}) {
 /** Task with live progress for the dashboard. */
 export function taskView(t) {
   const schedule = parse(t.schedule, null);
-  const view = { ...t, schedule, scheduleText: t.kind === 'batch' ? 'Follow-up batch' : t.kind === 'analysis' ? 'Reading and learning from chats' : describeSchedule(schedule) };
+  const view = { ...t, schedule, scheduleText: t.kind === 'auto' ? 'Automatic: always on' : t.kind === 'batch' ? 'Follow-up batch' : t.kind === 'analysis' ? 'Reading and learning from chats' : describeSchedule(schedule) };
+  if (t.kind === 'auto') {
+    const c = configOf(t);
+    return { ...view, config: c, stats: statsOf(t.id), progress: null, waiting: null };
+  }
   if (t.kind !== 'scheduled') {
     const counts = Object.fromEntries(all('SELECT status, COUNT(*) n FROM followups WHERE task_id = ? GROUP BY status', t.id).map((r) => [r.status, r.n]));
     const reading = campaignRef?.taskId === t.id && campaignRef.running ? { done: campaignRef.done, total: campaignRef.total } : null;
@@ -140,15 +145,17 @@ export function controlTask(id, action) {
     const next = t.kind !== 'scheduled' ? null : t.next_run_at && t.next_run_at > now() ? t.next_run_at : (sched?.type === 'once' ? now() : nextRun(sched));
     update('tasks', t.id, { status: 'active', next_run_at: next }, ['status', 'next_run_at']);
   } else if (action === 'run') {
-    if (t.kind !== 'scheduled') throw new Error('This task already runs on its own');
+    if (t.kind !== 'scheduled') throw new Error('This one already runs on its own');
     update('tasks', t.id, { status: 'active', next_run_at: now() }, ['status', 'next_run_at']);
   } else if (action === 'remove') {
+    if (t.kind === 'auto' && configOf(t).isDefault) throw new Error('The default campaign cannot be removed. Switch it off (Pause) instead.');
     update('tasks', t.id, { status: 'removed', next_run_at: null }, ['status', 'next_run_at']);
     const { changes } = run("UPDATE followups SET status = 'skipped', error = 'Task removed' WHERE task_id = ? AND status IN ('pending','approved')", t.id);
     if (campaignRef?.taskId === t.id && campaignRef.running) campaignRef.cancel = true;
     if (changes) emit('followups');
   } else throw new Error('Unknown action');
   log('info', 'tasks', `Task #${t.id} ${{ pause: 'paused', resume: 'resumed', run: 'started now', remove: 'removed' }[action]}`);
+  if (t.kind === 'auto' && (action === 'pause' || action === 'resume')) recordChange(t.id, 'dashboard', { status: [t.status, action === 'pause' ? 'paused' : 'active'] });
   taskEvent(t.id, { pause: 'Paused by you', resume: 'Resumed by you', run: 'Started now by you', remove: 'Removed by you' }[action], { kind: action === 'remove' ? 'skipped' : 'changed' });
   emit('tasks');
   return taskView(get('SELECT * FROM tasks WHERE id = ?', t.id));
@@ -160,7 +167,7 @@ async function tick() {
   ticking = true;
   try {
     // Batches finish once nothing is left to read, approve or send.
-    for (const t of all("SELECT * FROM tasks WHERE kind != 'scheduled' AND status = 'active'")) {
+    for (const t of all("SELECT * FROM tasks WHERE kind IN ('batch','analysis') AND status = 'active'")) {
       const open = get("SELECT COUNT(*) n FROM followups WHERE task_id = ? AND status IN ('pending','approved')", t.id).n;
       const reading = campaignRef?.taskId === t.id && campaignRef.running;
       // Interrupted while reading (restart): carry on instead of sitting at "running" forever.

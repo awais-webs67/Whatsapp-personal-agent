@@ -11,6 +11,7 @@ import { runCampaign, campaign, whyNotSending, changeBatch, resumeBatch, nextOfT
 import { createTask, listTasks, taskView, controlTask, setTaskRunner, setCampaign, nextRun, findTask, editTask, setBatchResumer } from './tasks.js';
 import { quickIntent, ASKS_PERMISSION, TIMING_ONLY, startDelay, parseInterval, randomMinutes } from './intent.js';
 import { shortcut } from './shortcuts.js';
+import { updateAuto, createAuto, setAllAuto, ensureDefaultCampaign } from './campaigns.js';
 import { normTags, hasAnyTag } from './tags.js';
 import { humanSend } from './pipeline.js';
 import { learnFromChats, learnFromWebsite, learnFromProfile } from './learn.js';
@@ -146,11 +147,30 @@ const TOOLS = {
     },
   },
   update_task: {
-    doc: 'update_task {"id": 7, "instruction": "the new full instruction for the messages", "interval_minutes": 10 or [6, 25], "start_in_minutes": 30, "send": true, "ignore_quiet_hours": true, "every_minutes": 30, "daily_at": "10:00", "at": "18:30", "pause": false, "resume": false} - CHANGE a task that already exists instead of starting a new one. Use it whenever the owner talks about the running or last task ("is task mein", "isko", "ab se", "message mein yeh bhi likho", "gap 10 minute kar do", "raat ko bhi bhejo"). Leave out "id" to change the latest task of this conversation. Send only what changes; "instruction" replaces the old one, so include what should stay. Messages written but not sent yet are rewritten for a new instruction and spaced again for a new interval.',
+    doc: 'update_task {"id": 7, "instruction": "the new full instruction for the messages", "interval_minutes": 10 or [6, 25], "steps_hours": [2, 24, 72], "keywords": ["canva"], "ad_ids": ["1234"], "ad_text": ["eid"], "followup_style": "example message", "name": "Eid Canva", "start_in_minutes": 30, "send": true, "ignore_quiet_hours": true, "every_minutes": 30, "daily_at": "10:00", "at": "18:30", "pause": false, "resume": false} - CHANGE a campaign or task that already exists instead of starting a new one (campaign and task mean the same thing). For an automatic campaign: interval_minutes = gap between its follow-ups, steps_hours = when to follow up after the last message, instruction = how to answer and follow up with its leads, keywords / ad_ids / ad_text = who joins it. Use it whenever the owner talks about the running or last task ("is task mein", "isko", "ab se", "message mein yeh bhi likho", "gap 10 minute kar do", "raat ko bhi bhejo"). Leave out "id" to change the latest task of this conversation. Send only what changes; "instruction" replaces the old one, so include what should stay. Messages written but not sent yet are rewritten for a new instruction and spaced again for a new interval.',
     run: async (a) => {
       const t = findTask(a.id, activeThread);
-      if (!t) return { error: 'No running task to change. Start one first.' };
+      if (!t) return { error: 'No running campaign or task to change. Start one first.' };
       const out = { task_id: t.id, title: t.title, changed: [] };
+      if (t.kind === 'auto') {
+        const range = nums(a.interval_minutes).filter((n) => n > 0);
+        const patch = {
+          ...(range.length ? { gapMin: Math.min(...range), gapMax: Math.max(...range) } : {}),
+          ...(nums(a.steps_hours).length ? { steps: nums(a.steps_hours) } : {}),
+          ...(typeof a.send === 'boolean' ? { approval: !a.send } : {}),
+          ...(typeof a.ignore_quiet_hours === 'boolean' ? { night: a.ignore_quiet_hours } : {}),
+          ...(a.instruction || a.instructions ? { instructions: a.instructions || a.instruction } : {}),
+          ...(a.followup_style ? { followupStyle: a.followup_style } : {}),
+          ...(a.keywords ? { keywords: a.keywords } : {}),
+          ...(a.ad_ids ? { adIds: a.ad_ids } : {}),
+          ...(a.ad_text ? { adText: a.ad_text } : {}),
+          ...(a.name ? { name: a.name } : {}),
+        };
+        out.changed.push(...updateAuto(t.id, patch, 'command').changed);
+        if (a.pause && t.status === 'active') { controlTask(t.id, 'pause'); out.changed.push('paused'); }
+        if (a.resume && t.status === 'paused') { controlTask(t.id, 'resume'); out.changed.push('resumed'); }
+        return out;
+      }
       const sched = a.every_minutes ? { type: 'every', minutes: Number(a.every_minutes) } : a.daily_at ? { type: 'daily', time: String(a.daily_at) } : a.at ? { type: 'once', at: String(a.at) } : null;
       const instruction = a.instruction ? String(a.instruction).slice(0, 600) : '';
       editTask(t, { instruction: instruction || undefined, schedule: sched, ignoreQuiet: typeof a.ignore_quiet_hours === 'boolean' ? a.ignore_quiet_hours : undefined });
@@ -168,6 +188,21 @@ const TOOLS = {
       if (a.pause && t.status === 'active') { controlTask(t.id, 'pause'); out.changed.push('paused'); }
       if (a.resume && t.status === 'paused') { controlTask(t.id, 'resume'); out.changed.push('resumed'); }
       return out;
+    },
+  },
+  create_campaign: {
+    doc: 'create_campaign {"name": "Eid Canva ad", "keywords": ["canva"], "ad_ids": [], "ad_text": ["canva"], "steps_hours": [2, 24, 72], "interval_minutes": [5, 7], "instruction": "Tell them about the Canva Pro yearly offer and send its link", "followup_style": "", "send": true} - an ALWAYS-ON automatic campaign: new leads whose first message has one of the keywords, or who came from one of these ads, join it and get its replies and follow-ups. Use it for "jo canva ad se aaye..." / "naye leads jo X poochen...". For a one-time message to people already in the chats use start_followups instead.',
+    run: (a) => {
+      const range = nums(a.interval_minutes).filter((n) => n > 0);
+      const t = createAuto({
+        name: a.name, keywords: a.keywords, adIds: a.ad_ids, adText: a.ad_text,
+        ...(nums(a.steps_hours).length ? { steps: nums(a.steps_hours) } : {}),
+        ...(range.length ? { gapMin: Math.min(...range), gapMax: Math.max(...range) } : {}),
+        ...(a.instruction ? { instructions: a.instruction } : {}),
+        ...(a.followup_style ? { followupStyle: a.followup_style } : {}),
+        ...(typeof a.send === 'boolean' ? { approval: !a.send } : {}),
+      }, 'command');
+      return { campaign_id: t.id, name: t.title };
     },
   },
   help: {
@@ -249,18 +284,18 @@ export function applySettings(a = {}) {
   const onOff = (v) => (v ? 'on' : 'off');
   if (typeof a.autopilot === 'boolean') { patch.autopilot = a.autopilot; done.push(`auto replies to customers ${onOff(a.autopilot)}`); }
   if (typeof a.followups === 'boolean') {
-    patch.followup = { ...patch.followup, enabled: a.followups };
+    setAllAuto(a.followups, 'command');
     let cancelled = 0;
     // Only the automatic ones: batches you started yourself (tasks) keep going; stop those with "task N rok do".
     if (!a.followups) { cancelled = Number(run("UPDATE followups SET status = 'skipped', error = 'Automatic follow-ups switched off' WHERE status IN ('approved','pending') AND task_id IS NULL").changes); emit('followups'); }
     done.push(`automatic follow-ups ${onOff(a.followups)}${cancelled ? ` (${cancelled} waiting message${cancelled === 1 ? '' : 's'} cancelled)` : ''}${a.followups ? '' : '; your own tasks keep running'}`);
   }
   if (typeof a.reading === 'boolean') { patch.reading = { auto: a.reading }; done.push(`reading new chats ${onOff(a.reading)}`); }
-  if (typeof a.ask_before_sending === 'boolean') { patch.followup = { ...patch.followup, approval: a.ask_before_sending }; done.push(a.ask_before_sending ? 'follow-ups wait for your approval' : 'follow-ups go out without asking'); }
+  if (typeof a.ask_before_sending === 'boolean') { updateAuto(ensureDefaultCampaign().id, { approval: a.ask_before_sending }, 'command'); done.push(a.ask_before_sending ? 'follow-ups wait for your approval' : 'follow-ups go out without asking'); }
   const gap = nums(a.followup_gap_minutes);
-  if (gap.length) { const lo = Math.min(...gap), hi = Math.max(...gap); patch.followup = { ...patch.followup, gapMinSec: Math.round(lo * 60), gapMaxSec: Math.round(hi * 60) }; done.push(`follow-ups spaced randomly ${lo} to ${hi} minutes apart`); }
+  if (gap.length) { const lo = Math.min(...gap), hi = Math.max(...gap); updateAuto(ensureDefaultCampaign().id, { gapMin: lo, gapMax: hi }, 'command'); done.push(`follow-ups spaced randomly ${lo} to ${hi} minutes apart`); }
   const after = nums(a.followup_after_hours).filter((n) => n > 0);
-  if (after.length) { patch.followup = { ...patch.followup, stepsHours: after.slice(0, 6) }; done.push(`quiet leads nudged after ${after.join(', ')} hours`); }
+  if (after.length) { updateAuto(ensureDefaultCampaign().id, { steps: after.slice(0, 6) }, 'command'); done.push(`quiet leads nudged after ${after.join(', ')} hours`); }
   const quiet = nums(a.quiet_hours);
   if (quiet.length === 2 && quiet.every((h) => h <= 24)) { patch.followup = { ...patch.followup, quietStart: quiet[0] % 24, quietEnd: quiet[1] % 24 }; done.push(`no proactive messages from ${quiet[0]}:00 to ${quiet[1]}:00`); }
   if (Number(a.daily_cap) > 0) { patch.followup = { ...patch.followup, dailyCap: Math.round(Number(a.daily_cap)) }; done.push(`at most ${Math.round(Number(a.daily_cap))} follow-ups a day per number`); }
@@ -280,7 +315,7 @@ export function applySettings(a = {}) {
 
 /** A line for the prompt: tasks that can still be changed, newest first. */
 function runningTasks() {
-  const rows = all("SELECT id, title, status, kind FROM tasks WHERE status IN ('active','paused') ORDER BY id DESC LIMIT 5");
+  const rows = all("SELECT id, title, status, kind FROM tasks WHERE status IN ('active','paused') ORDER BY id DESC LIMIT 8");
   return rows.length ? `\n- Tasks that exist now: ${rows.map((r) => `#${r.id} ${clip(r.title, 70)} (${r.kind}, ${r.status})`).join('; ')}.` : '';
 }
 
@@ -359,6 +394,7 @@ function facts(steps) {
     if (s.action === 'analyse_chats' && !r.started && r.reason) out.push(`ℹ️ ${r.reason[0].toUpperCase()}${r.reason.slice(1)}.`);
     if (s.action === 'update_task' && !r.error) out.push(r.changed?.length ? `✏️ Task #${r.task_id} changed: ${r.changed.join('; ')}.${r.rewriting ? ` Rewriting the ${r.rewriting} message${r.rewriting === 1 ? '' : 's'} not sent yet.` : ''} No new task was made.${nextLine(r.task_id)}` : `⚠️ Task #${r.task_id}: nothing to change.`);
     if (s.action === 'help') out.push(r.help);
+    if (s.action === 'create_campaign' && !r.error) out.push(`📣 Campaign #${r.campaign_id} "${r.name}" is on. New leads that match join it. See it on the Campaigns page.`);
     if (s.action === 'show_format') out.push(`📝 Message format:\n${r.format}`);
     if (s.action === 'change_settings') out.push(r.changed?.length ? `⚙️ Changed: ${r.changed.join('; ')}.` : '⚠️ Nothing was changed.');
     if (s.action === 'remind' && r.reminder_for) out.push(`⏰ Reminder for ${r.reminder_for} at ${new Date(r.at).toLocaleString('en-GB', { timeZone: getSettings().followup.timezone, dateStyle: 'medium', timeStyle: 'short' })}. You get a message when it is sent.`);

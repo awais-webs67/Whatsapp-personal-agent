@@ -30,6 +30,8 @@ function unwrap(message) {
 
 const digits = (jid) => (jid && /@(s\.whatsapp\.net|c\.us)$/.test(jid) ? jid.split('@')[0].split(':')[0] : null);
 
+const adOf = (a) => (a && (a.sourceId || a.title) ? { id: a.sourceId ? String(a.sourceId) : null, title: a.title || null, url: a.sourceUrl || null } : null);
+
 /** Baileys message -> our neutral shape, or null for things we don't track (groups, reactions...). */
 export function toNeutral(msg) {
   const jid = msg.key?.remoteJid;
@@ -52,6 +54,8 @@ export function toNeutral(msg) {
     text,
     type: label ? 'media' : 'text',
     ts: Number(msg.messageTimestamp || 0) * 1000 || Date.now(),
+    // Click-to-WhatsApp ads: the first message carries the ad it came from (not always, on linked devices).
+    ad: adOf(body?.contextInfo?.externalAdReply),
     raw: { key: msg.key },
   };
 }

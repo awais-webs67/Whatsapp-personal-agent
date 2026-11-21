@@ -3,6 +3,7 @@ import { all, get } from '../db.js';
 import { getSettings } from '../core.js';
 import { complete } from '../llm/router.js';
 import { focus, trimProse } from './knowledge.js';
+import { campaignOf } from './campaigns.js';
 
 export const STAGES = ['new', 'engaged', 'interested', 'negotiating', 'purchased', 'not_interested', 'opted_out'];
 export const CLOSED = ['purchased', 'not_interested', 'opted_out'];
@@ -51,6 +52,10 @@ export function buildSystem(settings, chat, mode, query = '') {
   out.push(section('Learned from the owner\'s own past chats (how they answer, what they quote; if this conflicts with a section above, the section above wins)', fit(b.learned)));
   out.push(section('From the business website, WhatsApp profile and saved files', settings.llm.tokenSaver === false ? fit(b.learnedWeb) : trimProse(fit(b.learnedWeb), query, settings.llm.knowledgeChars || 6000)));
   out.push(section('Standing instructions from the owner (always follow)', b.memory));
+  // The campaign this lead belongs to (which ad or offer brought them) can add its own instructions.
+  const camp = chat?.id ? campaignOf(chat) : null;
+  if (camp && !camp.config.isDefault) out.push(section(`This lead belongs to the campaign "${camp.task.title}"${chat.ad_title ? ` (they came from the ad "${chat.ad_title}")` : ''}. Follow its instructions`, camp.config.instructions));
+  else if (camp?.config.instructions) out.push(section('Instructions for new leads (from the owner)', camp.config.instructions));
 
   out.push(`
 ## How to write
@@ -92,11 +97,12 @@ ${linkMode(b) ? `- Prices and stock change often, so you do not know them. Never
 - Current time: ${new Date().toLocaleString('en-GB', { timeZone: settings.followup.timezone, dateStyle: 'full', timeStyle: 'short' })}`);
 
   // Follow-ups in the owner's own words, with their links.
-  if (mode !== 'reply' && (b.followupStyle?.trim() || b.links?.trim())) {
+  const style = (camp?.config.followupStyle || '').trim() || b.followupStyle?.trim() || '';
+  if (mode !== 'reply' && (style || b.links?.trim())) {
     out.push(`
 ## How the owner writes follow-ups
-${b.followupStyle?.trim() ? `Write the message like this example from the owner: same language, greeting, politeness and length. Put in what THIS customer actually asked about (from the conversation) where the example has a product or blank. Never mention a product they did not ask about.
-"""${b.followupStyle.trim()}"""
+${style ? `Write the message like this example from the owner: same language, greeting, politeness and length. Put in what THIS customer actually asked about (from the conversation) where the example has a product or blank. Never mention a product they did not ask about.
+"""${style}"""
 ` : ''}${b.links?.trim() ? `Links you may add when they fit (website, channels), copied exactly: ${b.links.trim().replace(/\n+/g, ' | ')}
 ` : ''}If the example says "Sir" and the customer's name is a woman's name, say "Ma'am"; if unsure, use their name.`);
   }
