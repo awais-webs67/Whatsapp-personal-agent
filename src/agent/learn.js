@@ -118,8 +118,6 @@ export async function learnFromChats({ accountId = null, maxChats = 150 } = {}) 
   return learning;
 }
 
-export const hasLearned = () => !!getSettings().business.learned;
-
 // ---------- learning from a website ----------
 const WEB = `Below is text from a business's website (product listings were already extracted separately; ignore them).
 Extract only what the pages actually say. Do not invent anything.

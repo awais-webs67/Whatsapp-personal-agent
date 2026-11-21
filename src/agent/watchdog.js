@@ -5,6 +5,7 @@ import { getSettings, log, emit } from '../core.js';
 import * as wa from '../wa/manager.js';
 import { nextReadyAt, chainFor, blockedReason } from '../llm/router.js';
 import { notify } from './updates.js';
+import { hasTranscriber } from './voice.js';
 
 const downSince = new Map(); // accountId -> when it stopped being connected
 let modelsDownSince = null;
@@ -43,6 +44,13 @@ export function health() {
     const sent = get("SELECT COUNT(*) n FROM followups f JOIN chats c ON c.id = f.chat_id WHERE c.account_id = ? AND f.status = 'sent' AND f.sent_at > ?", a.id, now() - 86_400_000).n;
     const waiting = get("SELECT COUNT(*) n FROM followups f JOIN chats c ON c.id = f.chat_id WHERE c.account_id = ? AND f.status = 'approved' AND f.due_at <= ?", a.id, now()).n;
     if (sent >= cap && waiting) problems.push({ key: `cap:${a.id}:${new Date().toISOString().slice(0, 10)}`, level: 'warn', link: '#/settings', text: `${a.name} reached its daily limit of ${cap} follow-ups; ${waiting} wait until tomorrow. Raise it in Settings if the number is old and trusted.` });
+  }
+  // Voice notes that stayed as "[voice note]" because no Groq or OpenAI key can turn them into text.
+  const voice = get("SELECT COUNT(*) n FROM messages WHERE from_me = 0 AND text = '[voice note]' AND ts > ?", now() - 86_400_000).n;
+  if (voice && !hasTranscriber()) problems.push({ key: 'voice:none', level: 'warn', link: '#/models', text: `${voice} voice note${voice === 1 ? '' : 's'} today could not be understood. Add a free Groq key on the AI models page and the agent will hear them.` });
+  // A sending mailbox that keeps failing: its email campaigns stand still.
+  for (const m of all('SELECT id, from_email, last_error FROM email_accounts WHERE enabled = 1 AND last_error IS NOT NULL')) {
+    problems.push({ key: `mail:${m.id}`, level: 'warn', link: '#/email', text: `Mailbox ${m.from_email} cannot send: ${m.last_error.slice(0, 160)}. Fix it on the Email page; its emails wait meanwhile.` });
   }
   return problems;
 }

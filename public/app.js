@@ -4,7 +4,6 @@ import { overview, inbox } from './pages-main.js';
 import { followups, numbers, models } from './pages-ops.js';
 import { playground, knowledge, settings, activity } from './pages-config.js';
 import { command } from './pages-command.js';
-import { tasks } from './pages-tasks.js';
 import { clients, viewingBanner } from './pages-hub.js';
 import { reports } from './pages-reports.js';
 import { campaigns } from './pages-campaigns.js';
@@ -21,7 +20,6 @@ const ROUTES = [
   ['email', 'Email', 'mail', emailPage, 'Work'],
   ['command', 'Command', 'terminal', command, 'Work'],
   ['followups', 'Approvals', 'circle-check-big', followups, 'Work'],
-  ['tasks', 'All tasks', 'list-checks', tasks, 'Work'],
   ['numbers', 'Numbers', 'smartphone', numbers, 'Setup'],
   ['knowledge', 'Knowledge', 'book-open-text', knowledge, 'Setup'],
   ['models', 'AI models', 'cpu', models, 'Setup'],
@@ -88,12 +86,13 @@ function shell(me) {
     reader.querySelector('input').checked = o.settings.reading !== false;
     badge('inbox', o.stats.needsHuman);
     badge('followups', o.stats.pendingFollowups);
-    badge('tasks', o.stats.activeTasks);
+    badge('campaigns', o.stats.activeTasks);
   };
 
   function route() {
     if (location.hash.startsWith('#/command')) { updatesUnseen = 0; badge('command', 0); }
-    const [, id = 'overview', arg] = location.hash.split('/');
+    let [, id = 'overview', arg] = location.hash.split('/');
+    if (id === 'tasks') id = 'campaigns'; // the old task list is now Campaigns
     const r = ROUTES.find((x) => x[0] === id) || ROUTES[0];
     subs.clear();
     for (const [key, a] of Object.entries(navLinks)) { a.classList.toggle('on', key === r[0]); a.toggleAttribute('aria-current', key === r[0]); }

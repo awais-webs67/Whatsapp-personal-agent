@@ -222,8 +222,6 @@ export function onLabelChat(accountId, jid, labelId, type) {
   emit('chat', { chatId: chat.id });
 }
 
-export const labelsOf = (accountId) => all('SELECT label_id id, name, color FROM wa_labels WHERE account_id = ? AND deleted = 0 ORDER BY name', accountId);
-
 /**
  * Put a label on a customer's chat on the phone (WhatsApp Business, QR-linked). Labels the owner set stay as
  * they are; a label that does not exist yet is made. Returns false when this number cannot have labels.

@@ -33,7 +33,8 @@ function stateOf(t) {
     if (p.reading) return { metrics: [[p.reading.total, 'People'], [p.sent || 0, 'Sent'], [p.queued || 0, 'To go']], pct: p.reading.total ? (p.reading.done / p.reading.total) * 100 : 0, line: `Writing messages: ${num(p.reading.done)} of ${num(p.reading.total)}` };
     return { metrics: [[total + (p.drafts || 0), 'People'], [p.sent || 0, 'Sent'], [p.queued || 0, 'To go']], pct: total ? (p.sent / total) * 100 : t.status === 'done' ? 100 : 0, line: t.waiting ? 'Not sending right now: open it to see why' : p.drafts ? `${num(p.drafts)} wait for your OK` : total ? `${num(p.sent)} of ${num(total)} sent` : t.last_result || 'Nothing to send' };
   }
-  return { metrics: [[t.runs || 0, 'Runs']], pct: null, line: t.scheduleText };
+  if (t.kind === 'analysis' && p.reading) return { metrics: [[p.reading.total, 'Chats'], [p.reading.done, 'Read']], pct: p.reading.total ? (p.reading.done / p.reading.total) * 100 : 0, line: 'Reading chats' };
+  return { metrics: [[t.last_run_at ? `${rel(t.last_run_at)} ago` : 'Not yet', 'Last run'], [t.status === 'active' && t.next_run_at ? when(t.next_run_at) : '—', 'Next run']], pct: null, line: t.scheduleText };
 }
 
 // ============================== list ==============================
@@ -106,10 +107,10 @@ function campaignPage(id) {
           h('div.chero-sub', {}, pill(t), h('span', {}, `Created ${when(t.created_at)}`), h('span', {}, `In Command: “campaign ${t.id} …”`))),
         h('div.chero-act', {}, t.status === 'active' ? ctl('pause', 'Pause') : t.status === 'paused' ? ctl('resume', 'Resume', '.primary') : null,
           t.kind === 'scheduled' ? ctl('run', 'Run now') : null, c.isDefault ? null : ctl('remove', 'Remove', '.ghost.danger'))),
-      h('div.chero-stats', {}, st.metrics.map(([n, l]) => metric(n, l)), t.stats && t.kind !== 'email' ? metric(t.stats.replied ?? 0, 'Replied') : null, t.kind === 'email' && t.stats ? metric(t.stats.bounced ?? 0, 'Bounced') : null),
+      h('div.chero-stats', {}, st.metrics.map(([n, l]) => metric(n, l)), t.stats && ['auto', 'batch'].includes(t.kind) ? metric(t.stats.replied ?? 0, 'Replied') : null, t.kind === 'email' && t.stats ? metric(t.stats.bounced ?? 0, 'Bounced') : null),
       st.pct != null ? h('div.chero-prog', {}, h('div.cprog', {}, h('i', { style: `width:${Math.round(st.pct)}%` })), h('span', {}, `${st.line} · ${Math.round(st.pct)}%`)) : h('div.chero-prog', {}, h('span', {}, st.line))));
     const TABS = [['overview', 'Overview'], ['people', 'People'], ['messages', 'Messages'], ['settings', 'Settings'], ['log', 'Log & history']];
-    set(tabsBar, TABS.filter(([k]) => k !== 'settings' || ['auto', 'batch', 'email'].includes(t.kind)).map(([k, label]) => h(`button${tab === k ? '.on' : ''}`, { role: 'tab', 'aria-selected': tab === k, onclick: () => { tab = k; load(); } }, label)));
+    set(tabsBar, TABS.filter(([k]) => k === 'overview' || k === 'log' || ['auto', 'batch', 'email'].includes(t.kind)).map(([k, label]) => h(`button${tab === k ? '.on' : ''}`, { role: 'tab', 'aria-selected': tab === k, onclick: () => { tab = k; load(); } }, label)));
     if (redrawBody) ({ overview, people, messages, settings: settingsTab, log: logTab }[tab])();
   }
 
@@ -127,6 +128,14 @@ function campaignPage(id) {
       step(2, 'First reply', [c.autoReply === false ? 'You answer; the agent stays quiet' : 'The agent answers by itself', c.instructions ? `Using: ${c.instructions.slice(0, 140)}${c.instructions.length > 140 ? '…' : ''}` : 'Using your Knowledge', (t.params?.files || []).length ? `+ ${(t.params.files).length} campaign file(s)` : null]),
       step(3, 'Follow-ups', [c.followups === false ? 'Off' : `After ${(c.steps || []).map(dur).join(', ')} of silence`, c.followups === false ? null : `${Math.round(c.gapMin)}–${Math.round(c.gapMax)} min apart, ${c.approval ? 'waits for your OK' : 'sent by itself'}, ${c.night ? 'also at night' : 'not at night'}`]),
       step(4, 'Stops and labels', ['Stops for anyone who replies, buys or asks not to be contacted', c.label ? `Puts the WhatsApp label “${c.label}”` : null]),
+    ] : t.kind === 'scheduled' ? [
+      step(1, 'When', [t.scheduleText, t.next_run_at && t.status === 'active' ? `Next run: ${when(t.next_run_at)}` : null]),
+      step(2, 'What it does', [t.instruction]),
+      step(3, 'Result', ['Shown below after each run, and sent to you if you asked for it']),
+    ] : t.kind === 'analysis' ? [
+      step(1, 'Reads', [`Chats from the last ${p.sinceDays || p.days || '?'} days`, t.progress?.reading ? `Now: ${num(t.progress.reading.done)} of ${num(t.progress.reading.total)}` : null]),
+      step(2, 'Learns', [t.instruction || 'What customers ask, what works, what to improve']),
+      step(3, 'Result', [t.status === 'done' ? 'Finished: see below' : 'Shown below when it finishes']),
     ] : [
       step(1, 'Who', [`Chats from the last ${p.sinceDays || '?'} days`, p.keywords?.length ? `About: ${p.keywords.join(', ')}` : null, p.tags?.length ? `Tag: ${p.tags.join(', ')}` : null, p.stages?.length ? `Stage: ${p.stages.join(', ')}` : null, `On: ${p.accountIds?.length ? p.accountIds.map(accountName).join(', ') : 'all numbers'}`]),
       step(2, 'Message', [t.instruction, p.instructions ? `Also: ${p.instructions.slice(0, 120)}` : null, (p.files || []).length ? `+ ${p.files.length} file(s)` : null]),
@@ -145,7 +154,8 @@ function campaignPage(id) {
         ] : null,
         sw(t.kind === 'auto' ? !c.approval : p.autoApprove !== false, 'approval', 'Send without asking', 'Off: each message waits on the Approvals page.', true),
         sw(t.kind === 'auto' ? !!c.night : !!t.ignore_quiet, 'night', 'Send at night', 'Off: nothing goes out in quiet hours.'))) : null,
-      t.waiting ? h('div.note.warn', {}, h('b', {}, 'Not sending right now. '), t.waiting) : null));
+      t.waiting ? h('div.note.warn', {}, h('b', {}, 'Not sending right now. '), t.waiting) : null,
+      ['scheduled', 'analysis'].includes(t.kind) && t.last_result ? h('div.card', {}, h('header', {}, h('h2', {}, 'Latest result'), t.last_run_at ? h('span.muted', {}, rel(t.last_run_at), ' ago') : null), h('div', { dir: 'auto', style: 'white-space:pre-wrap;line-height:1.55;padding:14px 18px' }, t.last_result)) : null));
   }
 
   async function people() {

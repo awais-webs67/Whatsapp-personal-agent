@@ -302,8 +302,6 @@ export async function chat(provider, { system = '', messages, maxTokens = 1024, 
 /** Full model descriptions (id, context window, max output, price when published). */
 export const listModels = (provider) => (provider.kind === 'anthropic' ? modelsAnthropic(provider) : modelsOpenAI(provider));
 /** Just the ids, for picking a replacement model. */
-export const listModelIds = async (provider) => (await listModels(provider)).map((m) => m.id);
-
 /** Account balance where the vendor exposes one. Returns null when there is no such endpoint. */
 export async function fetchBalance(provider) {
   if (provider.preset === 'openrouter') {
