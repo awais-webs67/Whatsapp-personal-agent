@@ -1,4 +1,4 @@
-import { h, set, GET, POST, PATCH, PUT, act, toast, modal, field, select, rel, clock, dayLabel, num, STAGES, stagePill, PROVIDER_STATUS } from './ui.js';
+import { h, set, GET, POST, PATCH, PUT, act, toast, modal, field, select, rel, clock, dayLabel, num, STAGES, stagePill, leadPill, PROVIDER_STATUS } from './ui.js';
 import { S, live } from './state.js';
 
 const ACCOUNT_STATE = { connected: ['Connected', 'ok'], connecting: ['Connecting', 'warn'], qr: ['Scan QR', 'hot'], pairing: ['Enter code', 'hot'], logged_out: ['Logged out', 'bad'], error: ['Error', 'bad'], disconnected: ['Offline', ''] };
@@ -106,6 +106,7 @@ export function inbox(openId) {
   const headChips = h('div.chips');
   const drawHead = () => set(headChips, 
     chip('All', { stage: '', filter: '' }, !st.stage && !st.filter),
+    chip('Hot leads', { stage: '', filter: 'hot' }, st.filter === 'hot'),
     chip('Needs you', { stage: '', filter: 'needs_human' }, st.filter === 'needs_human'),
     chip('Unread', { stage: '', filter: 'unread' }, st.filter === 'unread'),
     ['interested', 'negotiating', 'purchased', 'not_interested'].map((s) => chip(STAGES[s][0], { stage: s, filter: '' }, st.stage === s)));
@@ -123,7 +124,7 @@ export function inbox(openId) {
     set(list, ...st.chats.map((c) => h(`div.chatrow${c.id === st.id ? '.on' : ''}`, { role: 'listitem', tabindex: 0, onclick: () => open(c.id), onkeydown: (e) => e.key === 'Enter' && open(c.id) },
       h('b', {}, c.title), h('time', {}, rel(c.last_msg_at)),
       h('p', { dir: 'auto' }, c.last_text || ''),
-      h('div.tags', {}, c.needs_human ? h('i.dia.bad', { title: 'Needs you' }) : c.auto ? h('i.dia.hot', { title: 'Agent is handling this chat' }) : null, c.unread ? h('span.badge', {}, c.unread) : null))));
+      h('div.tags', {}, leadPill(c.lead), c.needs_human ? h('i.dia.bad', { title: 'Needs you' }) : c.auto ? h('i.dia.hot', { title: 'Agent is handling this chat' }) : null, c.unread ? h('span.badge', {}, c.unread) : null))));
   }
   async function loadList() {
     const p = new URLSearchParams({ q: st.q, stage: st.stage, filter: st.filter });
@@ -200,7 +201,7 @@ export function inbox(openId) {
       h('div.thread-head', {},
         h('button.btn.ghost.sm', { class: 'back', onclick: () => { st.id = null; el.classList.remove('open'); history.replaceState(null, '', '#/inbox'); drawList(); loadThread(); } }, 'Back'),
         h('div.grow', {}, h('h2', {}, chat.title), h('div.muted', { style: 'font-size:12px' }, chat.phone ? `+${chat.phone} · ` : '', chat.accountName)),
-        stagePill(chat.stage),
+        leadPill(chat.lead), stagePill(chat.stage),
         h(`span.pill${chat.auto ? '.hot' : ''}`, { title: chat.autoReason || 'The agent answers this chat on its own' }, chat.auto ? 'Agent on' : 'Agent off')),
       chat.needs_human ? h('div.banner.bad', {}, h('div.grow', {}, h('b', {}, 'Needs you. '), chat.handoff_reason || 'The agent asked for help.'), h('button.btn.sm', { onclick: () => patch({ resume: true }, 'Agent resumed') }, 'Hand back to agent')) : null,
       !chat.needs_human && chat.paused_until > Date.now() ? h('div.banner.warn', {}, h('div.grow', {}, `You replied by hand, so the agent is quiet until ${clock(chat.paused_until)}.`), h('button.btn.sm', { onclick: () => patch({ resume: true }, 'Agent resumed') }, 'Resume now')) : null,

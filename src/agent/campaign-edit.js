@@ -14,6 +14,7 @@ export async function updateCampaign(id, patch = {}, source = 'dashboard') {
   const t = get("SELECT * FROM tasks WHERE id = ? AND status != 'removed'", Number(id));
   if (!t) throw Object.assign(new Error('Campaign not found'), { status: 404 });
   if (t.kind === 'auto') return updateAuto(t.id, patch, source);
+  if (t.kind === 'email') return updateEmail(t, patch, source);
 
   let p = {};
   try { p = JSON.parse(t.params || '{}') || {}; } catch { /* none */ }
@@ -49,4 +50,28 @@ export async function updateCampaign(id, patch = {}, source = 'dashboard') {
   if (changed.length && !message && !interval) taskEvent(t.id, `Settings changed (${source}): ${changed.join('; ')}`, { kind: 'changed' });
   emit('tasks');
   return { changed };
+}
+
+/** An email campaign: its instructions, pace, office hours and the wording of emails not written yet. */
+function updateEmail(t, patch, source) {
+  let p = {};
+  try { p = JSON.parse(t.params || '{}') || {}; } catch { /* none */ }
+  const history = {};
+  const set_ = (k, v) => { if (JSON.stringify(v) !== JSON.stringify(p[k])) { history[k] = [p[k], v]; p[k] = v; } };
+  if (patch.instructions !== undefined) set_('instructions', text(patch.instructions, 1500));
+  if (patch.gapMin != null) set_('gapMin', Math.max(1, Number(patch.gapMin) || 4));
+  if (patch.gapMax != null) set_('gapMax', Math.max(1, Number(patch.gapMax) || 9));
+  if (patch.windowStart != null || patch.windowEnd != null) set_('window', [Number(patch.windowStart ?? p.window?.[0] ?? 9), Number(patch.windowEnd ?? p.window?.[1] ?? 17)]);
+  if (typeof patch.weekdays === 'boolean') set_('weekdays', patch.weekdays);
+  if (Array.isArray(patch.steps)) {
+    const steps = (p.steps || []).map((s, i) => ({ ...s, ...(patch.steps[i] ? { instruction: text(patch.steps[i].instruction ?? s.instruction, 1500), days: i ? Math.max(1, Number(patch.steps[i].days ?? s.days) || 3) : 0 } : {}) }));
+    set_('steps', steps);
+  }
+  if (patch.name && text(patch.name, 120) !== t.title) { history.name = [t.title, text(patch.name, 120)]; editTask(t, { title: history.name[1] }); }
+  if (!Object.keys(history).length) return { changed: [] };
+  run('UPDATE tasks SET params = ? WHERE id = ?', JSON.stringify(p), t.id);
+  recordChange(t.id, source, history);
+  taskEvent(t.id, `Settings changed (${source}): ${Object.keys(history).join(', ')}. Emails not written yet use the new settings.`, { kind: 'changed' });
+  emit('tasks');
+  return { changed: Object.keys(history) };
 }

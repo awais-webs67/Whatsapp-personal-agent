@@ -111,6 +111,8 @@ export const STAGES = {
   new: ['New', '#CFD3D6'], engaged: ['Talking', '#8A9298'], interested: ['Interested', '#FFB09C'], negotiating: ['Negotiating', '#FF5B35'],
   purchased: ['Purchased', '#1E7A4C'], not_interested: ['Not interested', '#333F48'], opted_out: ['Opted out', '#B3261E'],
 };
+/** Lead score badge: hot / warm / cold with the reasons on hover. */
+export const leadPill = (l) => l && l.label !== 'customer' ? h(`span.lead.${l.label}`, { title: `Lead score ${l.score}/100${l.why?.length ? `\n· ${l.why.join('\n· ')}` : ''}` }, `${l.label[0].toUpperCase()}${l.label.slice(1)} ${l.score}`) : null;
 export const stagePill = (s) => h(`span.pill${s === 'purchased' ? '.ok' : s === 'opted_out' ? '.bad' : ['interested', 'negotiating'].includes(s) ? '.hot' : ''}`, {}, STAGES[s]?.[0] || s);
 
 export const PROVIDER_STATUS = {

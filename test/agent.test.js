@@ -1565,3 +1565,13 @@ test('email campaigns: import a list, write each email, send through SMTP with u
     run('DELETE FROM providers WHERE id = ?', writer);
   }
 });
+
+test('lead score ranks a fresh negotiating lead above a quiet new one', async () => {
+  const { leadScore } = await import('../src/agent/score.js');
+  const now = Date.now();
+  const hot = leadScore({ stage: 'negotiating', last_in_at: now - 600000, profile: JSON.stringify({ budget: '5000', wants: ['logo design'] }) }, now);
+  const cold = leadScore({ stage: 'new', last_in_at: now - 10 * 86400000, followup_count: 3 }, now);
+  assert.equal(hot.label, 'hot');
+  assert.equal(cold.label, 'cold');
+  assert.equal(leadScore({ stage: 'purchased' }).label, 'customer');
+});

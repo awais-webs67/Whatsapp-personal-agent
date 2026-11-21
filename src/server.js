@@ -22,6 +22,7 @@ import { taskEvent } from './agent/task-log.js';
 import { importKnowledgeFiles, saveUpload, listFiles, removeFile, fileToText } from './agent/knowledge-files.js';
 import { updateCampaign } from './agent/campaign-edit.js';
 import { labelChats } from './agent/labeling.js';
+import { leadScore } from './agent/score.js';
 import * as email from './email/index.js';
 import { setEmailStats } from './agent/tasks.js';
 import { handleCommand, startCommander, listThreads, newThread } from './agent/commander.js';
@@ -246,7 +247,7 @@ app.delete('/api/accounts/:id', wrap(async (req) => {
 const chatView = (c) => {
   const account = get('SELECT * FROM accounts WHERE id = ?', c.account_id);
   const [auto, reason] = eligibility(c, account);
-  return { ...c, tagList: tagsOf(c), title: c.name || (c.phone ? `+${c.phone}` : c.jid.split('@')[0]), accountName: account?.name, accountType: account?.type, auto, autoReason: reason };
+  return { ...c, lead: leadScore(c), tagList: tagsOf(c), title: c.name || (c.phone ? `+${c.phone}` : c.jid.split('@')[0]), accountName: account?.name, accountType: account?.type, auto, autoReason: reason };
 };
 app.get('/api/chats', wrap((req) => {
   const { q = '', stage = '', account = '', filter = '', tag = '' } = req.query;
@@ -259,6 +260,7 @@ app.get('/api/chats', wrap((req) => {
   if (account) { where.push('c.account_id = ?'); params.push(Number(account)); }
   if (filter === 'needs_human') where.push('c.needs_human = 1');
   if (filter === 'unread') where.push('c.unread > 0');
+  if (filter === 'hot') return all(`SELECT c.* FROM chats c WHERE ${where.join(' AND ')} ORDER BY c.last_msg_at DESC LIMIT 1000`, ...params).map(chatView).filter((c) => c.lead.label === 'hot').sort((a, b) => b.lead.score - a.lead.score).slice(0, 300);
   return all(`SELECT c.* FROM chats c WHERE ${where.join(' AND ')} ORDER BY c.last_msg_at DESC LIMIT 300`, ...params).map(chatView);
 }));
 /** Your own customers as a spreadsheet (opens in Excel / Google Sheets). Optional ?tag= and ?stage= filters. */
@@ -454,7 +456,7 @@ app.get('/api/campaigns/:id/view', wrap((req) => {
   const t = campaignRow(req.params.id);
   let params = {};
   try { params = JSON.parse(t.params || '{}') || {}; } catch { /* none */ }
-  return { ...listTasks().find((x) => x.id === t.id), params, stats: campaignStats(t.id) };
+  return { ...listTasks().find((x) => x.id === t.id), params, stats: t.kind === 'email' ? email.emailStats(t.id) : campaignStats(t.id) };
 }));
 app.get('/api/campaigns/:id/people', wrap((req) => {
   const t = campaignRow(req.params.id);
@@ -464,7 +466,7 @@ app.get('/api/campaigns/:id/people', wrap((req) => {
   if (t.kind === 'email') return email.emailPeople(t.id);
   return rows.map((c) => {
     const f = get('SELECT status, due_at, sent_at FROM followups WHERE task_id = ? AND chat_id = ? ORDER BY id DESC LIMIT 1', t.id, c.id);
-    return { id: c.id, title: c.name || (c.phone ? `+${c.phone}` : `chat ${c.id}`), stage: c.stage, tags: tagsOf(c), lastAt: c.last_msg_at, lastIn: c.last_in_at, ad: c.ad_title, nextFollowup: c.next_followup_at, followups: c.followup_count, message: f || null };
+    return { id: c.id, lead: leadScore(c), title: c.name || (c.phone ? `+${c.phone}` : `chat ${c.id}`), stage: c.stage, tags: tagsOf(c), lastAt: c.last_msg_at, lastIn: c.last_in_at, ad: c.ad_title, nextFollowup: c.next_followup_at, followups: c.followup_count, message: f || null };
   });
 }));
 app.get('/api/campaigns/:id/messages', wrap((req) => {
@@ -530,7 +532,7 @@ app.get('/api/campaigns/:id/export.csv', wrap((req, res) => {
   res.setHeader('Content-Disposition', `attachment; filename="campaign-${t.id}-${new Date().toISOString().slice(0, 10)}.csv"`);
   res.send(toCsv(rows, [['name', 'Name'], [(c) => (c.phone ? `+${c.phone}` : ''), 'Phone'], ['stage', 'Stage'], [(c) => tagsOf(c).join(' '), 'Tags'], ['ad_title', 'Ad'],
     [(c) => (prof(c).wants || []).join(', '), 'Asked about'], [(c) => (prof(c).bought || []).join(', '), 'Bought'], ['summary', 'Summary'], [(c) => date(c.last_msg_at), 'Last message'],
-    [(c) => last(c)?.status || '', 'Campaign message'], [(c) => date(last(c)?.sent_at), 'Sent at'], ['notes', 'Notes']]));
+    [(c) => last(c)?.status || '', 'Campaign message'], [(c) => `${leadScore(c).label} ${leadScore(c).score}`, 'Lead score'], [(c) => date(last(c)?.sent_at), 'Sent at'], ['notes', 'Notes']]));
 }));
 app.post('/api/campaigns/:id/import', express.raw({ type: () => true, limit: '10mb' }), wrap((req) => {
   const t = campaignRow(req.params.id);

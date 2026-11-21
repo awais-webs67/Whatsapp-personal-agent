@@ -8,6 +8,7 @@ import { tasks } from './pages-tasks.js';
 import { clients, viewingBanner } from './pages-hub.js';
 import { reports } from './pages-reports.js';
 import { campaigns } from './pages-campaigns.js';
+import { emailPage } from './pages-email.js';
 
 const root = document.getElementById('root');
 const PRIMARY = ['overview', 'campaigns', 'inbox', 'command']; // in the phone's bottom bar
@@ -17,6 +18,7 @@ const ROUTES = [
   ['overview', 'Home', 'house', overview, 'Work'],
   ['campaigns', 'Campaigns', 'megaphone', campaigns, 'Work'],
   ['inbox', 'Inbox', 'message-square-text', inbox, 'Work'],
+  ['email', 'Email', 'mail', emailPage, 'Work'],
   ['command', 'Command', 'terminal', command, 'Work'],
   ['followups', 'Approvals', 'circle-check-big', followups, 'Work'],
   ['tasks', 'All tasks', 'list-checks', tasks, 'Work'],
