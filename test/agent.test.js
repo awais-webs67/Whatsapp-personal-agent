@@ -1319,3 +1319,39 @@ test('customer memory card: what each customer wants, objects to, bought and was
   assert.match(sys, /Asked about: Canva Pro yearly[\s\S]*Holding back because: price[\s\S]*We promised: link by evening/);
   assert.match(sys, /"profile": \{"wants"/);
 });
+
+test('WhatsApp Business labels: labels on the phone become tags; a campaign puts its own label on new leads and leaves the owner\'s labels alone', async () => {
+  const camps = await import('../src/agent/campaigns.js');
+  const { quickIntent } = await import('../src/agent/intent.js');
+  const applied = [];
+  Object.assign(fake, {
+    addChatLabel: async (jid, id) => applied.push(['add', jid, id]),
+    removeChatLabel: async (jid, id) => applied.push(['remove', jid, id]),
+    createLabel: async (id, name) => applied.push(['create', id, name]),
+  });
+  camps.setLabeler(wa.applyLabel);
+  // The phone tells us its labels and that one chat has "Paid Customer".
+  wa.onLabel(1, { id: '1', name: 'Paid Customer', color: 3 });
+  const chat = get("SELECT * FROM chats WHERE jid = '444@s.whatsapp.net'");
+  wa.onLabelChat(1, chat.jid, '1', 'add');
+  assert.match(get('SELECT tags FROM chats WHERE id = ?', chat.id).tags, /,paid-customer,/);
+  assert.deepEqual(quickIntent('"Paid Customer" label walon ko reminder bhejo').args.tags, ['paid-customer']);
+  // Renamed on the phone: the tag follows.
+  wa.onLabel(1, { id: '1', name: 'Paid' });
+  assert.match(get('SELECT tags FROM chats WHERE id = ?', chat.id).tags, /,paid,/);
+  wa.onLabelChat(1, chat.jid, '1', 'remove');
+  assert.doesNotMatch(get('SELECT tags FROM chats WHERE id = ?', chat.id).tags || '', /paid/);
+
+  // A campaign that labels its leads: the label is made on the phone once, then put on each new lead.
+  const t = camps.createAuto({ name: 'Label test', keywords: ['labeltest'], label: 'Canva Ad' }, 'test');
+  reply = JSON.stringify({ messages: ['Ji!'], stage: 'interested', summary: 'x', handoff: false });
+  deliver([{ jid: '923339990001@s.whatsapp.net', waId: 'lab-1', fromMe: false, text: 'labeltest please', type: 'text', ts: now() }]);
+  await until(() => applied.some((a) => a[0] === 'add' && a[1] === '923339990001@s.whatsapp.net'));
+  const made = applied.find((a) => a[0] === 'create');
+  assert.equal(made[2], 'Canva Ad');
+  assert.ok(applied.some((a) => a[0] === 'add' && a[2] === made[1]));
+  assert.match(get("SELECT tags FROM chats WHERE jid = '923339990001@s.whatsapp.net'").tags, /,canva-ad,/);
+  assert.ok(!applied.some((a) => a[0] === 'remove'), 'never removes a label');
+  const tasks = await import('../src/agent/tasks.js');
+  tasks.controlTask(t.id, 'remove');
+});

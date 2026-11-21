@@ -135,6 +135,15 @@ CREATE TABLE IF NOT EXISTS task_events (
 );
 CREATE INDEX IF NOT EXISTS task_events_task ON task_events(task_id, id);
 
+CREATE TABLE IF NOT EXISTS wa_labels (
+  account_id INTEGER NOT NULL,
+  label_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  color INTEGER,
+  deleted INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (account_id, label_id)
+);
+
 CREATE TABLE IF NOT EXISTS campaign_changes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   task_id INTEGER NOT NULL,

@@ -21,7 +21,7 @@ import { importKnowledgeFiles, saveUpload, listFiles, removeFile } from './agent
 import { handleCommand, startCommander, listThreads, newThread } from './agent/commander.js';
 import { listTasks, createTask, controlTask, startTasks } from './agent/tasks.js';
 import { taskEvents } from './agent/task-log.js';
-import { ensureDefaultCampaign, updateAuto, createAuto, changesOf, AUTO_FIELDS } from './agent/campaigns.js';
+import { ensureDefaultCampaign, updateAuto, createAuto, changesOf, AUTO_FIELDS, setLabeler } from './agent/campaigns.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // On slow or IPv6-broken connections Node's fetch gives up after 250 ms per address and reports
@@ -421,6 +421,7 @@ app.post('/api/learn/profile', wrap(async () => learnFromProfile(await wa.profil
 app.get('/api/tasks', wrap(() => listTasks()));
 app.post('/api/tasks', wrap((req) => ({ id: createTask({ kind: 'scheduled', title: req.body.title, instruction: req.body.instruction, schedule: req.body.schedule }) })));
 // Automatic campaigns: their own settings, entry rules and history.
+app.get('/api/labels', wrap(() => all('SELECT a.id account_id, a.name account, l.label_id id, l.name, l.color FROM wa_labels l JOIN accounts a ON a.id = l.account_id WHERE l.deleted = 0 ORDER BY a.id, l.name')));
 app.get('/api/campaigns/fields', wrap(() => AUTO_FIELDS));
 app.post('/api/campaigns', wrap((req) => createAuto(req.body || {}, 'dashboard')));
 app.patch('/api/campaigns/:id', wrap((req) => updateAuto(Number(req.params.id), req.body || {}, 'dashboard')));
@@ -528,6 +529,7 @@ export function start(port = Number(process.env.PORT) || 3000) {
   migrateSettings();
   syncSharedAI();
   ensureDefaultCampaign();
+  setLabeler(wa.applyLabel);
   // Started by the hub: stop together with it, and tell it when requests can be forwarded.
   if (process.send) process.on('disconnect', () => process.exit(0));
   // Once on upgrade: re-read saved shop files so an existing install also picks up the price mode they imply.

@@ -156,6 +156,9 @@ export class QrConnector {
       forward(messages, false);
     });
     sock.ev.on('contacts.upsert', (c) => this.#contacts(c));
+    // WhatsApp Business labels: names and which chat has which label, kept in step with the phone.
+    sock.ev.on('labels.edit', (l) => this.hooks.onLabel?.(l));
+    sock.ev.on('labels.association', ({ association: a, type }) => { if (a?.type === 'label_jid' || a?.chatId) this.hooks.onLabelChat?.(a.chatId, a.labelId, type); });
   }
 
   #contacts(contacts) {
@@ -197,6 +200,12 @@ export class QrConnector {
     }
     return lines.join('\n');
   }
+
+  /** Put an existing label on a chat (WhatsApp Business only). */
+  async addChatLabel(jid, labelId) { await this.#need().addChatLabel(jid, String(labelId)); }
+  async removeChatLabel(jid, labelId) { await this.#need().removeChatLabel(jid, String(labelId)); }
+  /** Make a new label on the phone. */
+  async createLabel(id, name, color = 0) { await this.#need().addLabel('', { id: String(id), name, color, deleted: false }); }
 
   async sendText(jid, text) {
     const sent = await this.#need().sendMessage(jid, { text });

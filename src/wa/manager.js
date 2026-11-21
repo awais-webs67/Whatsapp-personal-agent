@@ -49,6 +49,8 @@ function hooksFor(account) {
     onNotice: (level, msg) => log(level, 'whatsapp', `${account.name}: ${msg}`),
     // WhatsApp asks for a re-send when the other phone could not decrypt one of our messages.
     getMessage: (waId) => get('SELECT m.text FROM messages m JOIN chats c ON c.id = m.chat_id WHERE c.account_id = ? AND m.wa_id = ? AND m.from_me = 1', account.id, waId)?.text || null,
+    onLabel: (l) => onLabel(account.id, l),
+    onLabelChat: (jid, labelId, type) => onLabelChat(account.id, jid, labelId, type),
     onContacts: (contacts) => {
       for (const c of contacts) {
         run('UPDATE chats SET name = COALESCE(name, ?), phone = COALESCE(phone, ?) WHERE account_id = ? AND jid = ?', c.name, c.phone, account.id, c.jid);
@@ -181,6 +183,66 @@ export async function sendText(chatId, text, by = 'ai') {
   run('UPDATE chats SET last_out_at = ?, last_msg_at = ?, last_text = ?, unread = 0 WHERE id = ?', ts, ts, text.slice(0, 200), chatId);
   emit('chat', { chatId });
   return waId;
+}
+
+// ---------- WhatsApp Business labels <-> the agent's tags ----------
+// A label "Canva Ad" on the phone is the tag "canva-ad" in the agent, so "canva-ad label walon ko bhejo" works.
+export const labelTag = (name) => String(name || '').toLowerCase().trim().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '').slice(0, 30);
+const tagsOfChat = (c) => String(c?.tags || '').split(',').filter(Boolean);
+const setTags = (chatId, list) => run('UPDATE chats SET tags = ? WHERE id = ?', list.length ? `,${[...new Set(list)].join(',')},` : null, chatId);
+
+export function onLabel(accountId, l) {
+  if (!l?.id) return;
+  const before = get('SELECT * FROM wa_labels WHERE account_id = ? AND label_id = ?', accountId, String(l.id));
+  run(`INSERT INTO wa_labels (account_id, label_id, name, color, deleted) VALUES (?,?,?,?,?)
+       ON CONFLICT(account_id, label_id) DO UPDATE SET name = excluded.name, color = excluded.color, deleted = excluded.deleted`,
+  accountId, String(l.id), l.name || before?.name || '', l.color ?? before?.color ?? null, l.deleted ? 1 : 0);
+  // A label renamed on the phone: chats keep it under its new name.
+  if (before && l.name && before.name !== l.name) {
+    const oldTag = labelTag(before.name);
+    for (const c of all('SELECT id, tags FROM chats WHERE account_id = ? AND tags LIKE ?', accountId, `%,${oldTag},%`)) setTags(c.id, tagsOfChat(c).map((t) => (t === oldTag ? labelTag(l.name) : t)));
+  }
+}
+
+function chatByJid(accountId, jid) {
+  return get('SELECT * FROM chats WHERE account_id = ? AND (jid = ? OR jid = ? OR phone = ?)', accountId, jid, String(jid).split('@')[0] + '@s.whatsapp.net', String(jid).split('@')[0]);
+}
+
+export function onLabelChat(accountId, jid, labelId, type) {
+  const label = get('SELECT * FROM wa_labels WHERE account_id = ? AND label_id = ?', accountId, String(labelId));
+  const chat = chatByJid(accountId, jid);
+  if (!label?.name || !chat) return;
+  const tag = labelTag(label.name);
+  const now_ = tagsOfChat(chat);
+  setTags(chat.id, type === 'remove' ? now_.filter((t) => t !== tag) : [...now_, tag]);
+  emit('chat', { chatId: chat.id });
+}
+
+export const labelsOf = (accountId) => all('SELECT label_id id, name, color FROM wa_labels WHERE account_id = ? AND deleted = 0 ORDER BY name', accountId);
+
+/**
+ * Put a label on a customer's chat on the phone (WhatsApp Business, QR-linked). Labels the owner set stay as
+ * they are; a label that does not exist yet is made. Returns false when this number cannot have labels.
+ */
+export async function applyLabel(chat, name) {
+  const conn = connectors.get(chat.account_id);
+  if (!conn?.addChatLabel || !name) return false;
+  let label = get('SELECT * FROM wa_labels WHERE account_id = ? AND deleted = 0 AND lower(name) = lower(?)', chat.account_id, name);
+  try {
+    if (!label) {
+      const max = get("SELECT MAX(CAST(label_id AS INTEGER)) m FROM wa_labels WHERE account_id = ?", chat.account_id).m || 0;
+      const id = String(Number(max) + 1);
+      await conn.createLabel(id, name);
+      onLabel(chat.account_id, { id, name, color: 0 });
+      label = get('SELECT * FROM wa_labels WHERE account_id = ? AND label_id = ?', chat.account_id, id);
+    }
+    await conn.addChatLabel(chat.jid, label.label_id);
+    onLabelChat(chat.account_id, chat.jid, label.label_id, 'add');
+    return true;
+  } catch (e) {
+    log('warn', 'whatsapp', `Could not put the label "${name}" on ${chat.name || chat.jid}: ${e.message}`);
+    return false;
+  }
 }
 
 export const typing = (chat, on) => connectors.get(chat.account_id)?.typing(chat.jid, on) ?? Promise.resolve();

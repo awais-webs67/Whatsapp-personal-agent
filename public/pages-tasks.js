@@ -63,7 +63,7 @@ export function tasks() {
     const [label, tone] = STATUS[t.status] || [t.status, ''];
     const ctl = (action, text, cls = '') => h(`button.btn.sm${cls}`, { onclick: (e) => (action !== 'remove' || confirm(`Remove campaign #${t.id} "${t.title}"? Its leads go back to the default campaign; its log and history are kept.`)) && act(e.target, () => PATCH(`/api/tasks/${t.id}`, { action })) }, text);
     const who = c.isDefault ? 'Every new lead that no other campaign takes'
-      : [c.keywords?.length ? `first message has: ${c.keywords.join(', ')}` : null, c.adText?.length ? `ad title has: ${c.adText.join(', ')}` : null, c.adIds?.length ? `ad ID: ${c.adIds.join(', ')}` : null].filter(Boolean).join(' · ') || 'Only people you add by hand';
+      : [c.labels?.length ? `chat has label: ${c.labels.join(', ')}` : null, c.keywords?.length ? `first message has: ${c.keywords.join(', ')}` : null, c.adText?.length ? `ad title has: ${c.adText.join(', ')}` : null, c.adIds?.length ? `ad ID: ${c.adIds.join(', ')}` : null].filter(Boolean).join(' · ') || 'Only people you add by hand';
     const tile = (n, l) => h('div.ctile', {}, h('b', {}, num(n)), h('small', {}, l));
     const hist = h('div');
     const log_ = h('div.tlog-box');
@@ -84,7 +84,8 @@ export function tasks() {
         h('span.chip', {}, `Gap ${Math.round(c.gapMin)}–${Math.round(c.gapMax)} min`),
         h('span.chip', {}, c.approval ? 'Waits for your OK' : 'Sends by itself'),
         h('span.chip', {}, c.night ? 'Also at night' : 'Quiet at night'),
-        c.instructions ? h('span.chip', { title: c.instructions }, 'Has reply instructions') : null),
+        c.instructions ? h('span.chip', { title: c.instructions }, 'Has reply instructions') : null,
+        c.label ? h('span.chip', {}, `Labels leads: ${c.label}`) : null),
       h('div.ctiles', {}, tile(s.members, 'Leads'), tile(s.sent, 'Follow-ups sent'), tile(s.waiting, 'Waiting'), tile(s.replied, 'Replied after one'), tile(s.bought, 'Bought')),
       h('details.task-more', { open, ontoggle: (e) => { if (e.target.open) { openIds.add(t.id); loadSteps(t.id, log_); loadHistory(t.id, hist); } else openIds.delete(t.id); } }, h('summary', {}, 'Instructions, log and history'),
         h('div.stack', { style: 'gap:10px;padding-top:8px' },
@@ -118,13 +119,17 @@ export function tasks() {
       instructions: h('textarea', { rows: 3, dir: 'auto', value: c.instructions || '', placeholder: 'Canva Pro yearly offer batao, link bhejo, Eid discount ka zikr karo' }),
       followupStyle: h('textarea', { rows: 3, dir: 'auto', value: c.followupStyle || '', placeholder: 'Assalam o alaikum Sir, aap ne Canva ke liye rabta kiya tha…' }),
       priority: inp(c.priority, { type: 'number' }),
+      label: inp(c.label || '', { placeholder: 'Canva Ad' }),
+      labels: inp((c.labels || []).join(', '), { placeholder: 'New customer' }),
     };
     const entry = c.isDefault ? h('div.note', {}, 'This is the default campaign: every new lead that no other campaign takes joins it.')
       : h('div.stack', {}, h('b', {}, 'Who joins (any one is enough)'),
         h('div.grid2', {}, field('Words in their first message', f.keywords, 'Comma separated. Tip: give each ad its own pre-filled message.'), field('Words in the ad title', f.adText)),
-        h('div.grid2', {}, field('Meta ad IDs', f.adIds, 'From Ads Manager. Works best on the official Cloud API.'), field('Priority', f.priority, 'Lower wins when two campaigns match.')));
+        h('div.grid2', {}, field('Meta ad IDs', f.adIds, 'From Ads Manager. Works best on the official Cloud API.'), field('Chat already has WhatsApp label', f.labels, 'WhatsApp Business labels, comma separated.')),
+        field('Priority', f.priority, 'Lower wins when two campaigns match.'));
     modal(t ? `Edit campaign #${t.id}` : 'New automatic campaign', [
       field('Name', f.name), entry,
+      field('Put this WhatsApp label on its leads', f.label, 'WhatsApp Business (QR-linked) only. Made on the phone if it does not exist. Your own labels are left as they are.'),
       h('b', {}, 'Follow-ups'),
       h('div.grid2', {}, field('Follow up after (hours)', f.steps, 'One number per follow-up: 2, 24, 72'), h('div.grid2', {}, field('Gap min (minutes)', f.gapMin), field('Gap max (minutes)', f.gapMax))),
       h('label.row', {}, f.approval, h('span', {}, 'Wait for my OK before sending')), h('label.row', {}, f.night, h('span', {}, 'May send during quiet hours')),
@@ -133,7 +138,8 @@ export function tasks() {
       field('Example follow-up in your words', f.followupStyle),
     ], (close) => [h('button.btn', { onclick: close }, 'Cancel'), h('button.btn.primary', { onclick: (e) => act(e.target, async () => {
       const body = { name: f.name.value, steps: f.steps.value, gapMin: Number(f.gapMin.value), gapMax: Number(f.gapMax.value), approval: f.approval.checked, night: f.night.checked, instructions: f.instructions.value, followupStyle: f.followupStyle.value,
-        ...(c.isDefault ? {} : { keywords: f.keywords.value, adText: f.adText.value, adIds: f.adIds.value, priority: Number(f.priority.value) }) };
+        label: f.label.value,
+        ...(c.isDefault ? {} : { labels: f.labels.value, keywords: f.keywords.value, adText: f.adText.value, adIds: f.adIds.value, priority: Number(f.priority.value) }) };
       if (t) await PATCH(`/api/campaigns/${t.id}`, body); else await POST('/api/campaigns', body);
       close();
       toast(t ? 'Campaign saved. The change is in its history.' : 'Campaign created. New leads that match join it.');

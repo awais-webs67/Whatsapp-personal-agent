@@ -13,6 +13,9 @@ import { getSettings, saveSettings, emit, log } from '../core.js';
 import { taskEvent } from './task-log.js';
 
 const DEFAULT_NAME = 'New leads (automatic)';
+// Set by the server (wa/manager.applyLabel) so this module stays free of WhatsApp code.
+let labeler = null;
+export const setLabeler = (fn) => { labeler = fn; };
 
 /** What an auto campaign can be set to. Unset fields of the default campaign come from Settings. */
 export const AUTO_FIELDS = {
@@ -28,6 +31,8 @@ export const AUTO_FIELDS = {
   accountIds: 'join only for leads on these numbers',
   priority: 'lower number wins when several campaigns match',
   night: 'true = may send in quiet hours',
+  label: 'WhatsApp Business label put on every lead that joins (made if it does not exist)',
+  labels: 'join when the chat already has one of these WhatsApp labels',
 };
 
 const parseParams = (t) => { try { return JSON.parse(t?.params || '{}') || {}; } catch { return {}; } };
@@ -56,7 +61,7 @@ export function configOf(t) {
   const own = p.isDefault ? { instructions: p.instructions, followupStyle: p.followupStyle, night: p.night } : p;
   const c = { ...base };
   for (const [k, v] of Object.entries(own)) if (v !== undefined && v !== null && k in AUTO_FIELDS) c[k] = v;
-  return { ...c, isDefault: !!p.isDefault, keywords: list(p.keywords), adIds: list(p.adIds), adText: list(p.adText), accountIds: list(p.accountIds).map(Number), priority: Number(p.priority ?? 100) };
+  return { ...c, isDefault: !!p.isDefault, label: p.label || '', labels: list(p.labels), keywords: list(p.keywords), adIds: list(p.adIds), adText: list(p.adText), accountIds: list(p.accountIds).map(Number), priority: Number(p.priority ?? 100) };
 }
 
 export const autoCampaigns = (statuses = ['active', 'paused']) =>
@@ -68,12 +73,14 @@ export function matchCampaign(chat, firstText = '') {
   const rows = autoCampaigns(['active', 'paused']).map((t) => ({ t, c: configOf(t) })).filter((x) => !x.c.isDefault).sort((a, b) => a.c.priority - b.c.priority || a.t.id - b.t.id);
   for (const { t, c } of rows) {
     if (c.accountIds.length && !c.accountIds.includes(chat.account_id)) continue;
-    const hasRule = c.keywords.length || c.adIds.length || c.adText.length;
+    const hasRule = c.keywords.length || c.adIds.length || c.adText.length || c.labels.length;
     if (!hasRule && !c.accountIds.length) continue; // a campaign with no entry rule only gets people added by hand
     if (!hasRule) return t; // "every lead on this number"
     if (c.adIds.length && chat.ad_id && c.adIds.includes(String(chat.ad_id))) return t;
     if (c.adText.length && chat.ad_title && c.adText.some((w) => chat.ad_title.toLowerCase().includes(w.toLowerCase()))) return t;
     if (c.keywords.length && c.keywords.some((w) => text.includes(w.toLowerCase()))) return t;
+    const tags = String(chat.tags || '').split(',');
+    if (c.labels.length && c.labels.some((l) => tags.includes(String(l).toLowerCase().trim().replace(/[^\p{L}\p{N}]+/gu, '-')))) return t;
   }
   return ensureDefaultCampaign();
 }
@@ -85,6 +92,8 @@ export function assignCampaign(chatId) {
   const first = get('SELECT text FROM messages WHERE chat_id = ? AND from_me = 0 ORDER BY ts, id LIMIT 1', chatId)?.text || '';
   const t = matchCampaign(chat, first);
   update('chats', chatId, { campaign_id: t.id }, ['campaign_id']);
+  const lab = configOf(t).label;
+  if (lab && labeler) labeler(get('SELECT * FROM chats WHERE id = ?', chatId), lab).then((ok) => ok && taskEvent(t.id, `Label "${lab}" put on ${chat.name || chat.phone || `chat ${chat.id}`}`, { kind: 'info', chatId })).catch(() => {});
   if (!configOf(t).isDefault) taskEvent(t.id, `New lead joined: ${chat.name || (chat.phone ? `+${chat.phone}` : `chat ${chat.id}`)}${chat.ad_title ? ` (from the ad "${chat.ad_title}")` : ''}`, { kind: 'info', chatId });
   return t.id;
 }
@@ -118,6 +127,8 @@ const clean = {
   keywords: (v) => list(v).slice(0, 30),
   adIds: (v) => list(v).slice(0, 30),
   adText: (v) => list(v).slice(0, 30),
+  label: (v) => String(v || '').trim().slice(0, 40),
+  labels: (v) => list(v).slice(0, 30),
   accountIds: (v) => list(v).map(Number).filter((n) => n > 0),
   priority: (v) => Math.round(Number(v) || 100),
 };
