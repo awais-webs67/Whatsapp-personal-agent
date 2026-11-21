@@ -225,7 +225,7 @@ const TOOLS = {
     run: () => ({ format: getSettings().business.format || '(none)' }),
   },
   change_settings: {
-    doc: 'change_settings {"format_rule": "Links hamesha aakhir mein", "format_reset": false, "autopilot": true, "followups": true, "reading": true, "ask_before_sending": false, "followup_gap_minutes": [6, 25], "followup_after_hours": [24, 72, 168], "quiet_hours": [21, 9], "daily_cap": 40, "reply_delay_seconds": [2, 4]} - switch things on/off and change timings; send only the keys the owner mentioned. autopilot = the agent answers customers by itself; followups = automatic follow-ups for quiet leads; reading = keep reading chats that changed; followup_gap_minutes = random gap between two follow-up messages; followup_after_hours = when to nudge a quiet lead; quiet_hours = [start, end] hours with no proactive messages; reply_delay_seconds = how long it waits before answering.',
+    doc: 'change_settings {"format_rule": "Links hamesha aakhir mein", "format_reset": false, "autopilot": true, "followups": true, "reading": true, "voice": true, "images": false, "ask_before_sending": false, "followup_gap_minutes": [6, 25], "followup_after_hours": [24, 72, 168], "quiet_hours": [21, 9], "daily_cap": 40, "reply_delay_seconds": [2, 4]} - switch things on/off and change timings; send only the keys the owner mentioned. autopilot = the agent answers customers by itself; followups = automatic follow-ups for quiet leads; reading = keep reading chats that changed; voice = turn customer voice notes into text; images = describe pictures customers send (payment proofs, screenshots); followup_gap_minutes = random gap between two follow-up messages; followup_after_hours = when to nudge a quiet lead; quiet_hours = [start, end] hours with no proactive messages; reply_delay_seconds = how long it waits before answering.',
     run: (a) => applySettings(a),
   },
   stop_followups: {
@@ -302,6 +302,8 @@ export function applySettings(a = {}) {
     done.push(`automatic follow-ups ${onOff(a.followups)}${cancelled ? ` (${cancelled} waiting message${cancelled === 1 ? '' : 's'} cancelled)` : ''}${a.followups ? '' : '; your own tasks keep running'}`);
   }
   if (typeof a.reading === 'boolean') { patch.reading = { auto: a.reading }; done.push(`reading new chats ${onOff(a.reading)}`); }
+  if (typeof a.voice === 'boolean') { patch.voice = { transcribe: a.voice }; done.push(`listening to voice notes ${onOff(a.voice)}`); }
+  if (typeof a.images === 'boolean') { patch.images = { read: a.images }; done.push(`reading pictures ${onOff(a.images)}`); }
   if (typeof a.ask_before_sending === 'boolean') { updateAuto(ensureDefaultCampaign().id, { approval: a.ask_before_sending }, 'command'); done.push(a.ask_before_sending ? 'follow-ups wait for your approval' : 'follow-ups go out without asking'); }
   const gap = nums(a.followup_gap_minutes);
   if (gap.length) { const lo = Math.min(...gap), hi = Math.max(...gap); updateAuto(ensureDefaultCampaign().id, { gapMin: lo, gapMax: hi }, 'command'); done.push(`follow-ups spaced randomly ${lo} to ${hi} minutes apart`); }

@@ -72,7 +72,8 @@ export class CloudConnector {
           this.lastInbound.set(m.from, { id: m.id, ts });
           const ad = m.referral ? { id: m.referral.source_id ? String(m.referral.source_id) : null, title: m.referral.headline || m.referral.body || null, url: m.referral.source_url || null } : null;
           const audio = m.type === 'audio' && m.audio?.id ? { mime: m.audio.mime_type || 'audio/ogg', fetch: () => this.media(m.audio.id) } : null;
-          out.push({ jid: m.from, phone: m.from, name: names.get(m.from) || null, waId: m.id, fromMe: false, text, type: m.type === 'text' ? 'text' : 'media', ts, ad, audio });
+          const image = m.type === 'image' && m.image?.id ? { mime: m.image.mime_type || 'image/jpeg', fetch: () => this.media(m.image.id) } : null;
+          out.push({ jid: m.from, phone: m.from, name: names.get(m.from) || null, waId: m.id, fromMe: false, text, type: m.type === 'text' ? 'text' : 'media', ts, ad, audio, image });
         }
       }
     }

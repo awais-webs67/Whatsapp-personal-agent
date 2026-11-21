@@ -1575,3 +1575,17 @@ test('lead score ranks a fresh negotiating lead above a quiet new one', async ()
   assert.equal(cold.label, 'cold');
   assert.equal(leadScore({ stage: 'purchased' }).label, 'customer');
 });
+
+test('voice notes and pictures can be switched by command', async () => {
+  const { switchIntent } = await import('../src/agent/intent.js');
+  assert.deepEqual(switchIntent('voice notes sunna band karo'), { voice: false });
+  assert.deepEqual(switchIntent('pictures parhna on karo'), { images: true });
+  assert.deepEqual(switchIntent('auto reply band karo'), { autopilot: false });
+  const { applySettings } = await import('../src/agent/commander.js');
+  const { getSettings } = await import('../src/core.js');
+  assert.equal(getSettings().images.read, false); // off by default: it costs tokens
+  applySettings({ images: true, voice: false });
+  assert.equal(getSettings().images.read, true);
+  assert.equal(getSettings().voice.transcribe, false);
+  applySettings({ images: false, voice: true });
+});

@@ -23,6 +23,7 @@ import { importKnowledgeFiles, saveUpload, listFiles, removeFile, fileToText } f
 import { updateCampaign } from './agent/campaign-edit.js';
 import { labelChats } from './agent/labeling.js';
 import { leadScore } from './agent/score.js';
+import { mediaStatus } from './agent/voice.js';
 import * as email from './email/index.js';
 import { setEmailStats } from './agent/tasks.js';
 import { handleCommand, startCommander, listThreads, newThread } from './agent/commander.js';
@@ -583,6 +584,7 @@ app.post('/api/commands', wrap(async (req) => {
   return handleCommand(text.slice(0, 2000), { threadId: thread });
 }));
 app.post('/api/learn', wrap((req) => learnFromChats({ accountId: req.body.accountId ? Number(req.body.accountId) : null, maxChats: Math.min(1000, Math.max(1, Number(req.body.maxChats) || 150)) })));
+app.get('/api/settings/media', wrap(() => mediaStatus()));
 app.put('/api/settings', wrap((req) => {
   const s = saveSettings(req.body || {});
   if (req.body?.business?.prices) kvSet('pricesChosen', true); // the owner decided; saved shop files no longer switch it

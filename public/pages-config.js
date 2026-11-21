@@ -1,4 +1,4 @@
-import { h, set, GET, POST, PUT, DEL, act, toast, modal, field, toggle, select, clock, num, stagePill, rel } from './ui.js';
+import { h, set, ico, GET, POST, PUT, DEL, act, toast, modal, field, toggle, select, clock, num, stagePill, rel } from './ui.js';
 import { S, live } from './state.js';
 import { logRow } from './pages-main.js';
 
@@ -198,8 +198,21 @@ function learnCard(f, b) {
 
 // ============================== Settings ==============================
 export function settings() {
-  const el = h('div.page', {}, h('div.head', {}, h('div', {}, h('h1', {}, 'Settings'), h('p', {}, 'Pacing that keeps conversations natural, and limits that keep your numbers safe.'))));
-  GET('/api/settings').then((s) => {
+  const el = h('div.page', {}, h('div.head', {}, h('div', {}, h('h1', {}, 'Settings'), h('p', {}, 'Rules for the whole agent: what it may do, how human it looks, and the limits that keep your numbers safe.'))),
+    h('div.scope', {},
+      h('div', {}, h('div.scope-t', {}, ico('sliders-horizontal'), h('b', {}, 'Settings: the whole agent')), h('span', {}, 'Switches, reply speed, number safety, quiet hours, time zone. Apply to every number and every campaign.')),
+      h('div', {}, h('div.scope-t', {}, ico('megaphone'), h('b', {}, 'Campaign settings: one campaign')), h('span', {}, 'Its instructions, files, follow-up timing, labels and who joins. Open the campaign on the ', h('a', { href: '#/campaigns' }, 'Campaigns'), ' page.')),
+      h('div', {}, h('div.scope-t', {}, ico('book-open'), h('b', {}, 'Knowledge: what it says')), h('span', {}, 'Your products, prices, message format and follow-up style, on the ', h('a', { href: '#/knowledge' }, 'Knowledge'), ' page.'))));
+  Promise.all([GET('/api/settings'), GET('/api/settings/media').catch(() => ({}))]).then(([s, media]) => {
+    // The switches save at once; each says whether it spends AI tokens.
+    const sw = (on, label, hint, cost, patchOf) => h('label.cswitch', {}, h('div', {}, h('b', {}, label, ' ', h(`span.cost.${cost[0]}`, {}, cost[1])), h('span', {}, hint)),
+      toggle(on, (v) => act(null, () => PUT('/api/settings', patchOf(v)), `${label}: ${v ? 'on' : 'off'}`), label));
+    el.append(h('div.card', { style: 'margin-bottom:16px' }, h('header', {}, h('h2', {}, 'What the agent does')), h('div.cswitches.wide', {},
+      sw(s.autopilot, 'Auto reply to customers', 'Off: the agent sends nothing by itself. You answer from the Inbox; follow-ups stop too.', ['mid', 'Tokens per reply'], (v) => ({ autopilot: v })),
+      sw(s.reading?.auto !== false, 'Read chats in the background', 'Keeps each customer’s stage, summary and profile up to date. Off saves the most tokens; replies still work.', ['high', 'Most tokens'], (v) => ({ reading: { auto: v } })),
+      sw(s.voice?.transcribe !== false, 'Listen to voice notes', media.voice ? `Turned into text with ${media.voice}.` : 'Needs a Groq or OpenAI key on the AI models page (Groq is free).', ['low', 'Small'], (v) => ({ voice: { transcribe: v } })),
+      sw(s.images?.read === true, 'Look at pictures', media.images ? `Payment proofs, screenshots and product photos are described with ${media.images}. Each picture is one extra AI call.` : 'Needs a Gemini, Groq, OpenAI or OpenRouter key on the AI models page.', ['mid', 'One call per picture'], (v) => ({ images: { read: v } })),
+      sw(s.llm.tokenSaver !== false, 'Token saver', 'With a long product list, only the products this customer asks about are sent in full.', ['save', 'Saves tokens'], (v) => ({ llm: { tokenSaver: v } })))));
     const inputs = [];
     const n = (group, key, label, hint, step = 1) => { const i = h('input', { type: 'number', step, min: 0, value: s[group][key] }); inputs.push([group, key, i]); return field(label, i, hint); };
     const pair = (group, a, b, label, hint) => {
@@ -207,14 +220,12 @@ export function settings() {
       inputs.push([group, a, x], [group, b, y]);
       return h('label.f', {}, label, h('div.row', {}, x, h('span.muted', {}, 'to'), y), hint && h('small', {}, hint));
     };
-    const saver = toggle(s.llm.tokenSaver !== false, () => {}, 'Token saver');
     const notifyWa = toggle(s.notifyWhatsApp !== false, () => {}, 'Send agent updates to my WhatsApp');
     const digest = h('input', { type: 'number', min: -1, max: 23, value: s.digestHour ?? 21 });
     const tz = h('input', { type: 'text', value: s.followup.timezone });
     const save = h('button.btn.primary', { onclick: () => act(save, async () => {
       const patch = { human: {}, followup: {}, llm: {} };
       for (const [g, k, i] of inputs) patch[g][k] = Number(i.value) || 0;
-      patch.llm.tokenSaver = saver.querySelector('input').checked;
       patch.notifyWhatsApp = notifyWa.querySelector('input').checked;
       patch.digestHour = Number(digest.value);
       Object.assign(patch.followup, { timezone: tz.value.trim() });
@@ -241,7 +252,6 @@ export function settings() {
         h('div.row', {}, notifyWa, h('div.grow', {}, h('b', { style: 'color:var(--ink)' }, 'Also send updates to my WhatsApp'), h('div.muted', {}, 'Task progress, customers who need you, sales and the daily summary go to your “Message yourself” chat (write anything there once so the agent knows it). They always appear on the Command page.'))),
         h('div.grid3', {}, field('Daily summary at (hour, 0–23; -1 = off)', digest, 'Uses the time zone below.')))),
       h('div.card', {}, h('header', {}, h('h2', {}, 'Model calls')), h('div.pad.stack', {},
-        h('div.row', {}, saver, h('div.grow', {}, h('b', { style: 'color:var(--ink)' }, 'Token saver'), h('div.muted', {}, 'With long product lists, send only the products this customer is asking about in full, and the rest as name and price. Uses about 4 times fewer tokens with a large catalogue.'))),
         h('div.grid3', {},
         n('llm', 'historyMessages', 'Messages of history per reply', 'More context, more tokens. 12 is plenty for most sales chats.'), n('llm', 'maxTokens', 'Max tokens per reply', 'Raise this if a reasoning model returns empty answers.'), n('llm', 'timeoutSec', 'Give up on a model after (sec)', 'Then the next model in the chain is tried.')))),
       h('div', {}, save),

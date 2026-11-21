@@ -111,6 +111,8 @@ export function switchIntent(t) {
   if (on === null && HALT.test(t) && !/follow\s*-?\s*ups?/i.test(t)) on = false;
   if (on === null) return null;
   if (/auto\s*-?\s*(reply|replies|jawab)|autopilot|customers?\s*ko\s*(jawab|reply)|auto\s*handl/i.test(t)) return { autopilot: on };
+  if (/voice|awaz|aawaz|audio/i.test(t)) return { voice: on };
+  if (/pictures?|images?|photos?|tasweer|tasveer|screenshots?|pics?\b/i.test(t)) return { images: on };
   if (/(chats?|messages?)\s*(parh|padh|read|reading)|reading/i.test(t)) return { reading: on };
   if (/follow\s*-?\s*ups?/i.test(t) && !/\b(bhej|send|ko)\b/i.test(t)) return { followups: on };
   return null;

@@ -57,6 +57,7 @@ export function toNeutral(msg) {
     ad: adOf(body?.contextInfo?.externalAdReply),
     // Voice notes can be fetched later and turned into text.
     audio: type === 'audioMessage' ? { mime: body?.mimetype || 'audio/ogg', fetch: () => downloadMediaMessage(msg, 'buffer', {}) } : null,
+    image: type === 'imageMessage' ? { mime: body?.mimetype || 'image/jpeg', fetch: () => downloadMediaMessage(msg, 'buffer', {}) } : null,
     raw: { key: msg.key },
   };
 }

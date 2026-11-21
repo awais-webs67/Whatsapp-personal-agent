@@ -6,7 +6,7 @@ import { decide, CLOSED, saveProfile } from './brain.js';
 import { notify, who } from './updates.js';
 import { parseChatCommand, runChatCommand } from './chat-commands.js';
 import { assignCampaign, campaignOf } from './campaigns.js';
-import { queueVoice, voiceReady } from './voice.js';
+import { queueVoice, queueImage, voiceReady } from './voice.js';
 
 const timers = new Map(); // chatId -> debounce timer
 const busy = new Set();   // chats currently being answered
@@ -177,7 +177,7 @@ export function answerNow(chatId) {
 
 export function startPipeline() {
   wa.setHandlers({
-    onCustomer, onOwner, onVoice: queueVoice,
+    onCustomer, onOwner, onVoice: queueVoice, onImage: queueImage,
     isChatCommand: (text) => !!parseChatCommand(text),
     onChatCommand: (chatId, text, { accountId, key, jid }) => {
       const reply = runChatCommand(chatId, text, { answerNow });
