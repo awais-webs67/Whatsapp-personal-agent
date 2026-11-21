@@ -31,6 +31,7 @@ export const AUTO_FIELDS = {
   accountIds: 'join only for leads on these numbers',
   priority: 'lower number wins when several campaigns match',
   night: 'true = may send in quiet hours',
+  templateFallback: 'true = when no AI model can write, send the example follow-up with name and product filled in',
   label: 'WhatsApp Business label put on every lead that joins (made if it does not exist)',
   labels: 'join when the chat already has one of these WhatsApp labels',
 };
@@ -57,8 +58,8 @@ export function ensureDefaultCampaign() {
 export function configOf(t) {
   const p = parseParams(t);
   const f = getSettings().followup;
-  const base = { steps: f.stepsHours, gapMin: f.gapMinSec / 60, gapMax: f.gapMaxSec / 60, approval: f.approval, night: false, instructions: '', followupStyle: '' };
-  const own = p.isDefault ? { instructions: p.instructions, followupStyle: p.followupStyle, night: p.night } : p;
+  const base = { steps: f.stepsHours, gapMin: f.gapMinSec / 60, gapMax: f.gapMaxSec / 60, approval: f.approval, night: false, templateFallback: true, instructions: '', followupStyle: '' };
+  const own = p.isDefault ? { instructions: p.instructions, followupStyle: p.followupStyle, night: p.night, templateFallback: p.templateFallback } : p;
   const c = { ...base };
   for (const [k, v] of Object.entries(own)) if (v !== undefined && v !== null && k in AUTO_FIELDS) c[k] = v;
   return { ...c, isDefault: !!p.isDefault, label: p.label || '', labels: list(p.labels), keywords: list(p.keywords), adIds: list(p.adIds), adText: list(p.adText), accountIds: list(p.accountIds).map(Number), priority: Number(p.priority ?? 100) };
@@ -122,6 +123,7 @@ const clean = {
   gapMax: (v) => Math.max(0, Math.min(24 * 60, Number(v) || 0)),
   approval: (v) => !!v,
   night: (v) => !!v,
+  templateFallback: (v) => !!v,
   instructions: (v) => String(v || '').trim().slice(0, 1500),
   followupStyle: (v) => String(v || '').trim().slice(0, 1000),
   keywords: (v) => list(v).slice(0, 30),

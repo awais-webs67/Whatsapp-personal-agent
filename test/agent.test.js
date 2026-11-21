@@ -1396,3 +1396,28 @@ test('watchdog: a number down for 10 minutes and no model able to answer are rep
   }
   void taskEvents;
 });
+
+test('no AI model can write: an automatic follow-up still goes out from your own template, made personal', async () => {
+  const { saveSettings } = await import('../src/core.js');
+  assert.equal(followups.fillTemplate('Assalam o alaikum Sir, aap ne ___ ke liye rabta kiya tha. Link: https://x.test', { name: 'Ali', profile: JSON.stringify({ wants: ['Canva Pro'] }) }),
+    'Assalam o alaikum Sir, aap ne Canva Pro ke liye rabta kiya tha. Link:\nhttps://x.test');
+  assert.equal(followups.fillTemplate('', {}), '');
+  saveSettings({ business: { followupStyle: 'Salam {name}, aap ne ___ ke liye poocha tha. Abhi bhi chahiye?' } });
+  const on = all('SELECT id FROM providers WHERE enabled = 1').map((r) => r.id);
+  run('UPDATE providers SET enabled = 0');
+  const broke = Number(run('INSERT INTO providers (preset, name, kind, base_url, api_key, model, priority, created_at) VALUES (?,?,?,?,?,?,?,?)', 'custom', 'Broke', 'openai', baseUrl, encrypt('broke'), 'fake-1', -9, now()).lastInsertRowid);
+  const chat = get("SELECT * FROM chats WHERE jid = '923331110001@s.whatsapp.net'");
+  try {
+    run("UPDATE followups SET status = 'skipped' WHERE chat_id = ? AND status IN ('pending','approved')", chat.id);
+    run("UPDATE chats SET name = 'Ayesha', next_followup_at = ?, stage = 'interested', followup_count = 0, needs_human = 0, paused_until = NULL, profile = ? WHERE id = ?", now() - 1000, JSON.stringify({ wants: ['Canva Pro'] }), chat.id);
+    await followups._tick();
+    const f = get('SELECT * FROM followups WHERE chat_id = ? ORDER BY id DESC LIMIT 1', chat.id);
+    assert.ok(f, 'a follow-up was queued');
+    assert.equal(f.text, 'Salam Ayesha, aap ne Canva Pro ke liye poocha tha. Abhi bhi chahiye?');
+    assert.equal(f.reason, 'AI busy: your template');
+  } finally {
+    run('DELETE FROM providers WHERE id = ?', broke);
+    for (const p of on) run('UPDATE providers SET enabled = 1 WHERE id = ?', p);
+    saveSettings({ business: { followupStyle: '' } });
+  }
+});

@@ -3,7 +3,7 @@
 import { all, get, run, now, update } from '../db.js';
 import { getSettings, log, emit, sleep, rand, hourIn, isQuiet } from '../core.js';
 import * as wa from '../wa/manager.js';
-import { decide, CLOSED, saveProfile } from './brain.js';
+import { decide, CLOSED, saveProfile, tidy } from './brain.js';
 import { learnFromChats } from './learn.js';
 import { notify, who } from './updates.js';
 import { eligibility, humanSend, scheduleNextFollowup } from './pipeline.js';
@@ -168,6 +168,19 @@ export async function resumeBatch(task) {
   return campaign.total;
 }
 
+/**
+ * The owner's example follow-up made personal without AI: "___" / {product} becomes what the customer asked
+ * about (from their card or ad), {name} their name; Sir stays Sir. Empty when there is no template.
+ */
+export function fillTemplate(style, chat) {
+  const t = String(style || '').trim();
+  if (!t) return '';
+  let profile = {};
+  try { profile = JSON.parse(chat.profile || '{}') || {}; } catch { /* none */ }
+  const product = profile.wants?.[0] || chat.ad_title || 'hamari service';
+  return tidy(t.replace(/_{2,}|\{product\}|\{item\}/gi, product).replace(/\{name\}/gi, chat.name || '').replace(/\s{2,}/g, ' '));
+}
+
 /** The next messages a task will send, with who and when (for the owner's reply). */
 export function nextOfTask(taskId, n = 3) {
   return all(`SELECT f.due_at, f.status, c.name, c.phone, c.id chat_id FROM followups f JOIN chats c ON c.id = f.chat_id
@@ -247,6 +260,14 @@ async function draftDue() {
         queue(chat.id, 'auto', d.message, d.reason, camp.config.approval ? 'pending' : 'approved', now(), camp.task.id);
         taskEvent(camp.task.id, `Wrote follow-up ${chat.followup_count + 1} for ${who(chat)}${camp.config.approval ? ', waiting for your OK' : ''}: "${String(d.message).slice(0, 160)}"`, { kind: 'wrote', chatId: chat.id });
       } catch (e) {
+        // No AI right now: the owner's own follow-up example goes out instead (name and product filled in).
+        const camp = campaignOf(chat);
+        const text = outOfModels(e) && camp.config.templateFallback !== false ? fillTemplate(camp.config.followupStyle || getSettings().business.followupStyle, chat) : '';
+        if (text) {
+          queue(chat.id, 'auto', text, 'AI busy: your template', camp.config.approval ? 'pending' : 'approved', now(), camp.task.id);
+          taskEvent(camp.task.id, `Every AI model was busy, so follow-up ${chat.followup_count + 1} for ${who(chat)} uses your template: "${text.slice(0, 160)}"`, { kind: 'wrote', chatId: chat.id });
+          continue;
+        }
         log('error', 'followup', `Could not draft a follow-up for ${label(chat)}: ${e.message}`);
         update('chats', chat.id, { next_followup_at: now() + 3_600_000 }, ['next_followup_at']); // try again in an hour
       }

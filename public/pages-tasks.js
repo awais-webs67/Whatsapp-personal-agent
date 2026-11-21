@@ -116,6 +116,7 @@ export function tasks() {
       gapMax: inp(c.gapMax, { type: 'number', min: 0 }),
       approval: h('input', { type: 'checkbox', checked: !!c.approval }),
       night: h('input', { type: 'checkbox', checked: !!c.night }),
+      templateFallback: h('input', { type: 'checkbox', checked: c.templateFallback !== false }),
       instructions: h('textarea', { rows: 3, dir: 'auto', value: c.instructions || '', placeholder: 'Canva Pro yearly offer batao, link bhejo, Eid discount ka zikr karo' }),
       followupStyle: h('textarea', { rows: 3, dir: 'auto', value: c.followupStyle || '', placeholder: 'Assalam o alaikum Sir, aap ne Canva ke liye rabta kiya tha…' }),
       priority: inp(c.priority, { type: 'number' }),
@@ -132,12 +133,12 @@ export function tasks() {
       field('Put this WhatsApp label on its leads', f.label, 'WhatsApp Business (QR-linked) only. Made on the phone if it does not exist. Your own labels are left as they are.'),
       h('b', {}, 'Follow-ups'),
       h('div.grid2', {}, field('Follow up after (hours)', f.steps, 'One number per follow-up: 2, 24, 72'), h('div.grid2', {}, field('Gap min (minutes)', f.gapMin), field('Gap max (minutes)', f.gapMax))),
-      h('label.row', {}, f.approval, h('span', {}, 'Wait for my OK before sending')), h('label.row', {}, f.night, h('span', {}, 'May send during quiet hours')),
+      h('label.row', {}, f.approval, h('span', {}, 'Wait for my OK before sending')), h('label.row', {}, f.night, h('span', {}, 'May send during quiet hours')), h('label.row', {}, f.templateFallback, h('span', {}, 'When no AI model can write, send my example follow-up (name and product filled in)')),
       h('b', {}, 'How it talks to these leads'),
       field('Reply instructions', f.instructions, 'Added to every reply and follow-up for people in this campaign.'),
       field('Example follow-up in your words', f.followupStyle),
     ], (close) => [h('button.btn', { onclick: close }, 'Cancel'), h('button.btn.primary', { onclick: (e) => act(e.target, async () => {
-      const body = { name: f.name.value, steps: f.steps.value, gapMin: Number(f.gapMin.value), gapMax: Number(f.gapMax.value), approval: f.approval.checked, night: f.night.checked, instructions: f.instructions.value, followupStyle: f.followupStyle.value,
+      const body = { name: f.name.value, steps: f.steps.value, gapMin: Number(f.gapMin.value), gapMax: Number(f.gapMax.value), approval: f.approval.checked, night: f.night.checked, templateFallback: f.templateFallback.checked, instructions: f.instructions.value, followupStyle: f.followupStyle.value,
         label: f.label.value,
         ...(c.isDefault ? {} : { labels: f.labels.value, keywords: f.keywords.value, adText: f.adText.value, adIds: f.adIds.value, priority: Number(f.priority.value) }) };
       if (t) await PATCH(`/api/campaigns/${t.id}`, body); else await POST('/api/campaigns', body);
