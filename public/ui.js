@@ -27,6 +27,9 @@ export function set(el, ...kids) {
   add(el, kids);
   return el;
 }
+/** A Lucide icon by name (lucide.dev), drawn in the current text colour. */
+export const ico = (name, cls = '') => h(`i.ic${cls ? `.${cls}` : ''}`, { 'aria-hidden': 'true', style: `--ic:url(/icons/${name}.svg)` });
+
 export const svg = (d) => {
   const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   s.setAttribute('viewBox', '0 0 16 16');

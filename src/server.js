@@ -17,6 +17,8 @@ import { runChatCommand, COMMANDS } from './agent/chat-commands.js';
 import { startFollowups, runCampaign, campaign, whyNotSending, followupStatus } from './agent/followups.js';
 import { learnFromChats, learnFromWebsite, learnFromProfile, learning } from './agent/learn.js';
 import { normTags, tagString, tagsOf } from './agent/tags.js';
+import { parseCsv, toCsv, normPhone } from './csv.js';
+import { taskEvent } from './agent/task-log.js';
 import { importKnowledgeFiles, saveUpload, listFiles, removeFile, fileToText } from './agent/knowledge-files.js';
 import { updateCampaign } from './agent/campaign-edit.js';
 import { labelChats } from './agent/labeling.js';
@@ -131,6 +133,8 @@ app.post('/internal/ai', wrap(async (req) => {
 }));
 
 app.use(express.static(path.join(here, '../public'), { extensions: ['html'] }));
+// Lucide icons (ISC licence), used by the dashboard as CSS masks so they take the text colour.
+app.use('/icons', express.static(path.join(here, '../node_modules/lucide-static/icons'), { maxAge: '7d' }));
 app.use('/api', (req, res, next) => (authed(req) ? next() : res.status(401).json({ error: 'Sign in required' })));
 
 // ---------- live events ----------
@@ -475,6 +479,44 @@ app.post('/api/campaigns/:id/files', express.raw({ type: () => true, limit: '15m
   return addCampaignFile(Number(req.params.id), name, fileToText(name, req.body).text, 'dashboard');
 }));
 app.post('/api/campaigns/:id/label', wrap((req) => labelChats(req.body?.label, { campaignId: Number(req.params.id) }, { taskId: Number(req.params.id) })));
+// A campaign's people as a spreadsheet, and a spreadsheet back in: names, tags and notes for people already in
+// your chats (matched by phone). Numbers that never wrote to you are not messaged: that is cold WhatsApp and
+// gets numbers banned; use an email campaign for cold outreach.
+app.get('/api/campaigns/:id/export.csv', wrap((req, res) => {
+  const t = campaignRow(req.params.id);
+  const rows = t.kind === 'auto'
+    ? all('SELECT c.* FROM chats c WHERE c.campaign_id = ? ORDER BY c.last_msg_at DESC', t.id)
+    : all('SELECT DISTINCT c.* FROM chats c JOIN followups f ON f.chat_id = c.id WHERE f.task_id = ? ORDER BY c.last_msg_at DESC', t.id);
+  const last = (c) => get('SELECT status, sent_at, text FROM followups WHERE task_id = ? AND chat_id = ? ORDER BY id DESC LIMIT 1', t.id, c.id);
+  const date = (ms) => (ms ? new Date(ms).toISOString().slice(0, 16).replace('T', ' ') : '');
+  let prof = (c) => { try { return JSON.parse(c.profile || '{}'); } catch { return {}; } };
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="campaign-${t.id}-${new Date().toISOString().slice(0, 10)}.csv"`);
+  res.send(toCsv(rows, [['name', 'Name'], [(c) => (c.phone ? `+${c.phone}` : ''), 'Phone'], ['stage', 'Stage'], [(c) => tagsOf(c).join(' '), 'Tags'], ['ad_title', 'Ad'],
+    [(c) => (prof(c).wants || []).join(', '), 'Asked about'], [(c) => (prof(c).bought || []).join(', '), 'Bought'], ['summary', 'Summary'], [(c) => date(c.last_msg_at), 'Last message'],
+    [(c) => last(c)?.status || '', 'Campaign message'], [(c) => date(last(c)?.sent_at), 'Sent at'], ['notes', 'Notes']]));
+}));
+app.post('/api/campaigns/:id/import', express.raw({ type: () => true, limit: '10mb' }), wrap((req) => {
+  const t = campaignRow(req.params.id);
+  const rows = parseCsv(req.body.toString('utf8'));
+  if (!rows.length) throw bad('The file has no rows. The first line must be the column names, e.g. phone,name,tags,notes');
+  let matched = 0, added = 0;
+  const missing = [];
+  for (const r of rows) {
+    const phone = normPhone(r.phone || r.number || r.whatsapp || r.mobile);
+    if (!phone) continue;
+    const c = get('SELECT * FROM chats WHERE phone = ? OR jid = ? ORDER BY last_msg_at DESC LIMIT 1', phone, `${phone}@s.whatsapp.net`);
+    if (!c) { missing.push(phone); continue; }
+    matched++;
+    const tags = [...new Set([...tagsOf(c), ...normTags(r.tags || r.tag || r.label || '')])];
+    const note = String(r.notes || r.note || '').trim();
+    update('chats', c.id, { name: c.name || r.name || r.first_name || null, tags: tagString(tags), notes: note ? [c.notes, note].filter(Boolean).join('\n').slice(-2000) : c.notes }, ['name', 'tags', 'notes']);
+    if (t.kind === 'auto' && c.campaign_id !== t.id) { run('UPDATE chats SET campaign_id = ? WHERE id = ?', t.id, c.id); added++; }
+  }
+  taskEvent(t.id, `Imported a sheet: ${matched} people matched${added ? `, ${added} joined this campaign` : ''}${missing.length ? `, ${missing.length} numbers are not in your chats (not messaged)` : ''}`, { kind: 'changed' });
+  emit('chat', {});
+  return { rows: rows.length, matched, added, notInChats: missing.length, examples: missing.slice(0, 5) };
+}));
 app.delete('/api/campaigns/:id/files/:name', wrap((req) => removeCampaignFile(Number(req.params.id), req.params.name, 'dashboard')));
 app.get('/api/campaigns/:id/changes', wrap((req) => changesOf(Number(req.params.id))));
 app.get('/api/tasks/:id/events', wrap((req) => taskEvents(Number(req.params.id), Number(req.query.limit) || 300)));

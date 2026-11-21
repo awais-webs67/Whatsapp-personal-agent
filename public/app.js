@@ -1,4 +1,4 @@
-import { h, set, svg, GET, POST, PUT, act, toggle, field, toast } from './ui.js';
+import { h, set, svg, ico, GET, POST, PUT, act, toggle, field, toast } from './ui.js';
 import { S, subs } from './state.js';
 import { overview, inbox } from './pages-main.js';
 import { followups, numbers, models } from './pages-ops.js';
@@ -14,26 +14,26 @@ const PRIMARY = ['overview', 'campaigns', 'inbox', 'command']; // in the phone's
 
 // Sidebar sections: work every day, setup once, see results.
 const ROUTES = [
-  ['overview', 'Home', 'M2 7l6-5 6 5v7H2zM6 14v-4h4v4', overview, 'Work'],
-  ['campaigns', 'Campaigns', 'M2 6h3l6-3v10l-6-3H2zM5 10l1 4h2', campaigns, 'Work'],
-  ['inbox', 'Inbox', 'M2 3h12v8H7l-3 3v-3H2z', inbox, 'Work'],
-  ['command', 'Command', 'M2 3h12v10H2zM4 6l3 2-3 2M8 10h4', command, 'Work'],
-  ['followups', 'Approvals', 'M3 8l3 3 7-7M2 14h12', followups, 'Work'],
-  ['tasks', 'All tasks', 'M3 3h10v10H3zM5 6l1.5 1.5L9 5M5 10.5h6', tasks, 'Work'],
-  ['numbers', 'Numbers', 'M5 1h6v14H5zM7 12h2', numbers, 'Setup'],
-  ['knowledge', 'Knowledge', 'M3 2h8l2 2v10H3zM5 6h6M5 9h6M5 12h4', knowledge, 'Setup'],
-  ['models', 'AI models', 'M2 8h3M11 8h3M5 5h6v6H5zM8 2v3M8 11v3', models, 'Setup'],
-  ['playground', 'Live test', 'M4 2l9 6-9 6z', playground, 'Setup'],
-  ['settings', 'Settings', 'M2 4h8M12 4h2M2 8h2M6 8h8M2 12h6M10 12h4M10 2v4M4 6v4M8 10v4', settings, 'Setup'],
-  ['reports', 'Reports', 'M2 14h12M4 12V8M8 12V4M12 12V6', reports, 'Insights'],
-  ['activity', 'Activity', 'M1 8h3l2-5 3 10 2-5h4', activity, 'Insights'],
+  ['overview', 'Home', 'house', overview, 'Work'],
+  ['campaigns', 'Campaigns', 'megaphone', campaigns, 'Work'],
+  ['inbox', 'Inbox', 'message-square-text', inbox, 'Work'],
+  ['command', 'Command', 'terminal', command, 'Work'],
+  ['followups', 'Approvals', 'circle-check-big', followups, 'Work'],
+  ['tasks', 'All tasks', 'list-checks', tasks, 'Work'],
+  ['numbers', 'Numbers', 'smartphone', numbers, 'Setup'],
+  ['knowledge', 'Knowledge', 'book-open-text', knowledge, 'Setup'],
+  ['models', 'AI models', 'cpu', models, 'Setup'],
+  ['playground', 'Live test', 'flask-conical', playground, 'Setup'],
+  ['settings', 'Settings', 'settings-2', settings, 'Setup'],
+  ['reports', 'Reports', 'chart-column', reports, 'Insights'],
+  ['activity', 'Activity', 'activity', activity, 'Insights'],
 ];
 
 function shell(me) {
   const navLinks = {};
   const outlet = h('main');
   // Accounts (hub): the admin also manages clients; a client sees how much shared AI is left today.
-  if (me?.role === 'admin' && !ROUTES.some((r) => r[0] === 'clients')) ROUTES.push(['clients', 'Clients', 'M5 6a2.5 2.5 0 1 0 0-.1M1 14c0-2.5 1.8-4 4-4s4 1.5 4 4M11 7a2 2 0 1 0 0-.1M10 10.2c2.5-.6 5 .8 5 3.8', clients, 'Admin']);
+  if (me?.role === 'admin' && !ROUTES.some((r) => r[0] === 'clients')) ROUTES.push(['clients', 'Clients', 'users', clients, 'Admin']);
   const banner = viewingBanner(me);
   const who = me ? h('small.muted', {}, me.viewing ? `Signed in as ${me.username}` : `${me.name || me.username}${!me.viewing && me.role === 'client' && me.sharedAi ? ` · AI today ${me.aiUsedToday}${me.aiDaily ? `/${me.aiDaily}` : ''}` : ''}`) : null;
   const pilot = toggle(S.autopilot, async (on) => {
@@ -49,17 +49,17 @@ function shell(me) {
     who,
     h('button.linkbtn', { onclick: () => POST('/api/auth/logout').then(() => location.reload()) }, 'Sign out'));
   // Phones: four main pages in the bottom bar; everything else (and the switches) under "More".
-  const more = h('button.more', { type: 'button', 'aria-label': 'More pages and switches', onclick: () => openMore() }, svg('M3 4h10M3 8h10M3 12h10'), h('span', {}, 'More'));
+  const more = h('button.more', { type: 'button', 'aria-label': 'More pages and switches', onclick: () => openMore() }, ico('menu'), h('span', {}, 'More'));
   const aside = h('aside.nav', {},
     h('div.brand', {}, h('img', { src: '/favicon.svg', alt: '' }), h('div', {}, h('b', {}, 'AivraSol'), h('small', {}, 'Agent desk'))),
-    h('nav', { 'aria-label': 'Main' }, ROUTES.flatMap(([id, label, icon, , group], i) => [group && group !== ROUTES[i - 1]?.[4] ? h('div.navsec', {}, group) : null, (navLinks[id] = h(`a${PRIMARY.includes(id) ? '' : '.sec'}`, { href: `#/${id}` }, svg(icon), h('span', {}, label)))]).filter(Boolean), more),
+    h('nav', { 'aria-label': 'Main' }, ROUTES.flatMap(([id, label, icon, , group], i) => [group && group !== ROUTES[i - 1]?.[4] ? h('div.navsec', {}, group) : null, (navLinks[id] = h(`a${PRIMARY.includes(id) ? '' : '.sec'}`, { href: `#/${id}` }, ico(icon), h('span', {}, label)))]).filter(Boolean), more),
     foot);
   function openMore() {
     const close = () => { veil.remove(); aside.append(foot); removeEventListener('hashchange', close); };
     const veil = h('div.sheet-veil', { onmousedown: (e) => e.target === veil && close() },
       h('div.sheet', { role: 'dialog', 'aria-label': 'More' },
         h('div.sheet-links', {}, ROUTES.filter(([id]) => !PRIMARY.includes(id)).map(([id, label, icon]) =>
-          h(`a${location.hash.startsWith(`#/${id}`) ? '.on' : ''}`, { href: `#/${id}` }, svg(icon), h('span', {}, label)))),
+          h(`a${location.hash.startsWith(`#/${id}`) ? '.on' : ''}`, { href: `#/${id}` }, ico(icon), h('span', {}, label)))),
         foot,
         h('button.btn', { type: 'button', onclick: () => close() }, 'Close')));
     addEventListener('hashchange', close);

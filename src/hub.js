@@ -386,6 +386,7 @@ app.use('/api', (req, res) => {
 });
 
 app.use(express.static(path.join(here, '../public'), { extensions: ['html'] }));
+app.use('/icons', express.static(path.join(here, '../node_modules/lucide-static/icons'), { maxAge: '7d' }));
 
 // eslint-disable-next-line no-unused-vars
 app.use((err, _req, res, _next) => {

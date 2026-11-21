@@ -1,23 +1,23 @@
 // Campaigns: the centre of the dashboard. Campaign cards, a step-by-step "new campaign" wizard, and a page per
 // campaign: hero header, how it works, switches, people, messages, full settings (instructions, files, format),
 // log and history. Everything here can also be done from Command ("campaign 5 ...").
-import { h, set, svg, GET, POST, PATCH, DEL, act, toast, modal, field, toggle, select, rel, num, stagePill } from './ui.js';
+import { h, set, ico, GET, POST, PATCH, DEL, act, toast, modal, field, toggle, select, rel, num, stagePill } from './ui.js';
 import { S, live } from './state.js';
 
 // ---------- look ----------
 const TYPES = {
-  auto: { label: 'Always on', tone: 'auto', icon: 'M8 1v3M8 12v3M1 8h3M12 8h3M3.5 3.5l2 2M10.5 10.5l2 2M3.5 12.5l2-2M10.5 5.5l2-2M8 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4', title: 'Always on, for new leads', hint: 'New leads join by the ad they came from, words in their first message, a label or a number. It answers them with its own instructions and follows up on its own hours.', best: 'Ads and inbound leads' },
-  batch: { label: 'One-time', tone: 'once', icon: 'M2 8l12-6-4 12-2-5zM8 9l6-7', title: 'One-time, to people in your chats', hint: 'Pick people already in your chats by period, product, stage or tag. Each one gets a personal message, spaced out.', best: 'Offers, reminders, win-backs' },
-  scheduled: { label: 'Scheduled', tone: 'sched', icon: 'M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2zM8 5v3l2 2', title: 'Scheduled', hint: 'Repeats an instruction on a schedule.', best: 'Daily reports' },
-  analysis: { label: 'Reading', tone: 'read', icon: 'M2 3h5l1 1 1-1h5v10H9l-1 1-1-1H2zM8 4v10', title: 'Reading', hint: 'Reads chats and learns from them.', best: 'Learning' },
-  email: { label: 'Email', tone: 'email', icon: 'M2 4h12v8H2zM2 4l6 5 6-5', title: 'Email campaign', hint: 'Cold or follow-up emails from your own sending account, with sequences, limits and unsubscribe.', best: 'Coming next' },
+  auto: { label: 'Always on', tone: 'auto', icon: 'radio-tower', title: 'Always on, for new leads', hint: 'New leads join by the ad they came from, words in their first message, a label or a number. It answers them with its own instructions and follows up on its own hours.', best: 'Ads and inbound leads' },
+  batch: { label: 'One-time', tone: 'once', icon: 'send', title: 'One-time, to people in your chats', hint: 'Pick people already in your chats by period, product, stage or tag. Each one gets a personal message, spaced out.', best: 'Offers, reminders, win-backs' },
+  scheduled: { label: 'Scheduled', tone: 'sched', icon: 'calendar-clock', title: 'Scheduled', hint: 'Repeats an instruction on a schedule.', best: 'Daily reports' },
+  analysis: { label: 'Reading', tone: 'read', icon: 'book-open', title: 'Reading', hint: 'Reads chats and learns from them.', best: 'Learning' },
+  email: { label: 'Email', tone: 'email', icon: 'mail', title: 'Email campaign', hint: 'Cold or follow-up emails from your own sending account, with sequences, limits and unsubscribe.', best: 'Coming next' },
 };
 const STATUS = { active: ['Running', 'hot'], paused: ['Paused', 'warn'], done: ['Done', 'ok'], failed: ['Failed', 'bad'] };
 const typeOf = (t) => TYPES[t.kind] || TYPES.scheduled;
 const when = (ts) => (ts ? new Date(ts).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—');
 const dur = (x) => (x % 24 === 0 ? `${x / 24} day${x === 24 ? '' : 's'}` : `${x} h`);
 const pill = (t) => { const [l, tone] = STATUS[t.status] || [t.status, '']; return h(`span.pill.${tone}`, {}, t.status === 'active' ? h('i.dia.hot.live') : null, l); };
-const badge = (kind, big = false) => { const ty = TYPES[kind] || TYPES.scheduled; return h(`span.cicon.${ty.tone}${big ? '.big' : ''}`, { 'aria-hidden': 'true' }, svg(ty.icon)); };
+const badge = (kind, big = false) => { const ty = TYPES[kind] || TYPES.scheduled; return h(`span.cicon.${ty.tone}${big ? '.big' : ''}`, { 'aria-hidden': 'true' }, ico(ty.icon)); };
 const accountName = (id) => S.accounts.find((a) => a.id === Number(id))?.name || `Number ${id}`;
 const metric = (n, label) => h('div.cmetric', {}, h('b', {}, typeof n === 'number' ? num(n) : n ?? '0'), h('span', {}, label));
 
@@ -71,7 +71,7 @@ export function campaigns(arg) {
     return h(`a.ccard.${ty.tone}`, { href: `#/campaigns/${t.id}` },
       h('div.ccard-top', {}, badge(t.kind), h('div.grow', {}, h('div.ctype', {}, `${ty.label}${c.isDefault ? ' · default' : ''}`), h('div.cid', {}, `#${t.id}`)), pill(t)),
       h('b.ccard-title', { dir: 'auto', title: t.title }, t.title),
-      h('div.ccard-meta', {}, h('span', {}, '📱 ', nums_), c.label ? h('span', {}, '🏷️ ', c.label) : null),
+      h('div.ccard-meta', {}, h('span', {}, ico('smartphone', 'sm'), nums_), c.label ? h('span', {}, ico('tag', 'sm'), c.label) : null),
       h('div.cmetrics', {}, st.metrics.map(([n, l]) => metric(n, l))),
       st.pct != null ? h('div.cprog', {}, h('i', { style: `width:${Math.round(st.pct)}%` })) : null,
       h('div.ccard-foot', {}, h('span', {}, st.line), h('span.copen', {}, 'Open →')));
@@ -145,9 +145,23 @@ function campaignPage(id) {
     const rows = await GET(`/api/campaigns/${t.id}/people`).catch(() => []);
     const msg = (m) => (!m ? h('span.muted', {}, '—') : m.status === 'sent' ? h('span.pill.ok', {}, `Sent ${when(m.sent_at)}`) : m.status === 'approved' ? h('span.pill.hot', {}, `Goes ${when(m.due_at)}`) : m.status === 'pending' ? h('span.pill.warn', {}, 'Needs your OK') : h('span.pill', {}, m.status));
     const labelIn = h('input', { type: 'text', placeholder: 'Label name' });
+    // A sheet with phone, name, tags, notes: updates people already in your chats (and adds them to an always-on campaign).
+    const importer = h('input', { type: 'file', accept: '.csv,text/csv', style: 'display:none', onchange: () => act(null, async () => {
+      const file = importer.files[0];
+      if (!file) return;
+      const res = await fetch(`/api/campaigns/${t.id}/import`, { method: 'POST', headers: { 'content-type': 'text/csv' }, body: file });
+      const j = await res.json().catch(() => ({}));
+      importer.value = '';
+      if (!res.ok) throw new Error(j.error || `Import failed (${res.status})`);
+      toast(`${j.matched} of ${j.rows} matched people in your chats${j.added ? `, ${j.added} joined` : ''}.${j.notInChats ? ` ${j.notInChats} numbers never wrote to you, so they are not messaged on WhatsApp (use an email campaign for cold outreach).` : ''}`);
+      people();
+    }) });
     const labelBtn = h('button.btn', { onclick: () => act(labelBtn, async () => { const r = await POST(`/api/campaigns/${t.id}/label`, { label: labelIn.value }); toast(`"${r.label}" goes on ${r.chats} chats, one by one.`); }) }, 'Label everyone');
     set(body, h('div.stack', {},
-      h('div.card', {}, h('div.pad.row.wrap', { style: 'justify-content:space-between' }, h('span', {}, h('b', {}, num(rows.length)), ' people in this campaign'), h('div.row', {}, labelIn, labelBtn))),
+      h('div.card', {}, h('div.pad.row.wrap', { style: 'justify-content:space-between' }, h('span', {}, h('b', {}, num(rows.length)), ' people in this campaign'),
+        h('div.row.wrap', {}, labelIn, labelBtn,
+          h('a.btn', { href: `/api/campaigns/${t.id}/export.csv`, download: '' }, ico('download', 'sm'), 'Export CSV'),
+          h('button.btn', { onclick: () => importer.click() }, ico('upload', 'sm'), 'Import CSV'), importer))),
       h('div.card', {}, h('div.rtable', {}, h('table', {},
         h('thead', {}, h('tr', {}, ['Person', 'Stage', 'Last message', 'Their message', t.kind === 'auto' ? 'Next follow-up' : 'Tags'].map((x) => h('th', {}, x)))),
         h('tbody', {}, rows.length ? rows.map((r) => h('tr', {},
@@ -204,7 +218,7 @@ function settingsForm(t, done) {
     templateFallback: h('input', { type: 'checkbox', checked: c.templateFallback !== false }),
   };
   const numbers = h('div.checks', {}, S.accounts.length ? S.accounts.map((a) => h('label', {}, h('input', { type: 'checkbox', value: a.id, checked: (c.accountIds || []).includes(a.id) }), a.name)) : h('span.muted', {}, 'No number linked yet.'));
-  const fileList = h('div.cfiles', {}, files.length ? files.map((x) => h('div.cfile', {}, h('span', {}, '📄 ', h('b', {}, x.name), h('span.muted', {}, ` · ${num(x.text.length)} characters`)),
+  const fileList = h('div.cfiles', {}, files.length ? files.map((x) => h('div.cfile', {}, h('span', {}, ico('file-text', 'sm'), ' ', h('b', {}, x.name), h('span.muted', {}, ` · ${num(x.text.length)} characters`)),
     h('button.btn.sm.ghost.danger', { onclick: (e) => act(e.target, async () => { await DEL(`/api/campaigns/${t.id}/files/${encodeURIComponent(x.name)}`); done(); }, 'File removed') }, 'Remove'))) : h('div.muted', {}, 'No files yet.'));
   const picker = h('input', { type: 'file', multiple: true, accept: '.md,.txt,.docx', style: 'display:none', onchange: () => act(null, async () => {
     for (const file of picker.files) {

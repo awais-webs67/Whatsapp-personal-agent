@@ -131,3 +131,12 @@ test('follow-ups follow the owner\'s own example message and links', async () =>
   assert.match(fu, /Never mention a product they did not ask about/);
   assert.doesNotMatch(buildSystem(s, { stage: 'interested' }, 'reply'), /How the owner writes follow-ups/, 'live replies are not affected');
 });
+
+test('CSV: quotes, commas, new lines, semicolons and Excel BOM; phone numbers in any form', async () => {
+  const { parseCsv, toCsv, normPhone } = await import('../src/csv.js');
+  assert.deepEqual(parseCsv('﻿Phone,First Name,Notes\n"0300 1234567","Ali, Raza","line one\nline two"\n+92 301 7654321,Sara,\n'),
+    [{ phone: '0300 1234567', first_name: 'Ali, Raza', notes: 'line one\nline two' }, { phone: '+92 301 7654321', first_name: 'Sara', notes: '' }]);
+  assert.deepEqual(parseCsv('email;name\na@b.co;A'), [{ email: 'a@b.co', name: 'A' }]);
+  assert.equal(toCsv([{ a: 'x"y', b: 'دو' }], [['a', 'A'], ['b', 'B']]), '﻿"A","B"\r\n"x""y","دو"\r\n');
+  assert.deepEqual(['0309 1606792', '+92 309 1606792', '00923091606792', '923091606792'].map((v) => normPhone(v)), Array(4).fill('923091606792'));
+});
