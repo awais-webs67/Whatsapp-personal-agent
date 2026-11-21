@@ -17,13 +17,15 @@ import { runChatCommand, COMMANDS } from './agent/chat-commands.js';
 import { startFollowups, runCampaign, campaign, whyNotSending, followupStatus } from './agent/followups.js';
 import { learnFromChats, learnFromWebsite, learnFromProfile, learning } from './agent/learn.js';
 import { normTags, tagString, tagsOf } from './agent/tags.js';
-import { importKnowledgeFiles, saveUpload, listFiles, removeFile } from './agent/knowledge-files.js';
+import { importKnowledgeFiles, saveUpload, listFiles, removeFile, fileToText } from './agent/knowledge-files.js';
+import { updateCampaign } from './agent/campaign-edit.js';
+import { labelChats } from './agent/labeling.js';
 import { handleCommand, startCommander, listThreads, newThread } from './agent/commander.js';
 import { listTasks, createTask, controlTask, startTasks } from './agent/tasks.js';
 import { taskEvents } from './agent/task-log.js';
 import { startWatchdog, health } from './agent/watchdog.js';
 import { report } from './agent/reports.js';
-import { ensureDefaultCampaign, updateAuto, createAuto, changesOf, AUTO_FIELDS, setLabeler, statsOf as campaignStats } from './agent/campaigns.js';
+import { ensureDefaultCampaign, updateAuto, createAuto, changesOf, AUTO_FIELDS, setLabeler, statsOf as campaignStats, addCampaignFile, removeCampaignFile } from './agent/campaigns.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // On slow or IPv6-broken connections Node's fetch gives up after 250 ms per address and reports
@@ -465,7 +467,15 @@ app.post('/api/campaigns/once', wrap(async (req) => {
 }));
 app.get('/api/campaigns/fields', wrap(() => AUTO_FIELDS));
 app.post('/api/campaigns', wrap((req) => createAuto(req.body || {}, 'dashboard')));
-app.patch('/api/campaigns/:id', wrap((req) => updateAuto(Number(req.params.id), req.body || {}, 'dashboard')));
+app.patch('/api/campaigns/:id', wrap((req) => updateCampaign(Number(req.params.id), req.body || {}, 'dashboard')));
+// Files with business instructions for one campaign (.md, .txt, .docx): used in every message it writes.
+app.post('/api/campaigns/:id/files', express.raw({ type: () => true, limit: '15mb' }), wrap((req) => {
+  if (!Buffer.isBuffer(req.body) || !req.body.length) throw bad('Empty file');
+  const name = decodeURIComponent(String(req.headers['x-file-name'] || 'notes.txt')).slice(0, 80);
+  return addCampaignFile(Number(req.params.id), name, fileToText(name, req.body).text, 'dashboard');
+}));
+app.post('/api/campaigns/:id/label', wrap((req) => labelChats(req.body?.label, { campaignId: Number(req.params.id) }, { taskId: Number(req.params.id) })));
+app.delete('/api/campaigns/:id/files/:name', wrap((req) => removeCampaignFile(Number(req.params.id), req.params.name, 'dashboard')));
 app.get('/api/campaigns/:id/changes', wrap((req) => changesOf(Number(req.params.id))));
 app.get('/api/tasks/:id/events', wrap((req) => taskEvents(Number(req.params.id), Number(req.query.limit) || 300)));
 app.patch('/api/tasks/:id', wrap((req) => controlTask(Number(req.params.id), String(req.body.action || ''))));

@@ -131,7 +131,7 @@ export async function changeBatch(taskId, { instruction, interval, autoApprove, 
           const still = get("SELECT status FROM followups WHERE id = ?", f.id);
           if (!still || !['pending', 'approved'].includes(still.status)) break;
           try {
-            const d = await decide(f.chat_id, 'analyze', { instruction, audience, history: 12 });
+            const d = await decide(f.chat_id, 'analyze', { campaignId: taskId, instruction, audience, history: 12 });
             const c = get('SELECT * FROM chats WHERE id = ?', f.chat_id);
             if (d.skip) { update('followups', f.id, { status: 'skipped', error: d.reason || 'Not right for this person after the change' }, ['status', 'error']); taskEvent(taskId, `Dropped ${who(c)} after the change: ${d.reason || ''}`, { kind: 'skipped', chatId: f.chat_id }); }
             else { update('followups', f.id, { text: d.message, reason: d.reason }, ['text', 'reason']); taskEvent(taskId, `Rewrote the message for ${who(c)}: "${String(d.message).slice(0, 160)}"`, { kind: 'wrote', chatId: f.chat_id }); }
@@ -434,7 +434,7 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
     // Read one chat; true when it worked.
     const handle = async (chat) => {
       // Already read and unchanged: its summary is in the prompt, so the latest messages are enough to write from.
-      const d = await decide(chat.id, 'analyze', { instruction: campaign.instruction, lean: analyzeOnly, audience, history: !analyzeOnly && isFresh(chat) ? 12 : null });
+      const d = await decide(chat.id, 'analyze', { campaignId: taskId, instruction: campaign.instruction, lean: analyzeOnly, audience, history: !analyzeOnly && isFresh(chat) ? 12 : null });
       update('chats', chat.id, { stage: d.stage, summary: d.summary, analyzed_at: now() }, ['stage', 'summary', 'analyzed_at']);
       saveProfile(chat.id, d.profile);
       campaign.stages[d.stage] = (campaign.stages[d.stage] || 0) + 1;

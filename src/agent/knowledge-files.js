@@ -94,14 +94,19 @@ export function docxText(buf) {
 const safeName = (name) => String(name || 'notes').replace(/\.[^.]+$/, '').normalize('NFKD').replace(/[^\w.-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'notes';
 
 /** Save an uploaded file as text in the knowledge folder and load it. Word files become .txt. */
-export function saveUpload(name, buf) {
+/** The text of an uploaded .md, .txt or .docx file. */
+export function fileToText(name, buf) {
   const ext = (/\.([a-z0-9]+)$/i.exec(String(name)) || [])[1]?.toLowerCase();
   let text;
   if (ext === 'md' || ext === 'txt' || ext === 'markdown') text = buf.toString('utf8');
   else if (ext === 'docx') text = docxText(buf);
   else if (ext === 'doc') throw new Error('Old .doc files cannot be read. In Word, use "Save as" → .docx (or .txt) and upload that.');
   else throw new Error('Upload .md, .txt or .docx files');
-  text = text.replace(/\r\n?/g, '\n').replace(/\u0000/g, '').trim();
+  return { ext, text: text.replace(/\r\n?/g, '\n').replace(/\u0000/g, '').trim() };
+}
+
+export function saveUpload(name, buf) {
+  let { ext, text } = fileToText(name, buf);
   if (!text) throw new Error('The file has no text');
   if (text.length > MAX_TEXT) throw new Error(`The file is too long (${Math.round(text.length / 1000)}k characters). Split it into smaller files, up to ${MAX_TEXT / 1000}k each.`);
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });

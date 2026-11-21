@@ -3,7 +3,7 @@ import { all, get, run } from '../db.js';
 import { getSettings } from '../core.js';
 import { complete } from '../llm/router.js';
 import { focus, trimProse } from './knowledge.js';
-import { campaignOf } from './campaigns.js';
+import { campaignOf, campaignContext } from './campaigns.js';
 
 export const STAGES = ['new', 'engaged', 'interested', 'negotiating', 'purchased', 'not_interested', 'opted_out'];
 export const CLOSED = ['purchased', 'not_interested', 'opted_out'];
@@ -68,7 +68,7 @@ function ago(ts) {
   return `${Math.round(h / 24)} days ago`;
 }
 
-export function buildSystem(settings, chat, mode, query = '') {
+export function buildSystem(settings, chat, mode, query = '', { campaignId = null } = {}) {
   // Token saver: long lists (products, Q&A) are cut to what this conversation is about.
   const b = settings.business;
   const fit = (text) => {
@@ -90,8 +90,13 @@ export function buildSystem(settings, chat, mode, query = '') {
   out.push(section('Standing instructions from the owner (always follow)', b.memory));
   // The campaign this lead belongs to (which ad or offer brought them) can add its own instructions.
   const camp = chat?.id ? campaignOf(chat) : null;
-  if (camp && !camp.config.isDefault) out.push(section(`This lead belongs to the campaign "${camp.task.title}"${chat.ad_title ? ` (they came from the ad "${chat.ad_title}")` : ''}. Follow its instructions`, camp.config.instructions));
-  else if (camp?.config.instructions) out.push(section('Instructions for new leads (from the owner)', camp.config.instructions));
+  // The campaign this message is for: the one writing it (a one-time campaign), else the lead's own campaign.
+  const cx = campaignContext(campaignId || camp?.task.id);
+  if (cx) {
+    const head = cx.isDefault ? 'Instructions for new leads (from the owner)' : `This message is part of the campaign "${cx.title}"${chat?.ad_title ? ` (the lead came from the ad "${chat.ad_title}")` : ''}. Follow its instructions exactly`;
+    out.push(section(head, cx.instructions));
+    if (cx.files.length) out.push(section(`Campaign notes from the owner's files (${cx.files.map((f) => f.name).join(', ')})`, settings.llm.tokenSaver === false ? cx.files.map((f) => f.text).join('\n\n') : trimProse(cx.files.map((f) => `Source: ${f.name}\n${f.text}`).join('\n\n'), query, 5000)));
+  }
 
   out.push(`
 ## How to write
@@ -100,7 +105,7 @@ export function buildSystem(settings, chat, mode, query = '') {
 - Urdu must be written in Urdu (Arabic) script with correct Urdu spelling, never in Hindi (Devanagari) script. Prices and product names may stay in English letters and digits.
 - Plain WhatsApp text: no markdown, no headings, no bullet lists, no asterisks. 1 to 3 bubbles. Ask at most one question at a time.
 - Layout rules from the owner (follow them exactly; use real line breaks "\n" inside a message where they ask for separate lines):
-${String(b.format || '').split('\n').filter((l) => l.trim()).map((l) => `  - ${l.replace(/^[-•]\s*/, '')}`).join('\n')}
+${String(cx?.format || b.format || '').split('\n').filter((l) => l.trim()).map((l) => `  - ${l.replace(/^[-•]\s*/, '')}`).join('\n')}
 - Read the whole conversation first. Never repeat something already answered, never re-greet mid-conversation.
 - Move the conversation one step toward your job above, without pressure.
 
@@ -133,7 +138,7 @@ ${linkMode(b) ? `- Prices and stock change often, so you do not know them. Never
 - Current time: ${new Date().toLocaleString('en-GB', { timeZone: settings.followup.timezone, dateStyle: 'full', timeStyle: 'short' })}`);
 
   // Follow-ups in the owner's own words, with their links.
-  const style = (camp?.config.followupStyle || '').trim() || b.followupStyle?.trim() || '';
+  const style = cx?.followupStyle || (camp?.config.followupStyle || '').trim() || b.followupStyle?.trim() || '';
   if (mode !== 'reply' && (style || b.links?.trim())) {
     out.push(`
 ## How the owner writes follow-ups
@@ -258,7 +263,7 @@ Return ONLY a JSON object:
 {"stage": "${STAGES.join(' | ')}", "summary": "one or two lines: what they wanted (which product), any price discussed, how it ended and what is still open", "should_followup": false, "message": "", "reason": "", ${PROFILE_SPEC}}`;
 }
 
-export async function decide(chatId, mode = 'reply', { turns = null, chatOverride = null, instruction = '', lean = false, audience = 'all', history = null } = {}) {
+export async function decide(chatId, mode = 'reply', { turns = null, chatOverride = null, instruction = '', lean = false, audience = 'all', history = null, campaignId = null } = {}) {
   const settings = getSettings();
   const chat = chatOverride || get('SELECT * FROM chats WHERE id = ?', chatId);
   if (!chat) throw new Error('Chat not found');
@@ -268,7 +273,7 @@ export async function decide(chatId, mode = 'reply', { turns = null, chatOverrid
   }
   // What the conversation is about decides which products and answers go into the instructions.
   const recent = messages.filter((m) => m.role === 'user').slice(mode === 'reply' ? -4 : -12).map((m) => m.content).join(' ');
-  const system = lean ? leanSystem(settings) : buildSystem(settings, chat, mode, `${recent} ${chat.summary || ''} ${chat.notes || ''}`);
+  const system = lean ? leanSystem(settings) : buildSystem(settings, chat, mode, `${recent} ${chat.summary || ''} ${chat.notes || ''}`, { campaignId });
   let lastErr;
   const noPrices = linkMode(settings.business) && mode !== 'analyze';
   let priced = null;

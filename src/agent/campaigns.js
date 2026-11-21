@@ -25,6 +25,7 @@ export const AUTO_FIELDS = {
   approval: 'true = follow-ups wait for your OK',
   instructions: 'extra instructions for replies to people in this campaign (the offer, what to push, which link)',
   followupStyle: 'an example follow-up message in your words',
+  format: 'how this campaign\'s messages are laid out (replaces the general layout rules), one rule per line',
   keywords: 'join when the first message contains one of these words',
   adIds: 'join when the lead came from one of these Meta ad IDs',
   adText: 'join when the ad title contains one of these words',
@@ -61,7 +62,7 @@ export function configOf(t) {
   const p = parseParams(t);
   const f = getSettings().followup;
   const base = { steps: f.stepsHours, gapMin: f.gapMinSec / 60, gapMax: f.gapMaxSec / 60, approval: f.approval, night: false, templateFallback: true, autoReply: true, followups: true, instructions: '', followupStyle: '' };
-  const own = p.isDefault ? { instructions: p.instructions, followupStyle: p.followupStyle, night: p.night, templateFallback: p.templateFallback, autoReply: p.autoReply, followups: p.followups } : p;
+  const own = p.isDefault ? { format: p.format, instructions: p.instructions, followupStyle: p.followupStyle, night: p.night, templateFallback: p.templateFallback, autoReply: p.autoReply, followups: p.followups } : p;
   const c = { ...base };
   for (const [k, v] of Object.entries(own)) if (v !== undefined && v !== null && k in AUTO_FIELDS) c[k] = v;
   return { ...c, isDefault: !!p.isDefault, label: p.label || '', labels: list(p.labels), keywords: list(p.keywords), adIds: list(p.adIds), adText: list(p.adText), accountIds: list(p.accountIds).map(Number), priority: Number(p.priority ?? 100) };
@@ -69,6 +70,46 @@ export function configOf(t) {
 
 export const autoCampaigns = (statuses = ['active', 'paused']) =>
   all(`SELECT * FROM tasks WHERE kind = 'auto' AND status IN (${statuses.map(() => '?').join(',')}) ORDER BY id`, ...statuses);
+
+/**
+ * What a campaign adds to the AI's instructions, for any campaign kind: its instructions, its message format,
+ * its example follow-up and the text of its uploaded files. Sent with every reply, follow-up and message it writes.
+ */
+export function campaignContext(taskId) {
+  const t = taskId && get("SELECT * FROM tasks WHERE id = ? AND status != 'removed'", taskId);
+  if (!t) return null;
+  const p = parseParams(t);
+  const c = t.kind === 'auto' ? configOf(t) : p;
+  return { id: t.id, title: t.title, kind: t.kind, isDefault: !!p.isDefault, instructions: String(c.instructions || '').trim(), format: String(c.format || '').trim(),
+    followupStyle: String(c.followupStyle || '').trim(), files: Array.isArray(p.files) ? p.files : [] };
+}
+
+const MAX_FILES_CHARS = 120_000;
+/** Add a file's text to a campaign (any kind). */
+export function addCampaignFile(taskId, name, text, source = 'dashboard') {
+  const t = get("SELECT * FROM tasks WHERE id = ? AND status != 'removed'", taskId);
+  if (!t) throw Object.assign(new Error('Campaign not found'), { status: 404 });
+  const p = parseParams(t);
+  const files = (Array.isArray(p.files) ? p.files : []).filter((f) => f.name !== name);
+  const total = files.reduce((n, f) => n + f.text.length, 0) + text.length;
+  if (total > MAX_FILES_CHARS) throw Object.assign(new Error(`This campaign's files would be too long (${Math.round(total / 1000)}k characters; up to ${MAX_FILES_CHARS / 1000}k). Remove one or upload a shorter file.`), { status: 400 });
+  files.push({ name, text, at: now() });
+  run('UPDATE tasks SET params = ? WHERE id = ?', JSON.stringify({ ...p, files }), t.id);
+  recordChange(t.id, source, { file: [null, name] });
+  taskEvent(t.id, `File added: ${name} (${text.length} characters). Used in every message of this campaign.`, { kind: 'changed' });
+  emit('tasks');
+  return { name, chars: text.length };
+}
+export function removeCampaignFile(taskId, name, source = 'dashboard') {
+  const t = get('SELECT * FROM tasks WHERE id = ?', taskId);
+  if (!t) throw Object.assign(new Error('Campaign not found'), { status: 404 });
+  const p = parseParams(t);
+  run('UPDATE tasks SET params = ? WHERE id = ?', JSON.stringify({ ...p, files: (p.files || []).filter((f) => f.name !== name) }), t.id);
+  recordChange(t.id, source, { file: [name, null] });
+  taskEvent(t.id, `File removed: ${name}`, { kind: 'changed' });
+  emit('tasks');
+  return { ok: true };
+}
 
 /** Which campaign a lead belongs to: the first matching entry rule by priority, else the default one. */
 export function matchCampaign(chat, firstText = '') {
@@ -130,6 +171,7 @@ const clean = {
   templateFallback: (v) => !!v,
   instructions: (v) => String(v || '').trim().slice(0, 1500),
   followupStyle: (v) => String(v || '').trim().slice(0, 1000),
+  format: (v) => String(v || '').trim().slice(0, 1500),
   keywords: (v) => list(v).slice(0, 30),
   adIds: (v) => list(v).slice(0, 30),
   adText: (v) => list(v).slice(0, 30),

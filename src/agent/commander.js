@@ -12,6 +12,8 @@ import { createTask, listTasks, taskView, controlTask, setTaskRunner, setCampaig
 import { quickIntent, ASKS_PERMISSION, TIMING_ONLY, startDelay, parseInterval, randomMinutes } from './intent.js';
 import { shortcut } from './shortcuts.js';
 import { updateAuto, createAuto, setAllAuto, ensureDefaultCampaign } from './campaigns.js';
+import { labelChats } from './labeling.js';
+import { updateCampaign } from './campaign-edit.js';
 import { normTags, hasAnyTag } from './tags.js';
 import { humanSend } from './pipeline.js';
 import { learnFromChats, learnFromWebsite, learnFromProfile } from './learn.js';
@@ -147,11 +149,14 @@ const TOOLS = {
     },
   },
   update_task: {
-    doc: 'update_task {"id": 7, "instruction": "the new full instruction for the messages", "interval_minutes": 10 or [6, 25], "steps_hours": [2, 24, 72], "keywords": ["canva"], "ad_ids": ["1234"], "ad_text": ["eid"], "followup_style": "example message", "name": "Eid Canva", "start_in_minutes": 30, "send": true, "ignore_quiet_hours": true, "every_minutes": 30, "daily_at": "10:00", "at": "18:30", "pause": false, "resume": false} - CHANGE a campaign or task that already exists instead of starting a new one (campaign and task mean the same thing). For an automatic campaign: interval_minutes = gap between its follow-ups, steps_hours = when to follow up after the last message, instruction = how to answer and follow up with its leads, keywords / ad_ids / ad_text = who joins it. Use it whenever the owner talks about the running or last task ("is task mein", "isko", "ab se", "message mein yeh bhi likho", "gap 10 minute kar do", "raat ko bhi bhejo"). Leave out "id" to change the latest task of this conversation. Send only what changes; "instruction" replaces the old one, so include what should stay. Messages written but not sent yet are rewritten for a new instruction and spaced again for a new interval.',
+    doc: 'update_task {"id": 7, "instruction": "the new full instruction for the messages", "interval_minutes": 10 or [6, 25], "steps_hours": [2, 24, 72], "keywords": ["canva"], "ad_ids": ["1234"], "ad_text": ["eid"], "followup_style": "example message", "format": "message layout rules for this campaign, one per line", "campaign_instructions": "extra business instructions for this campaign", "name": "Eid Canva", "start_in_minutes": 30, "send": true, "ignore_quiet_hours": true, "every_minutes": 30, "daily_at": "10:00", "at": "18:30", "pause": false, "resume": false} - CHANGE a campaign or task that already exists instead of starting a new one (campaign and task mean the same thing). For an automatic campaign: interval_minutes = gap between its follow-ups, steps_hours = when to follow up after the last message, instruction = how to answer and follow up with its leads, keywords / ad_ids / ad_text = who joins it. Use it whenever the owner talks about the running or last task ("is task mein", "isko", "ab se", "message mein yeh bhi likho", "gap 10 minute kar do", "raat ko bhi bhejo"). Leave out "id" to change the latest task of this conversation. Send only what changes; "instruction" replaces the old one, so include what should stay. Messages written but not sent yet are rewritten for a new instruction and spaced again for a new interval.',
     run: async (a) => {
       const t = findTask(a.id, activeThread);
       if (!t) return { error: 'No running campaign or task to change. Start one first.' };
       const out = { task_id: t.id, title: t.title, changed: [] };
+      if (t.kind !== 'auto' && (a.format || a.campaign_instructions || a.followup_style)) {
+        out.changed.push(...(await updateCampaign(t.id, { format: a.format, instructions: a.campaign_instructions, followupStyle: a.followup_style }, 'command')).changed);
+      }
       if (t.kind === 'auto') {
         const range = nums(a.interval_minutes).filter((n) => n > 0);
         const patch = {
@@ -161,6 +166,8 @@ const TOOLS = {
           ...(typeof a.ignore_quiet_hours === 'boolean' ? { night: a.ignore_quiet_hours } : {}),
           ...(a.instruction || a.instructions ? { instructions: a.instructions || a.instruction } : {}),
           ...(a.followup_style ? { followupStyle: a.followup_style } : {}),
+          ...(a.format ? { format: a.format } : {}),
+          ...(a.campaign_instructions ? { instructions: a.campaign_instructions } : {}),
           ...(a.keywords ? { keywords: a.keywords } : {}),
           ...(a.ad_ids ? { adIds: a.ad_ids } : {}),
           ...(a.ad_text ? { adText: a.ad_text } : {}),
@@ -204,6 +211,10 @@ const TOOLS = {
       }, 'command');
       return { campaign_id: t.id, name: t.title };
     },
+  },
+  label_chats: {
+    doc: 'label_chats {"label": "Canva Ad", "ad_text": ["eid"], "keywords": [], "campaign_id": null, "days": 0, "tags": [], "stage": ""} - put a WhatsApp Business label (and the same tag) on every chat that matches: came from an ad whose title has these words, talked about these words, belongs to a campaign, in the last N days, has a tag or stage. Use for "jo is ad se aaye unhein X label do".',
+    run: (a) => labelChats(a.label, { adText: a.ad_text, keywords: a.keywords, campaignId: a.campaign_id, days: a.days, tags: a.tags, stage: a.stage }),
   },
   help: {
     doc: 'help {} - list what the owner can say in Command.',
@@ -399,6 +410,7 @@ function facts(steps) {
     if (s.action === 'analyse_chats' && !r.started && r.reason) out.push(`ℹ️ ${r.reason[0].toUpperCase()}${r.reason.slice(1)}.`);
     if (s.action === 'update_task' && !r.error) out.push(r.changed?.length ? `✏️ Task #${r.task_id} changed: ${r.changed.join('; ')}.${r.rewriting ? ` Rewriting the ${r.rewriting} message${r.rewriting === 1 ? '' : 's'} not sent yet.` : ''} No new task was made.${nextLine(r.task_id)}` : `⚠️ Task #${r.task_id}: nothing to change.`);
     if (s.action === 'help') out.push(r.help);
+    if (s.action === 'label_chats' && !r.error) out.push(`🏷️ "${r.label}" goes on ${r.chats} chat${r.chats === 1 ? '' : 's'}${r.examples?.length ? ` (${r.examples.join(', ')}${r.chats > 5 ? '…' : ''})` : ''}. Labels are added one by one; the tag "${r.tag}" is on them now.`);
     if (s.action === 'create_campaign' && !r.error) out.push(`📣 Campaign #${r.campaign_id} "${r.name}" is on. New leads that match join it. See it on the Campaigns page.`);
     if (s.action === 'show_format') out.push(`📝 Message format:\n${r.format}`);
     if (s.action === 'change_settings') out.push(r.changed?.length ? `⚙️ Changed: ${r.changed.join('; ')}.` : '⚠️ Nothing was changed.');

@@ -1269,7 +1269,7 @@ test('campaigns: a lead from an ad or with its words joins that campaign and get
   assert.equal(chatOf('923331110003@s.whatsapp.net').campaign_id, def.id, 'everyone else: the default campaign');
 
   // Its replies carry the campaign's instructions; its follow-up comes after its own 2 hours.
-  assert.match(buildSystem(getSettings(), chatOf('923331110002@s.whatsapp.net'), 'reply'), /campaign "Eid Canva ad" \(they came from the ad "Eid Sale on tools"\)[\s\S]*Canva Pro yearly offer/);
+  assert.match(buildSystem(getSettings(), chatOf('923331110002@s.whatsapp.net'), 'reply'), /campaign "Eid Canva ad" \(the lead came from the ad "Eid Sale on tools"\)[\s\S]*Canva Pro yearly offer/);
   assert.doesNotMatch(buildSystem(getSettings(), chatOf('923331110003@s.whatsapp.net'), 'reply'), /Canva Pro yearly offer/);
   const c1 = chatOf('923331110001@s.whatsapp.net');
   run('UPDATE chats SET followup_count = 0, stage = ? WHERE id = ?', 'interested', c1.id);
@@ -1463,4 +1463,35 @@ test('campaign filters and switches: only chats about a product or on a number; 
   await new Promise((r) => setTimeout(r, 400));
   assert.ok(!calls.slice(before).some((c) => JSON.stringify(c.body?.messages || '').includes('manualonly')), 'no AI reply for this campaign');
   tasks.controlTask(t.id, 'remove');
+});
+
+test('every campaign carries its own instructions, message format and files into each message; one-time campaigns are editable; label by command', async () => {
+  const camps = await import('../src/agent/campaigns.js');
+  const { updateCampaign } = await import('../src/agent/campaign-edit.js');
+  const { buildSystem } = await import('../src/agent/brain.js');
+  const { getSettings } = await import('../src/core.js');
+  const tasks = await import('../src/agent/tasks.js');
+  const { TOOLS_FOR_TEST } = await import('../src/agent/commander.js');
+  const id = tasks.createTask({ kind: 'batch', instruction: 'Offer yaad dilao', title: 'Offer reminder' });
+  run("UPDATE tasks SET params = '{}' WHERE id = ?", id);
+  const r = await updateCampaign(id, { instructions: 'Sirf 30 November tak ka offer batana', format: 'Pehli line: salam\nAakhri line: shop ka link', name: 'Offer reminder Nov' }, 'dashboard');
+  assert.ok(r.changed.includes('message format') && r.changed.includes('campaign instructions'));
+  camps.addCampaignFile(id, 'policy.md', 'Refund sirf 3 din ke andar. Warranty 30 din.', 'dashboard');
+  const chat = get("SELECT * FROM chats WHERE jid = '444@s.whatsapp.net'");
+  const sys = buildSystem(getSettings(), chat, 'analyze', 'refund warranty', { campaignId: id });
+  assert.match(sys, /campaign "Offer reminder Nov"\. Follow its instructions exactly\n[\s\S]*Sirf 30 November tak/);
+  assert.match(sys, /Campaign notes from the owner's files \(policy\.md\)[\s\S]*Refund sirf 3 din/);
+  assert.match(sys, /- Pehli line: salam\n  - Aakhri line: shop ka link/, 'the campaign format replaces the general layout rules');
+  assert.doesNotMatch(sys, /A link always goes on its own line/);
+  const hist = camps.changesOf(id).map((h) => h.field);
+  for (const f of ['instructions', 'format', 'name', 'file']) assert.ok(hist.includes(f), `history has ${f}`);
+  camps.removeCampaignFile(id, 'policy.md');
+  assert.doesNotMatch(buildSystem(getSettings(), chat, 'analyze', '', { campaignId: id }), /Refund sirf 3 din/);
+  tasks.controlTask(id, 'remove');
+
+  // "Jo Eid wali ad se aaye unhein 'Canva Ad' label do"
+  const out = TOOLS_FOR_TEST.label_chats.run({ label: 'Eid Lead', ad_text: ['eid'] });
+  assert.ok(out.chats >= 1);
+  assert.match(get("SELECT tags FROM chats WHERE jid = '923331110002@s.whatsapp.net'").tags, /,eid-lead,/);
+  assert.doesNotMatch(get("SELECT tags FROM chats WHERE jid = '923331110003@s.whatsapp.net'").tags || '', /eid-lead/, 'only the ad leads');
 });
