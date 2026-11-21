@@ -60,9 +60,13 @@ function shell(me) {
     addEventListener('hashchange', close);
     document.body.append(veil);
   }
+  // Problems that need the owner (number disconnected, no model can answer, daily cap): always on top.
+  const healthBox = h('div.health');
+  const drawHealth = (list) => set(healthBox, (list || []).map((p) => h(`a.banner.${p.level === 'warn' ? 'warn' : 'bad'}`, { href: p.link || '#/overview', style: 'text-decoration:none' }, h('b', {}, '⚠ '), h('span', {}, p.text))));
+  GET('/api/health').then(drawHealth).catch(() => {});
   const el = h('div.shell', {},
     aside,
-    banner ? h('div', { style: 'display:flex;flex-direction:column;min-width:0' }, banner, outlet) : outlet);
+    h('div', { style: 'display:flex;flex-direction:column;min-width:0' }, banner, healthBox, outlet));
 
   const badge = (id, n) => {
     navLinks[id].querySelector('.count')?.remove();
@@ -98,6 +102,7 @@ function shell(me) {
   es.onmessage = (m) => {
     const e = JSON.parse(m.data);
     if (e.type === 'accounts') S.accounts = e.data;
+    if (e.type === 'health') drawHealth(e.data);
     if (e.type === 'providers') S.providers = e.data;
     for (const s of [...subs]) if (s.type === e.type || s.type === '*') s.fn(e.data, e);
     if (e.type === 'update') {

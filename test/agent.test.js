@@ -1373,3 +1373,26 @@ test('a voice note is turned into text first, and the agent answers what was sai
   assert.match(chat().last_text, /🎤 Canva Pro ka price/);
   run('DELETE FROM providers WHERE id = ?', id);
 });
+
+test('watchdog: a number down for 10 minutes and no model able to answer are reported to the owner once', async () => {
+  const wd = await import('../src/agent/watchdog.js');
+  const { taskEvents } = await import('../src/agent/task-log.js');
+  run("INSERT INTO accounts (id, name, type, reply_mode, connected_at, created_at) VALUES (77, 'Spare line', 'qr', 'new_only', ?, ?)", now() - 86_400_000, now());
+  const realNow = Date.now;
+  try {
+    wd._check(); // first seen down now
+    assert.ok(!wd.health().some((p) => p.key.startsWith('wa:77')), 'not after a few seconds');
+    Date.now = () => realNow() + 11 * 60_000;
+    const list = wd.health();
+    assert.ok(list.some((p) => p.key === 'wa:77:down' && /Spare line has been disconnected since/.test(p.text)));
+    const before = get('SELECT COUNT(*) n FROM commands').n;
+    wd._check();
+    wd._check();
+    assert.equal(get("SELECT COUNT(*) n FROM commands WHERE text LIKE '⚠️ Spare line has been disconnected%'").n, 1, 'told once, not every minute');
+    assert.ok(get('SELECT COUNT(*) n FROM commands').n > before);
+  } finally {
+    Date.now = realNow;
+    run('DELETE FROM accounts WHERE id = 77');
+  }
+  void taskEvents;
+});

@@ -21,6 +21,7 @@ import { importKnowledgeFiles, saveUpload, listFiles, removeFile } from './agent
 import { handleCommand, startCommander, listThreads, newThread } from './agent/commander.js';
 import { listTasks, createTask, controlTask, startTasks } from './agent/tasks.js';
 import { taskEvents } from './agent/task-log.js';
+import { startWatchdog, health } from './agent/watchdog.js';
 import { ensureDefaultCampaign, updateAuto, createAuto, changesOf, AUTO_FIELDS, setLabeler } from './agent/campaigns.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -421,6 +422,7 @@ app.post('/api/learn/profile', wrap(async () => learnFromProfile(await wa.profil
 app.get('/api/tasks', wrap(() => listTasks()));
 app.post('/api/tasks', wrap((req) => ({ id: createTask({ kind: 'scheduled', title: req.body.title, instruction: req.body.instruction, schedule: req.body.schedule }) })));
 // Automatic campaigns: their own settings, entry rules and history.
+app.get('/api/health', wrap(() => health()));
 app.get('/api/labels', wrap(() => all('SELECT a.id account_id, a.name account, l.label_id id, l.name, l.color FROM wa_labels l JOIN accounts a ON a.id = l.account_id WHERE l.deleted = 0 ORDER BY a.id, l.name')));
 app.get('/api/campaigns/fields', wrap(() => AUTO_FIELDS));
 app.post('/api/campaigns', wrap((req) => createAuto(req.body || {}, 'dashboard')));
@@ -539,6 +541,7 @@ export function start(port = Number(process.env.PORT) || 3000) {
   startTasks();
   startFollowups();
   startRouterTicker();
+  startWatchdog();
   wa.startAll();
   syncBalances().catch(() => {});
   // HOST=127.0.0.1 keeps the app reachable only through the HTTPS proxy on a server.
