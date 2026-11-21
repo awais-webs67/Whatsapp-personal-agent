@@ -187,7 +187,7 @@ export function inbox(openId) {
       act(sendBtn, async () => { await POST(`/api/chats/${chat.id}/send`, { text }); input.value = ''; });
     } }, 'Send');
     const remindBtn = h('button.btn', { title: 'Send this customer a message at a set time', onclick: () => {
-      const msg = h('textarea', { rows: 3, dir: 'auto', value: input.value, placeholder: 'e.g. Assalam o alaikum! Aap ka Canva order aaj expire ho raha hai, renew karna ho to bata dein.' });
+      const msg = h('textarea', { rows: 3, dir: 'auto', value: input.value, placeholder: 'e.g. Assalam o alaikum! Aap ka order aaj expire ho raha hai, renew karna ho to bata dein.' });
       const when = h('input', { type: 'datetime-local' });
       const d = new Date(Date.now() + 3_600_000); d.setMinutes(0, 0, 0);
       when.value = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
@@ -209,7 +209,7 @@ export function inbox(openId) {
       h('div', { style: 'position:relative' }, hints, h('div.composer', {}, input, remindBtn, suggestBtn, sendBtn)));
     if (stick) thread.scrollTop = thread.scrollHeight;
 
-    const tagsBox = h('input', { type: 'text', placeholder: 'vip, ads-eid, canva', value: (chat.tagList || []).join(', '), onblur: (e) => e.target.value !== (chat.tagList || []).join(', ') && patch({ tags: e.target.value }, 'Tags saved') });
+    const tagsBox = h('input', { type: 'text', placeholder: 'vip, eid-ad, repeat', value: (chat.tagList || []).join(', '), onblur: (e) => e.target.value !== (chat.tagList || []).join(', ') && patch({ tags: e.target.value }, 'Tags saved') });
     const notes = h('textarea', { rows: 4, placeholder: 'Anything the agent should know about this customer', value: chat.notes || '', onblur: (e) => e.target.value !== (chat.notes || '') && patch({ notes: e.target.value }, 'Notes saved') });
     set(side, 
       h('section', {}, h('h2', {}, 'Stage'), select(Object.entries(STAGES).map(([k, [l]]) => [k, l]), chat.stage, (v) => patch({ stage: v }), { 'aria-label': 'Stage' })),

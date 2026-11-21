@@ -1,7 +1,7 @@
 // Campaigns: the centre of the dashboard. Campaign cards, a step-by-step "new campaign" wizard, and a page per
 // campaign: hero header, how it works, switches, people, messages, full settings (instructions, files, format),
 // log and history. Everything here can also be done from Command ("campaign 5 ...").
-import { h, set, ico, GET, POST, PATCH, DEL, act, toast, modal, field, toggle, select, rel, num, stagePill, leadPill } from './ui.js';
+import { h, set, ico, GET, POST, PATCH, DEL, act, toast, modal, field, toggle, select, rel, num, clock, stagePill, leadPill } from './ui.js';
 import { S, live } from './state.js';
 import { emailWizardData } from './pages-email.js';
 
@@ -109,9 +109,9 @@ function campaignPage(id) {
           t.kind === 'scheduled' ? ctl('run', 'Run now') : null, c.isDefault ? null : ctl('remove', 'Remove', '.ghost.danger'))),
       h('div.chero-stats', {}, st.metrics.map(([n, l]) => metric(n, l)), t.stats && ['auto', 'batch'].includes(t.kind) ? metric(t.stats.replied ?? 0, 'Replied') : null, t.kind === 'email' && t.stats ? metric(t.stats.bounced ?? 0, 'Bounced') : null),
       st.pct != null ? h('div.chero-prog', {}, h('div.cprog', {}, h('i', { style: `width:${Math.round(st.pct)}%` })), h('span', {}, `${st.line} · ${Math.round(st.pct)}%`)) : h('div.chero-prog', {}, h('span', {}, st.line))));
-    const TABS = [['overview', 'Overview'], ['people', 'People'], ['messages', 'Messages'], ['settings', 'Settings'], ['log', 'Log & history']];
-    set(tabsBar, TABS.filter(([k]) => k === 'overview' || k === 'log' || ['auto', 'batch', 'email'].includes(t.kind)).map(([k, label]) => h(`button${tab === k ? '.on' : ''}`, { role: 'tab', 'aria-selected': tab === k, onclick: () => { tab = k; load(); } }, label)));
-    if (redrawBody) ({ overview, people, messages, settings: settingsTab, log: logTab }[tab])();
+    const TABS = [['overview', 'Overview'], ['command', 'Command'], ['people', 'People'], ['messages', 'Messages'], ['settings', 'Settings'], ['log', 'Log & history']];
+    set(tabsBar, TABS.filter(([k]) => ['overview', 'command', 'log'].includes(k) || ['auto', 'batch', 'email'].includes(t.kind)).map(([k, label]) => h(`button${tab === k ? '.on' : ''}`, { role: 'tab', 'aria-selected': tab === k, onclick: () => { tab = k; load(); } }, label)));
+    if (redrawBody) ({ overview, command: commandTab, people, messages, settings: settingsTab, log: logTab }[tab])();
   }
 
   function overview() {
@@ -144,7 +144,10 @@ function campaignPage(id) {
     ];
     const sw = (on, key, label, hint, invert = false) => h('label.cswitch', {}, h('div', {}, h('b', {}, label), h('span', {}, hint)),
       toggle(on, (v) => act(null, async () => { await PATCH(`/api/campaigns/${t.id}`, { [key]: invert ? !v : v }); load(); }, `${label}: ${v ? 'on' : 'off'}`), label));
+    const liveCard = h('div.card.clive');
+    drawLive(liveCard);
     set(body, h('div.stack', {},
+      liveCard,
       h('div.card', {}, h('header', {}, h('h2', {}, 'How it works')), h('div.cflow', {}, flow)),
       t.kind === 'email' ? h('div.note', {}, 'Pause or resume the whole campaign with the buttons above. Replies, bounces and unsubscribes stop each person’s emails by themselves.') : null,
       ['auto', 'batch'].includes(t.kind) ? h('div.card', {}, h('header', {}, h('h2', {}, 'Switches')), h('div.cswitches', {},
@@ -215,6 +218,65 @@ function campaignPage(id) {
 
   function settingsTab() { set(body, t.kind === 'email' ? emailSettings(t, () => load()) : settingsForm(t, () => load())); }
 
+  /** What the campaign is doing right now, and its latest steps as they happen. */
+  async function drawLive(box) {
+    const p = t.progress || {};
+    const now_ = [];
+    if (t.status === 'paused') now_.push(['pause', 'Paused. Press Resume, or write “resume” in Command.']);
+    if (p.reading) now_.push(['book-open', `Reading chats: ${num(p.reading.done)} of ${num(p.reading.total)}${p.reading.current ? ` · now ${p.reading.current}` : ''}`, p.reading.total ? (p.reading.done / p.reading.total) * 100 : 0]);
+    if (t.nextSend) {
+      const mins = Math.round((t.nextSend.at - Date.now()) / 60_000);
+      now_.push(['send', h('span', {}, 'Next message to ', h('a', { href: `#/inbox/${t.nextSend.chatId}` }, t.nextSend.who), mins <= 0 ? (t.waiting ? ' · goes out as soon as sending can start' : ' · going out now') : ` at ${clock(t.nextSend.at)} · in ${mins} min`)]);
+    }
+    if (t.waiting) now_.push(['circle-alert', t.waiting]);
+    if (!now_.length && t.status === 'active') now_.push(['radio', t.kind === 'auto' ? 'Waiting for new leads and quiet chats to follow up' : t.kind === 'email' ? `${num(t.stats?.waiting || 0)} emails to go, sent in office hours` : t.kind === 'scheduled' ? `Next run ${t.next_run_at ? `at ${when(t.next_run_at)}` : 'not set'}` : 'Nothing left to send']);
+    if (!now_.length) now_.push(['check-check', t.status === 'done' ? 'Finished' : 'Not running']);
+    const steps = await GET(`/api/tasks/${t.id}/events?limit=8`).catch(() => []);
+    const ICON = { read: 'book-open', wrote: 'pen-line', sent: 'send', skipped: 'skip-forward', failed: 'circle-alert', paused: 'pause', changed: 'settings-2', done: 'check-check', info: 'info' };
+    set(box, h('header', {}, h('h2', {}, h(`i.livedot${t.status === 'active' ? '.on' : ''}`), 'Live'), h('button.linkbtn', { onclick: () => { tab = 'log'; load(); } }, 'Full log')),
+      h('div.clive-now', {}, now_.map(([i, text, pct]) => h('div', {}, ico(i, 'sm'), h('div.grow', {}, typeof text === 'string' ? h('span', { dir: 'auto' }, text) : text, pct != null ? h('div.cprog', { style: 'margin-top:6px' }, h('i', { style: `width:${Math.round(pct)}%` })) : null)))),
+      steps.length ? h('ol.clive-feed', {}, steps.map((r) => h(`li.${r.kind}`, {}, ico(ICON[r.kind] || 'info', 'sm'), h('time', {}, clock(r.ts)), h('span', { dir: 'auto' }, r.text, r.chat_id ? h('a', { href: `#/inbox/${r.chat_id}`, style: 'margin-left:6px' }, 'chat') : null))))
+        : h('div.muted', { style: 'padding:12px 18px' }, 'Steps appear here as they happen.'));
+  }
+
+  let cmdReload = null;
+  /** Commands inside the campaign: everything said here is about this campaign. */
+  async function commandTab() {
+    const input = h('textarea', { dir: 'auto', rows: 2, placeholder: `Tell campaign #${t.id} what to do`, 'aria-label': 'Command for this campaign',
+      onkeydown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send.click(); } } });
+    const feed = h('div.thread.ccmd-feed');
+    const tips = {
+      auto: ['status', 'gap 5 to 7 minute kar do', 'follow ups band karo', 'raat ko bhi bhejo', 'is campaign ke leads ko "Hot" label do'],
+      batch: ['status', 'gap 5 to 7 minute kar do', '20 minute baad shuru karo', 'message mein website ka link bhi do', 'pause'],
+      email: ['status', 'gap 6 se 12 minute kar do', 'emails aur chhoti likho', 'pause'],
+      scheduled: ['status', 'report mein sales ki raqam bhi do', 'pause'],
+      analysis: ['status', 'kya seekha?'],
+    }[t.kind] || ['status'];
+    let waiting = false;
+    const draw = (rows) => {
+      set(feed, rows.length ? rows.map((r) => r.role === 'owner'
+        ? h('div.msg.me', { dir: 'auto' }, r.text, h('small', {}, clock(r.ts)))
+        : h('div.msg', { dir: 'auto', style: 'white-space:pre-wrap' }, r.text, h('small', {}, clock(r.ts))))
+        : h('div.cempty', { style: 'border:0;margin:auto' }, h('b', {}, 'Talk to this campaign'), h('p', {}, `Whatever you write here is about campaign #${t.id} only. Short orders like pause, resume, gap and status work at once, without using AI.`)),
+      waiting ? h('div.msg', { style: 'opacity:.7' }, 'Working on it…') : null);
+      feed.scrollTop = feed.scrollHeight;
+    };
+    const reload = async () => { const r = await GET(`/api/campaigns/${t.id}/commands`).catch(() => ({ items: [] })); draw(r.items); };
+    const send = h('button.btn.primary', { onclick: async () => {
+      const text = input.value.trim();
+      if (!text || waiting) return;
+      input.value = ''; waiting = true; await reload();
+      try { await POST(`/api/campaigns/${t.id}/commands`, { text }); } catch (e) { toast(e.message, true); }
+      waiting = false; await reload(); load(false);
+    } }, ico('send', 'sm'), 'Send');
+    set(body, h('div.card.ccmd', {}, feed,
+      h('div.chips', { style: 'padding:0 14px' }, tips.map((x) => h('button.chip', { type: 'button', onclick: () => { input.value = x; input.focus(); } }, x))),
+      h('div.composer', {}, input, send)));
+    cmdReload = reload;
+    await reload();
+    input.focus();
+  }
+
   async function logTab() {
     const [steps, changes] = await Promise.all([GET(`/api/tasks/${t.id}/events`).catch(() => []), GET(`/api/campaigns/${t.id}/changes`).catch(() => [])]);
     const show = (v) => (v == null || v === '' ? '—' : Array.isArray(v) ? v.join(', ') : v === true ? 'yes' : v === false ? 'no' : String(v).slice(0, 120));
@@ -224,6 +286,9 @@ function campaignPage(id) {
   }
 
   live.on('tasks', () => { if (tab === 'overview') load(); else load(false); });
+  live.on('command', () => { if (tab === 'command') cmdReload?.(); });
+  // The “in N min” countdown stays right while the page is open.
+  const tick = setInterval(() => { if (!el.isConnected) return clearInterval(tick); if (tab === 'overview' && t) drawLive(body.querySelector('.clive') || h('div')); }, 30_000);
   live.on('followups', () => { if (tab === 'overview') load(); });
   load();
   return el;

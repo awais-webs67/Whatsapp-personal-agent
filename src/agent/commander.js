@@ -17,6 +17,7 @@ import { updateCampaign } from './campaign-edit.js';
 import { normTags, hasAnyTag } from './tags.js';
 import { humanSend } from './pipeline.js';
 import { learnFromChats, learnFromWebsite, learnFromProfile } from './learn.js';
+import { campaignQuick, campaignBrief } from './campaign-command.js';
 
 const MAX_STEPS = 8;
 const DAY = 86_400_000;
@@ -332,7 +333,7 @@ function runningTasks() {
   return rows.length ? `\n- Tasks that exist now: ${rows.map((r) => `#${r.id} ${clip(r.title, 70)} (${r.kind}, ${r.status})`).join('; ')}.` : '';
 }
 
-function systemPrompt(scheduled = false) {
+function systemPrompt(scheduled = false, campaignId = null) {
   const s = getSettings();
   return `You are the operations assistant of ${s.business.name || 'a business'}'s WhatsApp agent. The business OWNER is talking to you (not a customer). Carry out what they ask using the actions below, then report back briefly in the owner's language.
 
@@ -353,7 +354,7 @@ You get the result back and can then take another action or reply. At most ${MAX
 - Batches skip people who bought or opted out unless the owner asks for a stage by name; people who asked not to be contacted are never messaged.
 - "Every N minutes" means interval_minutes N. Only use the actions listed above.
 - If the owner is talking about a task that already exists (this one, the running one, "is task mein", "isko", "ab se"), change it with update_task. Never start a new task for a change.${runningTasks()}
-- Talk to the owner in plain words. Never mention action names, arguments or JSON in your reply; say what you did or what you need instead ("I could not open the site: …", not "use the remember tool").`;
+- Talk to the owner in plain words. Never mention action names, arguments or JSON in your reply; say what you did or what you need instead ("I could not open the site: …", not "use the remember tool").${campaignId ? campaignBrief(campaignId) : ''}`;
 }
 
 /** Run one owner request through the tool loop. */
@@ -391,7 +392,7 @@ const HELP = [
   '• shortcuts  (apne shortcuts ki list)',
   '',
   'Campaigns (AI samajhta hai, misaal):',
-  '• naya campaign: jo canva ad se aayein unhein 2 ghante, 1 din, 3 din baad follow up, Canva offer batao',
+  '• naya campaign: jo eid ad se aayein unhein 2 ghante, 1 din, 3 din baad follow up, Eid offer batao',
   '• campaign 4 mein gap 5 to 7 minute kar do / campaign 4 rok do / campaign 4 ke follow up 1 ghante baad',
   '• campaign 4 ki hidayat: Eid discount ka zikr karo',
   'Baqi kuch bhi aam zubaan mein likhein: us ke liye AI lagti hai.',
@@ -428,14 +429,14 @@ function facts(steps) {
 }
 const withFacts = (reply, steps) => [reply, ...facts(steps)].filter(Boolean).join('\n');
 
-export async function runCommand(text, history = [], { scheduled = false } = {}) {
+export async function runCommand(text, history = [], { scheduled = false, campaignId = null } = {}) {
   // The owner's own shortcuts: teach, list, remove, or expand one into the full instruction.
   const sc = shortcut(text);
   if (sc?.reply) return { reply: sc.reply, steps: [] };
   if (sc?.text) text = sc.text;
   // Orders the app understands by itself run straight away: no model, no "should I?".
   // Only about timing, while a batch is running ("ab 30 minute baad bhejna", "gap 10 minute"): it is for that batch.
-  if (!scheduled && TIMING_ONLY(text) && !/\?\s*$|^(kya|kitne|kitni|kab|kyun)\b/i.test(text)) {
+  if (!scheduled && !campaignId && TIMING_ONLY(text) && !/\?\s*$|^(kya|kitne|kitni|kab|kyun)\b/i.test(text)) {
     const t = findTask(null, activeThread);
     const busy = t && t.kind === 'batch' && (get("SELECT COUNT(*) n FROM followups WHERE task_id = ? AND status IN ('pending','approved')", t.id).n || (campaign.running && campaign.taskId === t.id));
     if (busy) {
@@ -451,7 +452,7 @@ export async function runCommand(text, history = [], { scheduled = false } = {})
       }
     }
   }
-  const quick = quickIntent(text, { scheduled });
+  const quick = campaignId ? null : quickIntent(text, { scheduled });
   if (quick && TOOLS[quick.action]) {
     let result;
     try { result = await TOOLS[quick.action].run(quick.args); } catch (e) { result = { error: e.message }; }
@@ -466,7 +467,7 @@ export async function runCommand(text, history = [], { scheduled = false } = {})
   let corrections = 0;
   for (let i = 0; i <= MAX_STEPS; i++) {
     // A step is one short JSON object; the final reply to the owner rarely needs more than a few sentences.
-    const out = await complete({ system: systemPrompt(scheduled), messages, maxTokens: 450 }, { purpose: 'command' });
+    const out = await complete({ system: systemPrompt(scheduled, campaignId), messages, maxTokens: 450 }, { purpose: 'command' });
     const obj = extractJson(toolCallToJson(out.text));
     const usable = obj && (TOOLS[obj.action] || (!obj.action && typeof obj.reply === 'string' && obj.reply.trim()));
     if (!usable) {
@@ -525,6 +526,14 @@ function fixedThread(kind, title) {
   if (t) return t.id;
   return Number(run('INSERT INTO command_threads (title, kind, created_at, updated_at) VALUES (?,?,?,?)', title, kind, now(), now()).lastInsertRowid);
 }
+/** The command conversation that belongs to one campaign (made on first use). */
+export function campaignThread(id) {
+  const t = get('SELECT id, title, thread_id FROM tasks WHERE id = ?', Number(id));
+  if (!t) throw new Error('Campaign not found');
+  const thread = fixedThread(`campaign:${t.id}`, `Campaign #${t.id}: ${t.title}`.slice(0, 80));
+  if (!t.thread_id) run('UPDATE tasks SET thread_id = ? WHERE id = ?', thread, t.id);
+  return thread;
+}
 export function newThread(title = 'New chat') {
   return Number(run("INSERT INTO command_threads (title, kind, created_at, updated_at) VALUES (?, 'chat', ?, ?)", title, now(), now()).lastInsertRowid);
 }
@@ -556,8 +565,8 @@ export function threadMemory(thread) {
   return out;
 }
 
-export function handleCommand(text, { chatId = null, scheduled = false, label = null, threadId = null } = {}) {
-  const thread = threadId || (chatId ? fixedThread('whatsapp', 'WhatsApp (Message yourself)') : scheduled ? fixedThread('tasks', 'Scheduled tasks') : newThread());
+export function handleCommand(text, { chatId = null, scheduled = false, label = null, threadId = null, campaignId = null } = {}) {
+  const thread = campaignId ? campaignThread(campaignId) : threadId || (chatId ? fixedThread('whatsapp', 'WhatsApp (Message yourself)') : scheduled ? fixedThread('tasks', 'Scheduled tasks') : newThread());
   const job = queue.then(async () => {
     // The agent remembers this conversation (and only this one).
     const history = scheduled ? [] : threadMemory(thread);
@@ -569,7 +578,7 @@ export function handleCommand(text, { chatId = null, scheduled = false, label = 
     let out;
     activeThread = scheduled ? null : thread;
     try {
-      out = await runCommand(text, history, { scheduled });
+      out = (campaignId && await campaignQuick(campaignId, text)) || await runCommand(text, history, { scheduled, campaignId });
     } catch (e) {
       out = { reply: `I could not do that: ${e.message}`, steps: [] };
     }

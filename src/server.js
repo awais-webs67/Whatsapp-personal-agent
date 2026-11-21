@@ -26,7 +26,7 @@ import { leadScore } from './agent/score.js';
 import { mediaStatus } from './agent/voice.js';
 import * as email from './email/index.js';
 import { setEmailStats } from './agent/tasks.js';
-import { handleCommand, startCommander, listThreads, newThread } from './agent/commander.js';
+import { handleCommand, startCommander, listThreads, newThread, campaignThread } from './agent/commander.js';
 import { listTasks, createTask, controlTask, startTasks } from './agent/tasks.js';
 import { taskEvents } from './agent/task-log.js';
 import { startWatchdog, health } from './agent/watchdog.js';
@@ -457,7 +457,9 @@ app.get('/api/campaigns/:id/view', wrap((req) => {
   const t = campaignRow(req.params.id);
   let params = {};
   try { params = JSON.parse(t.params || '{}') || {}; } catch { /* none */ }
-  return { ...listTasks().find((x) => x.id === t.id), params, stats: t.kind === 'email' ? email.emailStats(t.id) : campaignStats(t.id) };
+  const next = get("SELECT f.due_at, c.name, c.phone, c.id chat_id FROM followups f JOIN chats c ON c.id = f.chat_id WHERE f.task_id = ? AND f.status = 'approved' ORDER BY f.due_at LIMIT 1", t.id);
+  const nextSend = next && t.status === 'active' ? { at: next.due_at, who: next.name || (next.phone ? `+${next.phone}` : `chat ${next.chat_id}`), chatId: next.chat_id } : null;
+  return { ...listTasks().find((x) => x.id === t.id), params, nextSend, stats: t.kind === 'email' ? email.emailStats(t.id) : campaignStats(t.id) };
 }));
 app.get('/api/campaigns/:id/people', wrap((req) => {
   const t = campaignRow(req.params.id);
@@ -563,6 +565,16 @@ app.patch('/api/tasks/:id', wrap((req) => controlTask(Number(req.params.id), Str
 
 // ---------- owner commands ----------
 app.get('/api/commands/threads', wrap(() => listThreads()));
+// The command chat inside one campaign: whatever is written there is about that campaign.
+app.get('/api/campaigns/:id/commands', wrap((req) => {
+  const thread = campaignThread(campaignRow(req.params.id).id);
+  return { thread, items: all('SELECT * FROM (SELECT * FROM commands WHERE thread_id = ? ORDER BY id DESC LIMIT 200) ORDER BY id', thread).map((c) => ({ ...c, steps: parse(c.steps, []) })) };
+}));
+app.post('/api/campaigns/:id/commands', wrap(async (req) => {
+  const text = String(req.body.text || '').trim();
+  if (!text) throw bad('Write a command first');
+  return handleCommand(text.slice(0, 2000), { campaignId: campaignRow(req.params.id).id });
+}));
 app.post('/api/commands/threads', wrap(() => ({ id: newThread() })));
 app.patch('/api/commands/threads/:id', wrap((req) => {
   const title = String(req.body.title || '').trim().slice(0, 80);

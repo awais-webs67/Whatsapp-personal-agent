@@ -1589,3 +1589,27 @@ test('voice notes and pictures can be switched by command', async () => {
   assert.equal(getSettings().voice.transcribe, false);
   applySettings({ images: false, voice: true });
 });
+
+test('commands inside a campaign change only that campaign, without a model', async () => {
+  const camps = await import('../src/agent/campaigns.js');
+  const tasks = await import('../src/agent/tasks.js');
+  const { handleCommand } = await import('../src/agent/commander.js');
+  const t = camps.createAuto({ name: 'Inside command', keywords: ['insidecmd'] }, 'test');
+  const other = camps.createAuto({ name: 'Other one', keywords: ['othercmd'] }, 'test');
+  let r = await handleCommand('gap 5 to 7 minute kar do', { campaignId: t.id });
+  assert.match(r.reply, /5 se 7/);
+  assert.equal(camps.configOf(get('SELECT * FROM tasks WHERE id = ?', t.id)).gapMin, 5);
+  assert.notEqual(camps.configOf(get('SELECT * FROM tasks WHERE id = ?', other.id)).gapMin, 5, 'the other campaign is untouched');
+  r = await handleCommand('follow ups band karo', { campaignId: t.id });
+  assert.equal(camps.configOf(get('SELECT * FROM tasks WHERE id = ?', t.id)).followups, false);
+  assert.notEqual(camps.configOf(get('SELECT * FROM tasks WHERE id = ?', other.id)).followups, false);
+  r = await handleCommand('pause', { campaignId: t.id });
+  assert.equal(get('SELECT status FROM tasks WHERE id = ?', t.id).status, 'paused');
+  r = await handleCommand('resume', { campaignId: t.id });
+  assert.equal(get('SELECT status FROM tasks WHERE id = ?', t.id).status, 'active');
+  r = await handleCommand('status', { campaignId: t.id });
+  assert.match(r.reply, new RegExp(`Campaign #${t.id}`));
+  const thread = get('SELECT thread_id FROM tasks WHERE id = ?', t.id).thread_id;
+  assert.ok(get('SELECT COUNT(*) n FROM commands WHERE thread_id = ?', thread).n >= 10, 'the conversation is saved with the campaign');
+  tasks.controlTask(t.id, 'remove'); tasks.controlTask(other.id, 'remove');
+});

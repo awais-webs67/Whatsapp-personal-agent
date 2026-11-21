@@ -4,7 +4,7 @@ import { S, live } from './state.js';
 const EXAMPLES = [
   'Pichle 5 din ki chats check karo, jin logon ne purchase nahi kiya unhein har 5 minute baad follow-up bhejo',
   'Aaj kitne naye log aaye aur kis ko meri zaroorat hai?',
-  'Jo log Canva ke liye aaye thay unhein confirm karo ke offer abhi bhi available hai',
+  'Jo log logo design ke liye aaye thay unhein batao ke offer abhi bhi available hai',
   'Roz raat 9 baje aaj ka report do',
   'Yaad rakho: is hafte sab packages par 10% discount hai',
 ];

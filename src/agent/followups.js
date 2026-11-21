@@ -430,9 +430,15 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
   Object.assign(campaign, { taskId, analyzeOnly, waitingUntil: null, instruction, autoApprove, range, gap, stages: {}, running: true, total: chats.length, done: 0, drafted: 0, skipped: 0, skipReasons: [], failed: 0, cancel: false, startedAt: now(), error: null });
   emit('campaign', campaign);
   log('info', 'campaign', `Reviewing ${chats.length} past conversations`);
+  if (taskId && !skipChatIds) {
+    const about = [keywords?.length ? `about ${keywords.join(', ')}` : null, tags?.length ? `tagged ${tags.join(', ')}` : null, stages?.length ? `at stage ${stages.join(', ')}` : null].filter(Boolean).join(', ');
+    taskEvent(taskId, chats.length ? `Found ${chats.length} chat${chats.length === 1 ? '' : 's'} from the last ${sinceDays} days${about ? ` ${about}` : ''}. Reading them one by one${analyzeOnly ? '' : ' and writing a message for each'}.` : `No chats found from the last ${sinceDays} days${about ? ` ${about}` : ''}.`, { kind: 'info' });
+  }
   (async () => {
     // Read one chat; true when it worked.
     const handle = async (chat) => {
+      campaign.current = who(chat);
+      if (taskId) emit('tasks');
       // Already read and unchanged: its summary is in the prompt, so the latest messages are enough to write from.
       const d = await decide(chat.id, 'analyze', { campaignId: taskId, instruction: campaign.instruction, lean: analyzeOnly, audience, history: !analyzeOnly && isFresh(chat) ? 12 : null });
       update('chats', chat.id, { stage: d.stage, summary: d.summary, analyzed_at: now() }, ['stage', 'summary', 'analyzed_at']);
@@ -480,6 +486,7 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
       }
     } else campaign.failed += failedOnce.length;
     campaign.running = false;
+    campaign.current = null;
     emit('campaign', campaign);
     const markRead = () => { if (taskId && !campaign.cancel) { const p = JSON.parse(get('SELECT params FROM tasks WHERE id = ?', taskId)?.params || '{}'); run('UPDATE tasks SET params = ? WHERE id = ?', JSON.stringify({ ...p, readDone: true }), taskId); } };
     if (!analyzeOnly) markRead();
@@ -494,6 +501,7 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
     } else if (taskId) {
       const summary = `Read ${campaign.done} chat${campaign.done === 1 ? '' : 's'}: ${campaign.drafted} message${campaign.drafted === 1 ? '' : 's'} ${autoApprove ? 'queued' : 'drafted for approval'}, ${campaign.skipped} skipped${campaign.failed ? `, ${campaign.failed} failed (${campaign.error})` : ''}.${campaign.skipReasons.length ? ` Skipped for example: ${campaign.skipReasons.join(' | ')}` : ''}`;
       run('UPDATE tasks SET last_result = ? WHERE id = ?', summary.slice(0, 1000), taskId);
+      taskEvent(taskId, `Finished reading. ${summary}`, { kind: 'done' });
       emit('tasks');
       if (campaign.drafted) notify(`Task #${taskId}: ${summary} ${autoApprove ? 'Sending starts now, one by one.' : 'Approve them on the Follow-ups page.'}`, { threadId: get('SELECT thread_id FROM tasks WHERE id = ?', taskId)?.thread_id });
     }
