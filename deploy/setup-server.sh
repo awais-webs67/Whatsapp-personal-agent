@@ -67,6 +67,9 @@ cron_line="*/5 * * * * bash $APP_DIR/deploy/auto-update.sh >> $APP_DIR/data/upda
 # With no crontab yet, "crontab -l" fails; that must not stop this script (set -e / pipefail).
 { crontab -l 2>/dev/null | grep -v 'deploy/auto-update.sh' || true; echo "$cron_line"; } | crontab -
 crontab -l | grep -q 'deploy/auto-update.sh' || { echo "Could not set up the auto update (cron)."; exit 1; }
+# Nightly backup of every database, session and key into backups/ (newest 14 kept). Download them now and then.
+backup_line="20 3 * * * cd $APP_DIR && node --disable-warning=ExperimentalWarning deploy/backup.mjs >> $APP_DIR/data/backup.log 2>&1"
+{ crontab -l 2>/dev/null | grep -v 'deploy/backup.mjs' || true; echo "$backup_line"; } | crontab -
 echo "On. Log: $APP_DIR/data/update.log  (private repo? run once: git config credential.helper store && git pull)"
 
 step "Firewall: open ports 80 and 443 on this machine"

@@ -60,6 +60,15 @@ Then open `https://agent.yourdomain.com`, set the owner password, and link your 
 - See what it is doing: `pm2 logs agent`
 - Back up `~/whatsapp-personal-agent/data` (chats, settings, keys), for example by downloading it with `scp`.
 
+## Backups and moving to another server
+- Every night at 03:20 the server writes `backups/agent-backup-DATE.tar.gz` (all databases, WhatsApp sessions,
+  keys, uploaded files; the newest 14 are kept). Make one now: `node deploy/backup.mjs`.
+- Download one to your computer (from your computer, or from Cloud Shell):
+  `scp -i ssh-key.key ubuntu@SERVER_IP:Whatsapp-personal-agent/backups/agent-backup-*.tar.gz .`
+- New server: clone the repo, put the backup in the project folder, then
+  `tar -xzf agent-backup-*.tar.gz` (creates `data/`) and run `bash deploy/setup-server.sh your.domain`.
+  Everything carries on: chats, campaigns, settings, keys, linked numbers.
+
 ## Accounts for clients
 Sign in as **admin** (an install from before accounts existed keeps its password: username `admin`).
 **Clients** page → Add an account → send them the username and password. They open the same address and sign in.
