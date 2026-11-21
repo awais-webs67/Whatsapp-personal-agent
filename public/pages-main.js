@@ -203,6 +203,7 @@ export function inbox(openId) {
         select([['auto', `Follow the number's rule`], ['on', 'Always answer'], ['off', 'Never answer']], chat.ai_enabled === null ? 'auto' : chat.ai_enabled ? 'on' : 'off', (v) => patch({ aiEnabled: v === 'auto' ? null : v === 'on' }), { 'aria-label': 'Agent mode' }),
         !chat.auto && chat.autoReason ? h('div.muted', { style: 'font-size:12px' }, `Not answering: ${chat.autoReason}.`) : null),
       h('section', {}, h('h2', {}, 'Summary'), h('div', { style: 'color:var(--ink)' }, chat.summary || h('span.muted', {}, 'The agent writes this as the chat goes on.'))),
+      profileCard(chat),
       h('section', {}, h('h2', {}, 'Tags'), tagsBox, h('div.muted', { style: 'font-size:12px' }, 'Your own labels. Later: "vip tag walon ko follow-up bhejo" in Command.')),
       h('section', {}, h('h2', {}, 'Notes for the agent'), notes),
       h('section', {}, h('h2', {}, 'Details'),
@@ -222,3 +223,12 @@ export function inbox(openId) {
   return el;
 }
 export { S };
+
+/** What the agent remembers about this customer (kept even when the AI model changes). */
+function profileCard(chat) {
+  let p = {};
+  try { p = JSON.parse(chat.profile || '{}') || {}; } catch { /* empty */ }
+  const row = (label, v) => (v && (!Array.isArray(v) || v.length) ? h('div.kv', {}, label, h('b', { dir: 'auto' }, Array.isArray(v) ? v.join(', ') : v)) : null);
+  const rows = [row('Asked about', p.wants), row('Holding back', p.objections), row('Bought', p.bought), row('We promised', p.promised), row('Budget', p.budget), row('Next step', p.next), row('Came from ad', chat.ad_title)].filter(Boolean);
+  return h('section', {}, h('h2', {}, 'Customer card'), rows.length ? h('div.stack', { style: 'gap:6px' }, rows) : h('div.muted', { style: 'font-size:12.5px' }, 'Filled in as the agent reads this chat.'));
+}

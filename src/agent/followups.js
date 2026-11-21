@@ -3,7 +3,7 @@
 import { all, get, run, now, update } from '../db.js';
 import { getSettings, log, emit, sleep, rand, hourIn, isQuiet } from '../core.js';
 import * as wa from '../wa/manager.js';
-import { decide, CLOSED } from './brain.js';
+import { decide, CLOSED, saveProfile } from './brain.js';
 import { learnFromChats } from './learn.js';
 import { notify, who } from './updates.js';
 import { eligibility, humanSend, scheduleNextFollowup } from './pipeline.js';
@@ -57,6 +57,7 @@ export async function readChanged() {
     try {
       const d = await decide(c.id, 'analyze', { lean: true });
       update('chats', c.id, { stage: c.stage === 'opted_out' ? 'opted_out' : d.stage, summary: d.summary, analyzed_at: now() }, ['stage', 'summary', 'analyzed_at']);
+      saveProfile(c.id, d.profile);
       n++;
     } catch (e) { if (outOfModels(e)) break; }
   }
@@ -241,6 +242,7 @@ async function draftDue() {
         if (camp.task.status !== 'active') continue;
         const d = await decide(chat.id, 'followup');
         update('chats', chat.id, { stage: d.stage, summary: d.summary }, ['stage', 'summary']);
+        saveProfile(chat.id, d.profile);
         if (d.skip) { log('info', 'followup', `Skipped ${label(chat)}: ${d.reason || 'not worth a follow-up'}`); taskEvent(camp.task.id, `Skipped ${who(chat)}: ${d.reason || 'not worth a follow-up'}`, { kind: 'skipped', chatId: chat.id }); continue; }
         queue(chat.id, 'auto', d.message, d.reason, camp.config.approval ? 'pending' : 'approved', now(), camp.task.id);
         taskEvent(camp.task.id, `Wrote follow-up ${chat.followup_count + 1} for ${who(chat)}${camp.config.approval ? ', waiting for your OK' : ''}: "${String(d.message).slice(0, 160)}"`, { kind: 'wrote', chatId: chat.id });
@@ -402,6 +404,7 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
       // Already read and unchanged: its summary is in the prompt, so the latest messages are enough to write from.
       const d = await decide(chat.id, 'analyze', { instruction: campaign.instruction, lean: analyzeOnly, audience, history: !analyzeOnly && isFresh(chat) ? 12 : null });
       update('chats', chat.id, { stage: d.stage, summary: d.summary, analyzed_at: now() }, ['stage', 'summary', 'analyzed_at']);
+      saveProfile(chat.id, d.profile);
       campaign.stages[d.stage] = (campaign.stages[d.stage] || 0) + 1;
       if (analyzeOnly) { taskEvent(taskId, `Read ${who(chat)}: ${d.stage.replace('_', ' ')}. ${d.summary || ''}`.trim(), { kind: 'read', chatId: chat.id }); return; }
       if (d.skip) {

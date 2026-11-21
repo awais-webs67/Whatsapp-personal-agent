@@ -1299,3 +1299,23 @@ test('campaigns: a lead from an ad or with its words joins that campaign and get
   assert.throws(() => tasks.controlTask(def.id, 'remove'), /cannot be removed/);
   tasks.controlTask(id, 'remove');
 });
+
+test('customer memory card: what each customer wants, objects to, bought and was promised is kept and used in every prompt', async () => {
+  const { mergeProfile, readProfile, buildSystem, decide } = await import('../src/agent/brain.js');
+  const { getSettings } = await import('../src/core.js');
+  assert.deepEqual(mergeProfile({ wants: ['Canva'], next: 'send link' }, { wants: ['canva', 'ChatGPT'], objections: ['mehnga hai'], next: '' }),
+    { wants: ['canva', 'ChatGPT'], objections: ['mehnga hai'], next: 'send link' }, 'lists add without repeats, empty values change nothing');
+  const chat = get("SELECT * FROM chats WHERE jid = '444@s.whatsapp.net'");
+  run('UPDATE chats SET profile = NULL WHERE id = ?', chat.id);
+  reply = JSON.stringify({ messages: ['Ji, Canva Pro 1 saal ka hai.'], stage: 'interested', summary: 'Canva', handoff: false,
+    profile: { wants: ['Canva Pro yearly'], objections: ['price'], promised: 'link by evening', next: 'send payment details' } });
+  const d = await decide(chat.id, 'reply');
+  const { saveProfile } = await import('../src/agent/brain.js');
+  saveProfile(chat.id, d.profile);
+  const p = readProfile(get('SELECT profile FROM chats WHERE id = ?', chat.id));
+  assert.deepEqual(p.wants, ['Canva Pro yearly']);
+  assert.equal(p.promised, 'link by evening');
+  const sys = buildSystem(getSettings(), get('SELECT * FROM chats WHERE id = ?', chat.id), 'reply');
+  assert.match(sys, /Asked about: Canva Pro yearly[\s\S]*Holding back because: price[\s\S]*We promised: link by evening/);
+  assert.match(sys, /"profile": \{"wants"/);
+});

@@ -2,7 +2,7 @@
 import { get, run, now, update } from '../db.js';
 import { getSettings, log, emit, sleep, rand } from '../core.js';
 import * as wa from '../wa/manager.js';
-import { decide, CLOSED } from './brain.js';
+import { decide, CLOSED, saveProfile } from './brain.js';
 import { notify, who } from './updates.js';
 import { parseChatCommand, runChatCommand } from './chat-commands.js';
 import { assignCampaign, campaignOf } from './campaigns.js';
@@ -140,6 +140,7 @@ async function answer(chatId) {
       needs_human: decision.handoff ? 1 : 0, handoff_reason: decision.handoff ? decision.handoffReason || 'Agent asked for help' : null,
     }, ['stage', 'summary', 'needs_human', 'handoff_reason']);
 
+    saveProfile(chatId, decision.profile);
     await humanSend(chat, decision.messages, 'ai', now() - started);
     // The reply came with a fresh stage and summary: the chat counts as read up to here.
     update('chats', chatId, { analyzed_at: now() }, ['analyzed_at']);

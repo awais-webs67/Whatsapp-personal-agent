@@ -1,5 +1,5 @@
 // The agent's thinking: turns a chat + business knowledge into a structured decision.
-import { all, get } from '../db.js';
+import { all, get, run } from '../db.js';
 import { getSettings } from '../core.js';
 import { complete } from '../llm/router.js';
 import { focus, trimProse } from './knowledge.js';
@@ -21,6 +21,42 @@ export function withoutPrices(text) {
     .replace(/[ \t]{2,}/g, ' ');
 }
 const linkMode = (b) => b.prices === 'link';
+
+// ---------- customer memory card ----------
+// What the agent knows about one customer, kept in the database (not in any model), so it survives model
+// switches and restarts. Every reading of the chat adds to it.
+const PROFILE_FIELDS = { wants: 'list', objections: 'list', bought: 'list', promised: 'text', next: 'text', budget: 'text' };
+const PROFILE_SPEC = '"profile": {"wants": ["products or services they asked about"], "objections": ["what holds them back, e.g. price"], "bought": ["what they bought"], "promised": "anything we promised them", "next": "the next step", "budget": ""}';
+export function readProfile(chat) { try { return JSON.parse(chat?.profile || '{}') || {}; } catch { return {}; } }
+/** New facts are added to what is known; lists keep their newest 8 items, texts are replaced when given. */
+export function mergeProfile(old = {}, add = {}) {
+  const out = { ...old };
+  for (const [k, kind] of Object.entries(PROFILE_FIELDS)) {
+    const v = add?.[k];
+    if (v == null || v === '') continue;
+    if (kind === 'list') {
+      const items = (Array.isArray(v) ? v : [v]).map((x) => String(x).trim().slice(0, 80)).filter(Boolean);
+      const seen = new Set();
+      out[k] = [...(old[k] || []), ...items].reverse().filter((x) => { const key = x.toLowerCase(); return !seen.has(key) && seen.add(key); }).reverse().slice(-8);
+    } else out[k] = String(v).trim().slice(0, 200);
+  }
+  return out;
+}
+export function saveProfile(chatId, add) {
+  if (!add || typeof add !== 'object') return;
+  const chat = get('SELECT profile FROM chats WHERE id = ?', chatId);
+  if (!chat) return;
+  const next = mergeProfile(readProfile(chat), add);
+  run('UPDATE chats SET profile = ? WHERE id = ?', JSON.stringify(next), chatId);
+}
+const profileLines = (p) => [
+  p.wants?.length ? `- Asked about: ${p.wants.join(', ')}` : null,
+  p.objections?.length ? `- Holding back because: ${p.objections.join(', ')}` : null,
+  p.bought?.length ? `- Bought: ${p.bought.join(', ')}` : null,
+  p.promised ? `- We promised: ${p.promised}` : null,
+  p.budget ? `- Budget: ${p.budget}` : null,
+  p.next ? `- Next step: ${p.next}` : null,
+].filter(Boolean).join('\n');
 
 const section = (title, body) => (String(body || '').trim() ? `\n## ${title}\n${String(body).trim()}\n` : '');
 
@@ -93,7 +129,7 @@ ${linkMode(b) ? `- Prices and stock change often, so you do not know them. Never
 - Name: ${chat.name || 'unknown'}
 - Current stage: ${chat.stage}
 - Last message from them: ${ago(chat.last_in_at)}
-- Summary so far: ${chat.summary || 'none'}${chat.notes ? `\n- Notes from the owner (follow these): ${chat.notes}` : ''}
+- Summary so far: ${chat.summary || 'none'}${profileLines(readProfile(chat)) ? `\n${profileLines(readProfile(chat))}` : ''}${chat.notes ? `\n- Notes from the owner (follow these): ${chat.notes}` : ''}
 - Current time: ${new Date().toLocaleString('en-GB', { timeZone: settings.followup.timezone, dateStyle: 'full', timeStyle: 'short' })}`);
 
   // Follow-ups in the owner's own words, with their links.
@@ -112,7 +148,8 @@ ${style ? `Write the message like this example from the owner: same language, gr
     out.push(`
 ## Output
 Return ONLY a JSON object, nothing before or after it:
-{"messages": ["bubble 1", "bubble 2"], "stage": "${stageList}", "summary": "one line: what they want and where things stand", "handoff": false, "handoff_reason": "", "followup_hours": null}
+{"messages": ["bubble 1", "bubble 2"], "stage": "${stageList}", "summary": "one line: what they want and where things stand", "handoff": false, "handoff_reason": "", "followup_hours": null, ${PROFILE_SPEC}}
+"profile" is optional: include only fields you learned something new about in this conversation.
 "followup_hours" is optional: how long to wait before a gentle follow-up if they go quiet (a number), or null to use the default schedule.`);
   } else if (mode === 'followup') {
     out.push(`
@@ -122,7 +159,7 @@ Skip the follow-up if they already bought, clearly declined, asked not to be con
 
 ## Output
 Return ONLY a JSON object:
-{"skip": false, "message": "the follow-up text", "stage": "${stageList}", "summary": "one line", "reason": "why you are following up or skipping"}`);
+{"skip": false, "message": "the follow-up text", "stage": "${stageList}", "summary": "one line", "reason": "why you are following up or skipping", ${PROFILE_SPEC}}`);
   } else {
     out.push(`
 ## Task: review an old conversation
@@ -130,7 +167,7 @@ Read this past conversation and classify it. Then decide whether a follow-up is 
 
 ## Output
 Return ONLY a JSON object:
-{"stage": "${stageList}", "summary": "one line: what they wanted and how it ended", "should_followup": true, "message": "the follow-up text, or empty", "reason": "short reason"}`);
+{"stage": "${stageList}", "summary": "one line: what they wanted and how it ended", "should_followup": true, "message": "the follow-up text, or empty", "reason": "short reason", ${PROFILE_SPEC}}`);
   }
   return out.join('').trim();
 }
@@ -186,16 +223,17 @@ export function parseDecision(text, mode, chat, { instructed = false } = {}) {
   // An opt-out is the customer's decision: a model can never move them back. Only the owner can.
   const stage = chat.stage === 'opted_out' ? 'opted_out' : cleanStage(obj.stage, chat.stage);
   const summary = cleanText(obj.summary).slice(0, 300) || chat.summary || '';
+  const profile = obj.profile && typeof obj.profile === 'object' && !Array.isArray(obj.profile) ? obj.profile : null;
   if (mode === 'reply') {
     const raw = Array.isArray(obj.messages) ? obj.messages : [obj.messages ?? obj.message ?? obj.reply];
     const messages = raw.map(cleanText).filter(Boolean).slice(0, 4);
     if (!messages.length && !obj.handoff) throw new Error('Model returned an empty reply');
     const hours = Number(obj.followup_hours);
-    return { messages, stage, summary, handoff: !!obj.handoff, handoffReason: cleanText(obj.handoff_reason).slice(0, 200), followupHours: hours > 0 && hours <= 24 * 30 ? hours : null };
+    return { profile, messages, stage, summary, handoff: !!obj.handoff, handoffReason: cleanText(obj.handoff_reason).slice(0, 200), followupHours: hours > 0 && hours <= 24 * 30 ? hours : null };
   }
   const message = cleanText(obj.message);
   const skip = mode === 'followup' ? !!obj.skip || !message : instructed ? obj.should_followup === false || !message : !obj.should_followup || !message;
-  return { skip, message, stage, summary, reason: cleanText(obj.reason).slice(0, 300) };
+  return { profile, skip, message, stage, summary, reason: cleanText(obj.reason).slice(0, 300) };
 }
 
 /**
@@ -217,7 +255,7 @@ Stages:
 - opted_out: asked not to be contacted
 
 Return ONLY a JSON object:
-{"stage": "${STAGES.join(' | ')}", "summary": "one or two lines: what they wanted (which product), any price discussed, how it ended and what is still open", "should_followup": false, "message": "", "reason": ""}`;
+{"stage": "${STAGES.join(' | ')}", "summary": "one or two lines: what they wanted (which product), any price discussed, how it ended and what is still open", "should_followup": false, "message": "", "reason": "", ${PROFILE_SPEC}}`;
 }
 
 export async function decide(chatId, mode = 'reply', { turns = null, chatOverride = null, instruction = '', lean = false, audience = 'all', history = null } = {}) {
