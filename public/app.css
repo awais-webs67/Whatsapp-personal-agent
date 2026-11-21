@@ -399,3 +399,9 @@ ol.tlog .pill { justify-self: start; }
 .wtype b { color: var(--ink); }
 .wtype.on { border-color: var(--orange); box-shadow: 0 0 0 2px var(--orange-tint-2); }
 .wtype:disabled { opacity: .55; cursor: not-allowed; }
+
+.camp-mini { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+.camp-mini a { display: grid; gap: 4px; padding: 14px 18px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); text-decoration: none; color: inherit; }
+.camp-mini a:hover { background: var(--orange-tint); }
+.camp-mini b { color: var(--ink); }
+.camp-mini span { font-size: 12.5px; color: var(--muted); }

@@ -40,14 +40,27 @@ function followupCard(f) {
 
 export function overview() {
   const el = h('div.page');
+  // Running campaigns first: what is happening right now, one click from each campaign's own page.
+  const campStrip = h('div.card', {}, h('header', {}, h('h2', {}, 'Running campaigns'), h('a.btn.sm', { href: '#/campaigns' }, 'All campaigns')), h('div.pad.muted', {}, 'Loading…'));
+  GET('/api/tasks').then((list) => {
+    const live_ = list.filter((t) => t.status === 'active' || t.status === 'paused').slice(0, 6);
+    set(campStrip, h('header', {}, h('h2', {}, 'Running campaigns'), h('a.btn.sm', { href: '#/campaigns' }, 'All campaigns')),
+      live_.length ? h('div.camp-mini', {}, live_.map((t) => {
+        const st = t.stats || {}; const p = t.progress || {};
+        const line = t.kind === 'auto' ? `${st.members || 0} leads · ${st.sent || 0} sent · ${st.bought || 0} bought` : p.reading ? `Reading ${p.reading.done} of ${p.reading.total}` : `${p.sent || 0} sent · ${p.queued || 0} to go`;
+        return h('a', { href: `#/campaigns/${t.id}` }, h('b', { dir: 'auto' }, t.title), h('span', {}, `${t.status === 'paused' ? 'Paused · ' : ''}${line}`));
+      })) : h('div.pad', {}, h('span.muted', {}, 'No campaign is running. '), h('a', { href: '#/campaigns' }, 'Start one')));
+  }).catch(() => {});
   let logs = [];
   const draw = (o) => {
     const s = o.stats;
     const total = o.stages.reduce((n, x) => n + x.n, 0) || 1;
     const needsSetup = !o.accounts.length || !o.providers.length;
     set(el, 
-      h('div.head', {}, h('div', {}, h('h1', {}, 'Overview'), h('p', {}, o.settings.autopilot ? 'The agent is answering new leads on its own.' : 'Autopilot is off. Messages are stored, nothing is sent automatically.'))),
+      h('div.head', {}, h('div', {}, h('h1', {}, 'Home'), h('p', {}, o.settings.autopilot ? 'The agent is answering new leads on its own.' : 'Autopilot is off. Messages are stored, nothing is sent automatically.')),
+        h('a.btn.primary', { href: '#/campaigns' }, 'Campaigns')),
       h('div.stack', {},
+        campStrip,
         needsSetup && h('div.card', {}, h('header', {}, h('h2', {}, 'Get started')),
           h('div.pad.stack', {}, [
             ['Add an AI model', 'Paste an API key from any provider. Add two or more and the agent switches when one runs out.', '#/models', o.providers.length > 0],
@@ -57,7 +70,7 @@ export function overview() {
         h('div.tiles', {}, [
           ['New leads', s.newLeads24h], ['Messages in', s.inbound24h], ['AI replies', s.aiReplies24h], ['Follow-ups', s.followups24h], ['Need you', s.needsHuman, true], ['Purchased', s.purchased],
         ].map(([label, n, alert]) => h(`div.tile${alert && n ? '.alert' : ''}`, {}, h('b', {}, num(n)), h('span', {}, label, label === 'Purchased' || label === 'Need you' ? '' : ' · 24h')))),
-        followupCard(o.followups),
+
         h('div.card', {}, h('header', {}, h('h2', {}, 'Model chain'), h('a.btn.sm', { href: '#/models' }, 'Manage')), h('div', { id: 'rail' }, chainRail(o.providers))),
         h('div.grid2', {},
           h('div.card', {}, h('header', {}, h('h2', {}, 'Numbers'), h('a.btn.sm', { href: '#/numbers' }, 'Manage')),
