@@ -87,7 +87,7 @@ export function command() {
         h('button.btn.ghost.sm', { class: 'back', onclick: () => wrap.classList.remove('open') }, 'Back'),
         h('div.grow', {}, title, h('div.muted', { style: 'font-size:12px' }, 'Orders start as soon as you send them, and the agent reports progress here. Daily caps and quiet hours still apply.')),
         h('button.btn.sm', { onclick: rename }, 'Rename'),
-        h('a.btn.sm', { href: '#/tasks' }, 'Tasks')),
+        h('a.btn.sm', { href: '#/campaigns' }, 'Campaigns')),
       thread,
       h('div.composer', {}, input, send)));
 

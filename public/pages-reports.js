@@ -28,7 +28,7 @@ export function reports() {
         {}, table(['Step', 'People', 'Of all leads'], r.funnel.map((f) => [f.step, num(f.n), `${f.pct}%`])))),
       h('div.card', {}, h('header', {}, h('h2', {}, 'Campaigns')), h('div.pad', {},
         table(['Campaign', 'Leads', 'Follow-ups sent', 'Replied after one', 'Reply rate', 'Bought'],
-          r.campaigns.map((c) => [h('a', { href: '#/tasks' }, `#${c.id} ${c.name}${c.kind === 'batch' ? ' (one-time)' : ''}`), num(c.members), num(c.sent), num(c.replied), `${c.replyRate}%`, num(c.bought)])))),
+          r.campaigns.map((c) => [h('a', { href: `#/campaigns/${c.id}` }, `#${c.id} ${c.name}${c.kind === 'batch' ? ' (one-time)' : ''}`), num(c.members), num(c.sent), num(c.replied), `${c.replyRate}%`, num(c.bought)])))),
       h('div.card', {}, h('header', {}, h('h2', {}, 'Ads')), h('div.pad', {},
         h('p.muted', { style: 'margin:0 0 10px;font-size:12.5px' }, 'Leads that came from a Click-to-WhatsApp ad. Always known on the Cloud API; on a QR-linked number only when WhatsApp passes the ad along.'),
         table(['Ad', 'Leads', 'Bought', 'Sale rate'], r.ads.map((a) => [a.ad, num(a.leads), num(a.bought), `${a.rate}%`])))),

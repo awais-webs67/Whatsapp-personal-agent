@@ -378,3 +378,24 @@ ol.tlog .pill { justify-self: start; }
 .rtable td { padding: 8px 10px; border-bottom: 1px solid var(--line); color: var(--ink); }
 .rtable th:not(:first-child), .rtable td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .rtable tr:last-child td { border-bottom: 0; }
+
+/* Sidebar sections */
+.navsec { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: rgba(255,255,255,.38); padding: 14px 14px 4px; }
+.navsec:first-child { padding-top: 4px; }
+@media (max-width: 760px) { .navsec { display: none; } }
+/* Campaign cards grid */
+.camp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+.ccard { display: grid; gap: 8px; padding: 16px 18px; text-decoration: none; color: inherit; transition: border-color .15s, box-shadow .15s; }
+.ccard:hover { border-color: var(--orange); box-shadow: var(--pop); }
+.ccard-title { font-size: 17px; color: var(--ink); }
+.mono { font-family: var(--mono, monospace); }
+/* Wizard */
+.wsteps { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+.wsteps span { font-size: 12px; padding: 4px 8px; border-radius: 999px; background: var(--grey); color: var(--muted); }
+.wsteps span.on { background: var(--orange); color: #fff; }
+.wsteps span.done { background: var(--success-tint); color: var(--success); }
+.wtypes { display: grid; gap: 10px; }
+.wtype { text-align: left; display: grid; gap: 4px; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--r); background: var(--white); cursor: pointer; font: inherit; color: var(--body); }
+.wtype b { color: var(--ink); }
+.wtype.on { border-color: var(--orange); box-shadow: 0 0 0 2px var(--orange-tint-2); }
+.wtype:disabled { opacity: .55; cursor: not-allowed; }

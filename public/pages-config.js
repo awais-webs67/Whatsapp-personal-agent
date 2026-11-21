@@ -234,7 +234,7 @@ export function settings() {
           n('human', 'maxRepliesPerHour', 'Max AI replies per hour, per number', 'A safety brake. Past this, chats wait for you.')),
         h('div.grid3', {}, n('human', 'handoffMinutes', 'Stay quiet after I reply (min)', 'When you answer from your phone, the agent steps back.')))),
       h('div.card', {}, h('header', {}, h('h2', {}, 'Number safety (every campaign)')), h('div.pad.stack', {},
-        h('div.note', {}, 'When and how often follow-ups go out is set per campaign on the ', h('a', { href: '#/tasks' }, 'Campaigns'), ' page. These limits protect each number and apply to every campaign and task.'),
+        h('div.note', {}, 'When and how often follow-ups go out is set per campaign on the ', h('a', { href: '#/campaigns' }, 'Campaigns'), ' page. These limits protect each number and apply to every campaign and task.'),
         h('div.grid3', {}, n('followup', 'dailyCap', 'Max proactive messages per day, per number'), n('followup', 'repeatGuardHours', 'One batch message per person per (hours)', 'A new batch skips people messaged this recently.'), field('Time zone', tz, 'e.g. Asia/Karachi')),
         h('div.grid3', {}, pair('followup', 'quietStart', 'quietEnd', 'Quiet hours (24h clock)', 'Nothing proactive goes out between these hours, unless a campaign or task is allowed to send at night.')))),
       h('div.card', {}, h('header', {}, h('h2', {}, 'Agent updates')), h('div.pad.stack', {},
