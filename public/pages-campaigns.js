@@ -1,263 +1,321 @@
-// Campaigns: the centre of the dashboard. A list of campaign cards, a step-by-step "new campaign" wizard,
-// and a page per campaign with its own switches, progress, people, messages, settings, log and history.
-import { h, set, GET, POST, PATCH, act, toast, modal, field, toggle, select, rel, num, stagePill } from './ui.js';
+// Campaigns: the centre of the dashboard. Campaign cards, a step-by-step "new campaign" wizard, and a page per
+// campaign: hero header, how it works, switches, people, messages, full settings (instructions, files, format),
+// log and history. Everything here can also be done from Command ("campaign 5 ...").
+import { h, set, svg, GET, POST, PATCH, DEL, act, toast, modal, field, toggle, select, rel, num, stagePill } from './ui.js';
 import { S, live } from './state.js';
 
+// ---------- look ----------
+const TYPES = {
+  auto: { label: 'Always on', tone: 'auto', icon: 'M8 1v3M8 12v3M1 8h3M12 8h3M3.5 3.5l2 2M10.5 10.5l2 2M3.5 12.5l2-2M10.5 5.5l2-2M8 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4', title: 'Always on, for new leads', hint: 'New leads join by the ad they came from, words in their first message, a label or a number. It answers them with its own instructions and follows up on its own hours.', best: 'Ads and inbound leads' },
+  batch: { label: 'One-time', tone: 'once', icon: 'M2 8l12-6-4 12-2-5zM8 9l6-7', title: 'One-time, to people in your chats', hint: 'Pick people already in your chats by period, product, stage or tag. Each one gets a personal message, spaced out.', best: 'Offers, reminders, win-backs' },
+  scheduled: { label: 'Scheduled', tone: 'sched', icon: 'M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2zM8 5v3l2 2', title: 'Scheduled', hint: 'Repeats an instruction on a schedule.', best: 'Daily reports' },
+  analysis: { label: 'Reading', tone: 'read', icon: 'M2 3h5l1 1 1-1h5v10H9l-1 1-1-1H2zM8 4v10', title: 'Reading', hint: 'Reads chats and learns from them.', best: 'Learning' },
+  email: { label: 'Email', tone: 'email', icon: 'M2 4h12v8H2zM2 4l6 5 6-5', title: 'Email campaign', hint: 'Cold or follow-up emails from your own sending account, with sequences, limits and unsubscribe.', best: 'Coming next' },
+};
 const STATUS = { active: ['Running', 'hot'], paused: ['Paused', 'warn'], done: ['Done', 'ok'], failed: ['Failed', 'bad'] };
-const KIND = { auto: ['Always on', 'New leads join by its rules'], batch: ['One-time', 'People already in your chats'], analysis: ['Reading', 'Reads chats and learns'], scheduled: ['Scheduled', 'Repeats an instruction'] };
+const typeOf = (t) => TYPES[t.kind] || TYPES.scheduled;
 const when = (ts) => (ts ? new Date(ts).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—');
-const dur = (x) => (x % 24 === 0 ? `${x / 24}d` : `${x}h`);
+const dur = (x) => (x % 24 === 0 ? `${x / 24} day${x === 24 ? '' : 's'}` : `${x} h`);
 const pill = (t) => { const [l, tone] = STATUS[t.status] || [t.status, '']; return h(`span.pill.${tone}`, {}, t.status === 'active' ? h('i.dia.hot.live') : null, l); };
+const badge = (kind, big = false) => { const ty = TYPES[kind] || TYPES.scheduled; return h(`span.cicon.${ty.tone}${big ? '.big' : ''}`, { 'aria-hidden': 'true' }, svg(ty.icon)); };
 const accountName = (id) => S.accounts.find((a) => a.id === Number(id))?.name || `Number ${id}`;
+const metric = (n, label) => h('div.cmetric', {}, h('b', {}, typeof n === 'number' ? num(n) : n ?? '0'), h('span', {}, label));
 
-/** One line that says where a campaign is. */
-function progressLine(t) {
+/** Numbers and one line that say where a campaign is. */
+function stateOf(t) {
   const p = t.progress || {};
-  if (t.kind === 'auto') return { pct: null, text: `${num(t.stats?.members)} leads · ${num(t.stats?.sent)} follow-ups sent · ${num(t.stats?.replied)} replied · ${num(t.stats?.bought)} bought` };
-  if (p.reading) return { pct: p.reading.total ? (p.reading.done / p.reading.total) * 100 : 0, text: `Reading and writing: ${num(p.reading.done)} of ${num(p.reading.total)}` };
+  const s = t.stats || {};
+  if (t.kind === 'auto') return { metrics: [[s.members, 'People'], [s.sent, 'Follow-ups'], [s.bought, 'Bought']], pct: null, line: s.sent ? `${Math.round(((s.replied || 0) / s.sent) * 100)}% replied after a follow-up` : 'Waiting for its first follow-up' };
   if (t.kind === 'batch') {
     const total = (p.sent || 0) + (p.queued || 0);
-    return { pct: total ? (p.sent / total) * 100 : t.status === 'done' ? 100 : 0, text: total ? `${num(p.sent)} of ${num(total)} sent${p.drafts ? ` · ${num(p.drafts)} wait for your OK` : ''}` : p.drafts ? `${num(p.drafts)} wait for your OK` : t.last_result || 'Nothing to send' };
+    if (p.reading) return { metrics: [[p.reading.total, 'People'], [p.sent || 0, 'Sent'], [p.queued || 0, 'To go']], pct: p.reading.total ? (p.reading.done / p.reading.total) * 100 : 0, line: `Writing messages: ${num(p.reading.done)} of ${num(p.reading.total)}` };
+    return { metrics: [[total + (p.drafts || 0), 'People'], [p.sent || 0, 'Sent'], [p.queued || 0, 'To go']], pct: total ? (p.sent / total) * 100 : t.status === 'done' ? 100 : 0, line: t.waiting ? 'Not sending right now: open it to see why' : p.drafts ? `${num(p.drafts)} wait for your OK` : total ? `${num(p.sent)} of ${num(total)} sent` : t.last_result || 'Nothing to send' };
   }
-  return { pct: null, text: t.scheduleText };
+  return { metrics: [[t.runs || 0, 'Runs']], pct: null, line: t.scheduleText };
 }
 
 // ============================== list ==============================
 export function campaigns(arg) {
   if (arg && /^\d+$/.test(arg)) return campaignPage(Number(arg));
-  const box = h('div.camp-grid');
+  const box = h('div');
+  const filterBar = h('div.cfilter');
+  let filter = 'all';
+  let last = [];
   const el = h('div.page', {},
-    h('div.head', {}, h('div', {}, h('h1', {}, 'Campaigns'), h('p', {}, 'Each campaign has its own numbers, people, messages, switches and results. Open one to see everything about it.')),
-      h('button.btn.primary', { onclick: () => wizard() }, 'New campaign')),
-    box);
+    h('div.head', {}, h('div', {}, h('h1', {}, 'Campaigns'), h('p', {}, 'Every campaign has its own numbers, people, instructions, files, switches and results. Open one to manage it.')),
+      h('button.btn.primary', { onclick: () => wizard() }, '+ New campaign')),
+    filterBar, box);
+
   const draw = (list) => {
+    last = list;
     const shown = list.filter((t) => ['active', 'paused', 'done', 'failed'].includes(t.status));
-    if (!shown.length) return set(box, h('div.card', {}, h('div.empty', {}, h('b', {}, 'No campaigns yet'), 'Start one for your ad leads, or message people already in your chats.', h('div', {}, h('button.btn.primary', { onclick: () => wizard() }, 'New campaign')))));
-    const order = (t) => (t.kind === 'auto' ? 0 : t.status === 'active' ? 1 : t.status === 'paused' ? 2 : 3);
-    set(box, shown.sort((a, b) => order(a) - order(b) || b.id - a.id).map((t) => {
-      const pr = progressLine(t);
-      const [kind, kindHint] = KIND[t.kind] || [t.kind, ''];
-      const numbers = t.config?.accountIds?.length ? t.config.accountIds.map(accountName).join(', ') : t.kind === 'auto' ? 'All numbers' : '';
-      return h('a.card.ccard', { href: `#/campaigns/${t.id}` },
-        h('div.row', { style: 'justify-content:space-between;gap:8px' }, h('span.muted.mono', {}, `#${t.id}`), pill(t)),
-        h('b.ccard-title', { dir: 'auto' }, t.title),
-        h('div.muted', { style: 'font-size:12.5px' }, `${kind}${t.config?.isDefault ? ' · default' : ''} · ${kindHint}${numbers ? ` · ${numbers}` : ''}`),
-        pr.pct != null ? h('div.bar', {}, h('i', { style: `width:${Math.round(pr.pct)}%` })) : null,
-        h('div', { style: 'font-size:13px;color:var(--ink)' }, pr.text));
-    }));
+    const counts = { all: shown.length, running: shown.filter((t) => t.status === 'active').length, auto: shown.filter((t) => t.kind === 'auto').length, batch: shown.filter((t) => t.kind === 'batch').length, done: shown.filter((t) => ['done', 'failed'].includes(t.status)).length };
+    set(filterBar, [['all', 'All'], ['running', 'Running'], ['auto', 'Always on'], ['batch', 'One-time'], ['done', 'Finished']].map(([k, l]) =>
+      h(`button${filter === k ? '.on' : ''}`, { onclick: () => { filter = k; draw(last); } }, l, h('span', {}, counts[k]))));
+    const pick = shown.filter((t) => filter === 'all' || (filter === 'running' ? t.status === 'active' : filter === 'done' ? ['done', 'failed'].includes(t.status) : t.kind === filter && !['done', 'failed'].includes(t.status)));
+    if (!pick.length) {
+      return set(box, h('div.cempty', {}, badge('auto', true), h('b', {}, shown.length ? 'Nothing here' : 'Start your first campaign'),
+        h('p', {}, 'An always-on campaign for your ad leads, or a one-time message to people already in your chats.'), h('button.btn.primary', { onclick: () => wizard() }, '+ New campaign')));
+    }
+    const order = (t) => (t.status === 'active' ? 0 : t.status === 'paused' ? 1 : 2) * 10 + (t.kind === 'auto' ? 0 : 1);
+    set(box, h('div.camp-grid', {}, pick.sort((a, b) => order(a) - order(b) || b.id - a.id).map(card)));
   };
+
+  function card(t) {
+    const ty = typeOf(t);
+    const st = stateOf(t);
+    const c = t.config || {};
+    let pp = {};
+    try { pp = typeof t.params === 'string' ? JSON.parse(t.params || '{}') || {} : t.params || {}; } catch { /* none */ }
+    const nums_ = c.accountIds?.length ? c.accountIds.map(accountName).join(', ') : (pp.accountIds || []).length ? pp.accountIds.map(accountName).join(', ') : 'All numbers';
+    return h(`a.ccard.${ty.tone}`, { href: `#/campaigns/${t.id}` },
+      h('div.ccard-top', {}, badge(t.kind), h('div.grow', {}, h('div.ctype', {}, `${ty.label}${c.isDefault ? ' · default' : ''}`), h('div.cid', {}, `#${t.id}`)), pill(t)),
+      h('b.ccard-title', { dir: 'auto', title: t.title }, t.title),
+      h('div.ccard-meta', {}, h('span', {}, '📱 ', nums_), c.label ? h('span', {}, '🏷️ ', c.label) : null),
+      h('div.cmetrics', {}, st.metrics.map(([n, l]) => metric(n, l))),
+      st.pct != null ? h('div.cprog', {}, h('i', { style: `width:${Math.round(st.pct)}%` })) : null,
+      h('div.ccard-foot', {}, h('span', {}, st.line), h('span.copen', {}, 'Open →')));
+  }
+
   const load = () => GET('/api/tasks').then(draw).catch((e) => toast(e.message, true));
-  live.on('tasks', load); live.on('followups', load); live.on('campaign', load);
+  for (const ty of ['tasks', 'followups', 'campaign']) live.on(ty, load);
   load();
   return el;
 }
 
 // ============================== one campaign ==============================
 function campaignPage(id) {
-  const head = h('div.head');
-  const tabsBar = h('div.tabs');
-  const body = h('div');
-  const el = h('div.page', {}, h('a.muted', { href: '#/campaigns', style: 'font-size:13px' }, '← All campaigns'), head, tabsBar, body);
+  const hero = h('div');
+  const tabsBar = h('div.ctabs', { role: 'tablist' });
+  const body = h('div.cbody');
+  const el = h('div.page', {}, h('a.cback', { href: '#/campaigns' }, '← All campaigns'), hero, tabsBar, body);
   let tab = 'overview';
   let t = null;
-  const TABS = [['overview', 'Overview'], ['people', 'People'], ['messages', 'Messages'], ['settings', 'Settings'], ['log', 'Log and history']];
 
-  async function load() {
+  async function load(redrawBody = true) {
     try { t = await GET(`/api/campaigns/${id}/view`); } catch (e) { return set(body, h('div.note.bad', {}, e.message)); }
+    const ty = typeOf(t);
     const c = t.config || {};
+    const st = stateOf(t);
     const ctl = (action, label, cls = '') => h(`button.btn${cls}`, { onclick: (e) => (action !== 'remove' || confirm(`Remove campaign #${t.id}? Messages it has not sent yet are cancelled; its log and history are kept.`)) && act(e.target, async () => { await PATCH(`/api/tasks/${t.id}`, { action }); if (action === 'remove') location.hash = '#/campaigns'; else load(); }) }, label);
-    set(head, h('div', {}, h('div.row.wrap', { style: 'gap:8px' }, h('h1', { dir: 'auto' }, t.title), pill(t)),
-      h('p', {}, `${(KIND[t.kind] || [t.kind])[0]} campaign #${t.id}${c.isDefault ? ' · default' : ''} · created ${when(t.created_at)} · in Command say “campaign ${t.id} …”`)),
-    h('div.row.wrap', {},
-      t.status === 'active' ? ctl('pause', 'Pause') : ['paused'].includes(t.status) ? ctl('resume', 'Resume', '.primary') : null,
-      t.kind === 'scheduled' ? ctl('run', 'Run now') : null,
-      c.isDefault ? null : ctl('remove', 'Remove', '.ghost.danger')));
-    set(tabsBar, TABS.filter(([k]) => k !== 'settings' || t.kind === 'auto' || t.kind === 'batch').map(([k, label]) => h(`button${tab === k ? '.on' : ''}`, { onclick: () => { tab = k; load(); } }, label)));
-    ({ overview, people, messages, settings: settingsTab, log: logTab }[tab])();
+    set(hero, h(`div.chero.${ty.tone}`, {},
+      h('div.chero-main', {}, badge(t.kind, true),
+        h('div.grow', {}, h('div.ctype', {}, `${ty.label} campaign · #${t.id}${c.isDefault ? ' · default' : ''}`), h('h1', { dir: 'auto' }, t.title),
+          h('div.chero-sub', {}, pill(t), h('span', {}, `Created ${when(t.created_at)}`), h('span', {}, `In Command: “campaign ${t.id} …”`))),
+        h('div.chero-act', {}, t.status === 'active' ? ctl('pause', 'Pause') : t.status === 'paused' ? ctl('resume', 'Resume', '.primary') : null,
+          t.kind === 'scheduled' ? ctl('run', 'Run now') : null, c.isDefault ? null : ctl('remove', 'Remove', '.ghost.danger'))),
+      h('div.chero-stats', {}, st.metrics.map(([n, l]) => metric(n, l)), t.stats ? metric(t.stats.replied ?? 0, 'Replied') : null),
+      st.pct != null ? h('div.chero-prog', {}, h('div.cprog', {}, h('i', { style: `width:${Math.round(st.pct)}%` })), h('span', {}, `${st.line} · ${Math.round(st.pct)}%`)) : h('div.chero-prog', {}, h('span', {}, st.line))));
+    const TABS = [['overview', 'Overview'], ['people', 'People'], ['messages', 'Messages'], ['settings', 'Settings'], ['log', 'Log & history']];
+    set(tabsBar, TABS.filter(([k]) => k !== 'settings' || ['auto', 'batch'].includes(t.kind)).map(([k, label]) => h(`button${tab === k ? '.on' : ''}`, { role: 'tab', 'aria-selected': tab === k, onclick: () => { tab = k; load(); } }, label)));
+    if (redrawBody) ({ overview, people, messages, settings: settingsTab, log: logTab }[tab])();
   }
 
   function overview() {
     const c = t.config || {};
-    const s = t.stats || {};
     const p = t.params || {};
-    const pr = progressLine(t);
-    const sw = (on, key, label, hint, invert = false) => h('div.row', {}, toggle(on, (v) => act(null, async () => { await PATCH(`/api/campaigns/${t.id}`, { [key]: invert ? !v : v }); load(); }, `${label}: ${v ? 'on' : 'off'}`), label), h('div.grow', {}, h('b', { style: 'color:var(--ink)' }, label), h('div.muted', { style: 'font-size:12.5px' }, hint)));
+    const step = (n, title, lines) => h('div.cstep', {}, h('div.cstep-n', {}, n), h('div', {}, h('b', {}, title), lines.filter(Boolean).map((l) => h('div', { dir: 'auto' }, l))));
+    const flow = t.kind === 'auto' ? [
+      step(1, 'Who joins', [c.isDefault ? 'Every new lead that no other campaign takes' : [c.labels?.length && `Chat has the label: ${c.labels.join(', ')}`, c.keywords?.length && `First message has: ${c.keywords.join(', ')}`, c.adText?.length && `Came from an ad titled: ${c.adText.join(', ')}`, c.adIds?.length && `Ad ID: ${c.adIds.join(', ')}`].filter(Boolean).join(' · ') || 'Only people you add', `On: ${c.accountIds?.length ? c.accountIds.map(accountName).join(', ') : 'all numbers'}`]),
+      step(2, 'First reply', [c.autoReply === false ? 'You answer; the agent stays quiet' : 'The agent answers by itself', c.instructions ? `Using: ${c.instructions.slice(0, 140)}${c.instructions.length > 140 ? '…' : ''}` : 'Using your Knowledge', (t.params?.files || []).length ? `+ ${(t.params.files).length} campaign file(s)` : null]),
+      step(3, 'Follow-ups', [c.followups === false ? 'Off' : `After ${(c.steps || []).map(dur).join(', ')} of silence`, c.followups === false ? null : `${Math.round(c.gapMin)}–${Math.round(c.gapMax)} min apart, ${c.approval ? 'waits for your OK' : 'sent by itself'}, ${c.night ? 'also at night' : 'not at night'}`]),
+      step(4, 'Stops and labels', ['Stops for anyone who replies, buys or asks not to be contacted', c.label ? `Puts the WhatsApp label “${c.label}”` : null]),
+    ] : [
+      step(1, 'Who', [`Chats from the last ${p.sinceDays || '?'} days`, p.keywords?.length ? `About: ${p.keywords.join(', ')}` : null, p.tags?.length ? `Tag: ${p.tags.join(', ')}` : null, p.stages?.length ? `Stage: ${p.stages.join(', ')}` : null, `On: ${p.accountIds?.length ? p.accountIds.map(accountName).join(', ') : 'all numbers'}`]),
+      step(2, 'Message', [t.instruction, p.instructions ? `Also: ${p.instructions.slice(0, 120)}` : null, (p.files || []).length ? `+ ${p.files.length} file(s)` : null]),
+      step(3, 'Sending', [Array.isArray(p.intervalMinutes) ? `${p.intervalMinutes[0]}–${p.intervalMinutes[1]} min apart (random)` : p.intervalMinutes ? `${p.intervalMinutes} min apart` : null, p.autoApprove === false ? 'Each waits for your OK' : 'Sent by itself', t.ignore_quiet ? 'Also at night' : 'Not at night']),
+      step(4, 'Results', ['Replies show in Inbox; buyers are marked automatically', t.waiting ? `Now: ${t.waiting}` : null]),
+    ];
+    const sw = (on, key, label, hint, invert = false) => h('label.cswitch', {}, h('div', {}, h('b', {}, label), h('span', {}, hint)),
+      toggle(on, (v) => act(null, async () => { await PATCH(`/api/campaigns/${t.id}`, { [key]: invert ? !v : v }); load(); }, `${label}: ${v ? 'on' : 'off'}`), label));
     set(body, h('div.stack', {},
-      h('div.tiles', {}, [['People', s.members], ['Follow-ups sent', s.sent], ['Waiting', s.waiting], ['Replied after one', s.replied], ['Bought', s.bought], ['Reply rate', s.sent ? `${Math.round((s.replied / s.sent) * 100)}%` : '—']]
-        .map(([label, n]) => h('div.tile', {}, h('b', {}, typeof n === 'number' ? num(n) : n ?? 0), h('span', {}, label)))),
-      pr.pct != null ? h('div.card', {}, h('div.pad.stack', {}, h('div.bar.big', {}, h('i', { style: `width:${Math.round(pr.pct)}%` })), h('div.row', { style: 'justify-content:space-between' }, h('span', {}, pr.text), h('b', {}, `${Math.round(pr.pct)}%`)),
-        t.waiting ? h('div.note.warn', {}, t.waiting) : null)) : null,
-      t.kind === 'auto' ? h('div.card', {}, h('header', {}, h('h2', {}, 'Switches')), h('div.pad.stack', {},
-        sw(c.autoReply !== false, 'autoReply', 'Auto reply', 'The agent answers this campaign’s leads by itself. Off: you answer, it only follows up.'),
-        sw(c.followups !== false, 'followups', 'Follow-ups', `Nudge quiet leads after ${(c.steps || []).map(dur).join(', ')}, ${Math.round(c.gapMin)}–${Math.round(c.gapMax)} min apart.`),
-        sw(!c.approval, 'approval', 'Send without asking', 'Off: every follow-up waits for your OK on the Approvals page.', true),
-        sw(!!c.night, 'night', 'Send at night too', 'Off: nothing goes out in the quiet hours from Settings.'))) : null,
-      h('div.card', {}, h('header', {}, h('h2', {}, 'How it works')), h('div.pad.stack', { style: 'gap:6px' },
+      h('div.card', {}, h('header', {}, h('h2', {}, 'How it works')), h('div.cflow', {}, flow)),
+      ['auto', 'batch'].includes(t.kind) ? h('div.card', {}, h('header', {}, h('h2', {}, 'Switches')), h('div.cswitches', {},
         t.kind === 'auto' ? [
-          h('div.kv', {}, 'Who joins', h('b', {}, c.isDefault ? 'Every new lead no other campaign takes' : [c.labels?.length ? `label: ${c.labels.join(', ')}` : null, c.keywords?.length ? `words: ${c.keywords.join(', ')}` : null, c.adText?.length ? `ad: ${c.adText.join(', ')}` : null, c.adIds?.length ? `ad ID: ${c.adIds.join(', ')}` : null].filter(Boolean).join(' · ') || 'People you add by hand')),
-          h('div.kv', {}, 'Numbers', h('b', {}, c.accountIds?.length ? c.accountIds.map(accountName).join(', ') : 'All numbers')),
-          c.label ? h('div.kv', {}, 'Puts the WhatsApp label', h('b', {}, c.label)) : null,
-          c.instructions ? h('div', { dir: 'auto' }, h('span.muted', {}, 'Instructions: '), c.instructions) : null,
-        ] : [
-          h('div', { dir: 'auto' }, h('span.muted', {}, 'Message: '), t.instruction),
-          p.sinceDays ? h('div.kv', {}, 'Chats from the last', h('b', {}, `${p.sinceDays} days`)) : null,
-          p.keywords?.length ? h('div.kv', {}, 'About', h('b', {}, p.keywords.join(', '))) : null,
-          p.accountIds?.length ? h('div.kv', {}, 'Numbers', h('b', {}, p.accountIds.map(accountName).join(', '))) : null,
-          p.tags?.length ? h('div.kv', {}, 'Tags', h('b', {}, p.tags.join(', '))) : null,
-          p.intervalMinutes ? h('div.kv', {}, 'Gap', h('b', {}, Array.isArray(p.intervalMinutes) ? `${p.intervalMinutes[0]}–${p.intervalMinutes[1]} min (random)` : `${p.intervalMinutes} min`)) : null,
-        ]))));
+          sw(c.autoReply !== false, 'autoReply', 'Auto reply', 'The agent answers this campaign’s leads.'),
+          sw(c.followups !== false, 'followups', 'Follow-ups', 'Nudges people who go quiet.'),
+        ] : null,
+        sw(t.kind === 'auto' ? !c.approval : p.autoApprove !== false, 'approval', 'Send without asking', 'Off: each message waits on the Approvals page.', true),
+        sw(t.kind === 'auto' ? !!c.night : !!t.ignore_quiet, 'night', 'Send at night', 'Off: nothing goes out in quiet hours.'))) : null,
+      t.waiting ? h('div.note.warn', {}, h('b', {}, 'Not sending right now. '), t.waiting) : null));
   }
 
   async function people() {
     set(body, h('div.muted', {}, 'Loading…'));
     const rows = await GET(`/api/campaigns/${t.id}/people`).catch(() => []);
-    const msg = (m) => (!m ? '—' : m.status === 'sent' ? `Sent ${when(m.sent_at)}` : m.status === 'approved' ? `Goes ${when(m.due_at)}` : m.status === 'pending' ? 'Waits for your OK' : m.status);
-    set(body, h('div.card', {}, h('div.pad', {}, h('div.rtable', {}, h('table', {},
-      h('thead', {}, h('tr', {}, ['Person', 'Stage', 'Last message', 'Message', t.kind === 'auto' ? 'Next follow-up' : 'Tags'].map((x) => h('th', {}, x)))),
-      h('tbody', {}, rows.length ? rows.map((r) => h('tr', {},
-        h('td', {}, h('a', { href: `#/inbox/${r.id}` }, r.title), r.ad ? h('div.muted', { style: 'font-size:11.5px' }, `ad: ${r.ad}`) : null),
-        h('td.n', {}, stagePill(r.stage)), h('td.n', {}, r.lastAt ? rel(r.lastAt) : '—'), h('td.n', {}, msg(r.message)),
-        h('td.n', {}, t.kind === 'auto' ? (r.nextFollowup ? when(r.nextFollowup) : '—') : r.tags.join(', ') || '—'))) : h('tr', {}, h('td.muted', { colspan: 5 }, 'Nobody yet.'))))))));
+    const msg = (m) => (!m ? h('span.muted', {}, '—') : m.status === 'sent' ? h('span.pill.ok', {}, `Sent ${when(m.sent_at)}`) : m.status === 'approved' ? h('span.pill.hot', {}, `Goes ${when(m.due_at)}`) : m.status === 'pending' ? h('span.pill.warn', {}, 'Needs your OK') : h('span.pill', {}, m.status));
+    const labelIn = h('input', { type: 'text', placeholder: 'Label name' });
+    const labelBtn = h('button.btn', { onclick: () => act(labelBtn, async () => { const r = await POST(`/api/campaigns/${t.id}/label`, { label: labelIn.value }); toast(`"${r.label}" goes on ${r.chats} chats, one by one.`); }) }, 'Label everyone');
+    set(body, h('div.stack', {},
+      h('div.card', {}, h('div.pad.row.wrap', { style: 'justify-content:space-between' }, h('span', {}, h('b', {}, num(rows.length)), ' people in this campaign'), h('div.row', {}, labelIn, labelBtn))),
+      h('div.card', {}, h('div.rtable', {}, h('table', {},
+        h('thead', {}, h('tr', {}, ['Person', 'Stage', 'Last message', 'Their message', t.kind === 'auto' ? 'Next follow-up' : 'Tags'].map((x) => h('th', {}, x)))),
+        h('tbody', {}, rows.length ? rows.map((r) => h('tr', {},
+          h('td', {}, h('a', { href: `#/inbox/${r.id}` }, h('b', {}, r.title)), r.ad ? h('div.muted', { style: 'font-size:11.5px' }, `Ad: ${r.ad}`) : null),
+          h('td.n', {}, stagePill(r.stage)), h('td.n', {}, r.lastAt ? rel(r.lastAt) : '—'), h('td.n', {}, msg(r.message)),
+          h('td.n', {}, t.kind === 'auto' ? (r.nextFollowup ? when(r.nextFollowup) : '—') : r.tags.join(', ') || '—'))) : h('tr', {}, h('td.muted', { colspan: 5 }, 'Nobody yet.'))))))));
   }
 
   async function messages() {
     set(body, h('div.muted', {}, 'Loading…'));
     const rows = await GET(`/api/campaigns/${t.id}/messages`).catch(() => []);
     const tone = { sent: 'ok', approved: 'hot', pending: 'warn', failed: 'bad', skipped: '' };
-    set(body, h('div.stack', {}, rows.length ? rows.map((m) => h('div.card', {}, h('div.pad.stack', { style: 'gap:6px' },
-      h('div.row', { style: 'justify-content:space-between' }, h('a', { href: `#/inbox/${m.chat_id}` }, h('b', {}, m.who)), h('span.row', {}, h(`span.pill.${tone[m.status] || ''}`, {}, m.status), h('span.muted', { style: 'font-size:12px' }, m.status === 'sent' ? when(m.sent_at) : when(m.due_at)))),
-      h('div', { dir: 'auto', style: 'white-space:pre-wrap' }, m.text),
-      m.error ? h('div.muted', { style: 'font-size:12px' }, m.error) : null))) : h('div.card', {}, h('div.empty', {}, 'No messages yet.'))));
+    const label = { sent: 'Sent', approved: 'Queued', pending: 'Needs your OK', failed: 'Failed', skipped: 'Skipped' };
+    set(body, rows.length ? h('div.cmsgs', {}, rows.map((m) => h('div.cmsg', {},
+      h('div.cmsg-top', {}, h('a', { href: `#/inbox/${m.chat_id}` }, h('b', {}, m.who)), h(`span.pill.${tone[m.status] || ''}`, {}, label[m.status] || m.status), h('time', {}, m.status === 'sent' ? when(m.sent_at) : when(m.due_at))),
+      h('div.cmsg-text', { dir: 'auto' }, m.text),
+      m.error ? h('div.muted', { style: 'font-size:12px' }, m.error) : null))) : h('div.cempty', {}, h('b', {}, 'No messages yet'), h('p', {}, 'Messages this campaign writes show up here before and after they go out.')));
   }
 
-  function settingsTab() {
-    if (t.kind === 'batch') {
-      set(body, h('div.card', {}, h('div.pad.stack', {}, h('p', {}, 'A one-time campaign is changed by telling Command what to change. Messages not sent yet are rewritten or re-spaced:'),
-        h('pre.out', {}, `campaign ${t.id} mein gap 5 to 7 minute kar do\ncampaign ${t.id} ke message mein discount ka zikr bhi karo\ncampaign ${t.id} raat ko bhi bhejo`),
-        h('a.btn', { href: '#/command' }, 'Open Command'))));
-      return;
-    }
-    set(body, autoForm(t, load));
-  }
+  function settingsTab() { set(body, settingsForm(t, () => load())); }
 
   async function logTab() {
     const [steps, changes] = await Promise.all([GET(`/api/tasks/${t.id}/events`).catch(() => []), GET(`/api/campaigns/${t.id}/changes`).catch(() => [])]);
-    const show = (v) => (v == null ? '—' : Array.isArray(v) ? v.join(', ') : v === true ? 'yes' : v === false ? 'no' : String(v));
+    const show = (v) => (v == null || v === '' ? '—' : Array.isArray(v) ? v.join(', ') : v === true ? 'yes' : v === false ? 'no' : String(v).slice(0, 120));
     set(body, h('div.grid2', {},
       h('div.card', {}, h('header', {}, h('h2', {}, 'What it did')), h('div.pad', {}, steps.length ? h('ol.tlog', {}, steps.map((r) => h('li', {}, h('time', {}, when(r.ts)), h('span.pill', {}, r.kind), h('span', { dir: 'auto' }, r.text, r.chat_id ? h('a', { href: `#/inbox/${r.chat_id}`, style: 'margin-left:6px' }, 'chat') : null)))) : h('div.muted', {}, 'Nothing yet.'))),
       h('div.card', {}, h('header', {}, h('h2', {}, 'Settings history')), h('div.pad', {}, changes.length ? h('ol.tlog', {}, changes.map((r) => h('li', {}, h('time', {}, when(r.ts)), h('span.pill', {}, r.source), h('span', { dir: 'auto' }, `${r.field}: ${show(r.before)} → ${show(r.after)}`)))) : h('div.muted', {}, 'No changes yet.')))));
   }
 
-  for (const type of ['tasks', 'followups', 'campaign']) live.on(type, () => { if (tab === 'overview') load(); });
+  live.on('tasks', () => { if (tab === 'overview') load(); else load(false); });
+  live.on('followups', () => { if (tab === 'overview') load(); });
   load();
   return el;
 }
 
-/** Settings of an automatic campaign, on its own page. */
-function autoForm(t, done) {
-  const c = t.config || {};
+// ---------- settings of one campaign (both kinds) ----------
+function settingsForm(t, done) {
+  const auto = t.kind === 'auto';
+  const c = auto ? t.config || {} : { ...(t.params || {}), approval: (t.params || {}).autoApprove === false, night: !!t.ignore_quiet };
+  const files = (t.params || {}).files || [];
   const inp = (v, attrs = {}) => h('input', { type: 'text', value: v ?? '', ...attrs });
+  const area = (v, rows, ph) => h('textarea', { rows, dir: 'auto', value: v || '', placeholder: ph });
+  const gap = Array.isArray(c.intervalMinutes) ? c.intervalMinutes : [c.gapMin ?? c.intervalMinutes ?? 5, c.gapMax ?? c.intervalMinutes ?? 10];
   const f = {
-    name: inp(t.title), keywords: inp((c.keywords || []).join(', ')), adText: inp((c.adText || []).join(', ')), adIds: inp((c.adIds || []).join(', ')),
-    labels: inp((c.labels || []).join(', ')), label: inp(c.label || ''), steps: inp((c.steps || []).join(', ')), gapMin: inp(c.gapMin, { type: 'number', min: 0 }), gapMax: inp(c.gapMax, { type: 'number', min: 0 }),
-    instructions: h('textarea', { rows: 3, dir: 'auto', value: c.instructions || '' }), followupStyle: h('textarea', { rows: 3, dir: 'auto', value: c.followupStyle || '' }),
-    templateFallback: h('input', { type: 'checkbox', checked: c.templateFallback !== false }), priority: inp(c.priority, { type: 'number' }),
+    name: inp(t.title),
+    message: auto ? null : area(t.instruction, 3, 'What each message should say'),
+    instructions: area(c.instructions, 4, 'Business rules for this campaign: the offer, prices to mention, what to push, what never to say'),
+    format: area(c.format, 4, 'One rule per line, e.g.\nGreeting on its own line\nLink on its own line at the end'),
+    followupStyle: area(c.followupStyle, 3, 'An example message in your words. Use ___ for the product and {name} for their name.'),
+    gapMin: inp(Math.round(gap[0]), { type: 'number', min: 0 }), gapMax: inp(Math.round(gap[1]), { type: 'number', min: 0 }),
+    steps: auto ? inp((c.steps || []).join(', ')) : null,
+    keywords: inp((c.keywords || []).join(', ')), adText: inp((c.adText || []).join(', ')), adIds: inp((c.adIds || []).join(', ')), labels: inp((c.labels || []).join(', ')),
+    label: inp(c.label || ''), priority: inp(c.priority ?? 100, { type: 'number' }),
+    templateFallback: h('input', { type: 'checkbox', checked: c.templateFallback !== false }),
   };
-  const numbers = h('div.checks', {}, S.accounts.map((a) => h('label', {}, h('input', { type: 'checkbox', value: a.id, checked: (c.accountIds || []).includes(a.id) }), a.name)));
-  const save = h('button.btn.primary', { onclick: () => act(save, async () => {
-    const accountIds = [...numbers.querySelectorAll('input:checked')].map((i) => Number(i.value));
-    await PATCH(`/api/campaigns/${t.id}`, { name: f.name.value, steps: f.steps.value, gapMin: Number(f.gapMin.value), gapMax: Number(f.gapMax.value), instructions: f.instructions.value, followupStyle: f.followupStyle.value,
-      templateFallback: f.templateFallback.checked, label: f.label.value,
-      ...(c.isDefault ? {} : { keywords: f.keywords.value, adText: f.adText.value, adIds: f.adIds.value, labels: f.labels.value, priority: Number(f.priority.value), accountIds }) });
+  const numbers = h('div.checks', {}, S.accounts.length ? S.accounts.map((a) => h('label', {}, h('input', { type: 'checkbox', value: a.id, checked: (c.accountIds || []).includes(a.id) }), a.name)) : h('span.muted', {}, 'No number linked yet.'));
+  const fileList = h('div.cfiles', {}, files.length ? files.map((x) => h('div.cfile', {}, h('span', {}, '📄 ', h('b', {}, x.name), h('span.muted', {}, ` · ${num(x.text.length)} characters`)),
+    h('button.btn.sm.ghost.danger', { onclick: (e) => act(e.target, async () => { await DEL(`/api/campaigns/${t.id}/files/${encodeURIComponent(x.name)}`); done(); }, 'File removed') }, 'Remove'))) : h('div.muted', {}, 'No files yet.'));
+  const picker = h('input', { type: 'file', multiple: true, accept: '.md,.txt,.docx', style: 'display:none', onchange: () => act(null, async () => {
+    for (const file of picker.files) {
+      const res = await fetch(`/api/campaigns/${t.id}/files`, { method: 'POST', headers: { 'content-type': 'application/octet-stream', 'x-file-name': encodeURIComponent(file.name) }, body: file });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(`${file.name}: ${j.error || res.status}`);
+    }
     done();
-  }, 'Saved. The change is in the history.') }, 'Save settings');
+  }, 'Files added. Every message of this campaign uses them.') });
+  const sec = (title, hint, ...kids) => h('div.card.csec', {}, h('header', {}, h('div', {}, h('h2', {}, title), hint ? h('p.muted', {}, hint) : null)), h('div.pad.stack', {}, kids));
+  const save = h('button.btn.primary', { onclick: () => act(save, async () => {
+    const body = { name: f.name.value, instructions: f.instructions.value, format: f.format.value, followupStyle: f.followupStyle.value, gapMin: Number(f.gapMin.value), gapMax: Number(f.gapMax.value) };
+    if (auto) {
+      Object.assign(body, { steps: f.steps.value, label: f.label.value, templateFallback: f.templateFallback.checked });
+      if (!c.isDefault) Object.assign(body, { keywords: f.keywords.value, adText: f.adText.value, adIds: f.adIds.value, labels: f.labels.value, priority: Number(f.priority.value), accountIds: [...numbers.querySelectorAll('input:checked')].map((i) => Number(i.value)) });
+    } else body.instruction = f.message.value;
+    const r = await PATCH(`/api/campaigns/${t.id}`, body);
+    toast(r.changed?.length ? `Saved: ${r.changed.join('; ')}` : 'Nothing changed');
+    done();
+  }) }, 'Save changes');
   return h('div.stack', {},
-    h('div.card', {}, h('header', {}, h('h2', {}, 'Name and who joins')), h('div.pad.stack', {}, field('Name', f.name),
-      c.isDefault ? h('div.note', {}, 'Default campaign: every new lead no other campaign takes joins it.') : [
-        field('Numbers', numbers, 'None ticked = all numbers.'),
-        h('div.grid2', {}, field('Words in their first message', f.keywords), field('Words in the ad title', f.adText)),
-        h('div.grid2', {}, field('Meta ad IDs', f.adIds), field('Chat already has WhatsApp label', f.labels)),
-        field('Priority', f.priority, 'Lower wins when two campaigns match.')],
-      field('Put this WhatsApp label on its leads', f.label, 'WhatsApp Business (QR) only.'))),
-    h('div.card', {}, h('header', {}, h('h2', {}, 'Follow-ups')), h('div.pad.stack', {},
-      h('div.grid3', {}, field('After (hours)', f.steps, '2, 24, 72'), field('Gap min (minutes)', f.gapMin), field('Gap max (minutes)', f.gapMax)),
-      h('label.row', {}, f.templateFallback, h('span', {}, 'When no AI model can write, send my example follow-up')))),
-    h('div.card', {}, h('header', {}, h('h2', {}, 'How it talks')), h('div.pad.stack', {},
-      field('Reply instructions', f.instructions, 'Added to every reply and follow-up for this campaign’s leads.'), field('Example follow-up in your words', f.followupStyle, 'Use ___ for the product and {name} for their name.'))),
-    h('div.row', {}, save));
+    sec('Name', null, field('Campaign name', f.name)),
+    auto && !c.isDefault ? sec('Who joins', 'Any one of these is enough. Leave all empty to take every new lead on the chosen numbers.',
+      field('Numbers', numbers, 'None ticked = all numbers.'),
+      h('div.grid2', {}, field('Words in their first message', f.keywords, 'Give each ad its own pre-filled message and use a word from it.'), field('Words in the ad title', f.adText)),
+      h('div.grid2', {}, field('Meta ad IDs', f.adIds), field('Chat already has the WhatsApp label', f.labels)),
+      field('Priority', f.priority, 'Lower wins when two campaigns match.')) : auto ? sec('Who joins', null, h('div.note', {}, 'Default campaign: every new lead that no other campaign takes.')) : null,
+    sec('Instructions and files', 'Used in every reply and message of this campaign, on top of your Knowledge. The AI reads them each time, so it never forgets them.',
+      auto ? null : field('What each message should say', f.message, 'Changing it rewrites the messages not sent yet.'),
+      field('Campaign instructions', f.instructions),
+      h('label.f', {}, 'Files with business instructions (.md, .txt, .docx)', h('div.row', {}, h('button.btn', { type: 'button', onclick: () => picker.click() }, 'Upload files'), picker), fileList)),
+    sec('Message format', 'How this campaign’s messages are laid out. Empty = your general format from Knowledge.',
+      field('Layout rules', f.format), field('Example message', f.followupStyle), auto ? h('label.row', {}, f.templateFallback, h('span', {}, 'When no AI model can write, send this example (name and product filled in)')) : null),
+    sec('Timing', null,
+      auto ? field('Follow up after (hours)', f.steps, 'One number per follow-up, e.g. 2, 24, 72') : null,
+      h('div.grid2', {}, field('Gap between messages, min (minutes)', f.gapMin), field('Gap max (minutes)', f.gapMax))),
+    auto ? sec('Labels', null, field('Put this WhatsApp label on each lead', f.label, 'WhatsApp Business (QR-linked). Made on the phone if missing; your own labels are never removed.')) : null,
+    h('div.csave', {}, save, h('span.muted', {}, 'Every change is kept in Log & history.')));
 }
 
 // ============================== new campaign wizard ==============================
 function wizard() {
-  const st = { type: 'auto', accountIds: [], keywords: '', adText: '', labels: '', days: 7, products: '', stages: [], tags: '', name: '', instruction: '', steps: '2, 24, 72', gapMin: 5, gapMax: 10, startIn: 0, autoReply: true, followups: true, send: true, night: false, label: '' };
+  const st = { type: 'auto', accountIds: [], keywords: '', adText: '', labels: '', days: 7, products: '', stages: [], tags: '', name: '', instruction: '', instructions: '', steps: '2, 24, 72', gapMin: 5, gapMax: 10, startIn: 0, autoReply: true, followups: true, send: true, night: false, label: '' };
   let step = 0;
   const stepsBox = h('div.wsteps');
-  const body = h('div.stack');
+  const body = h('div.stack.wbody');
   const foot = h('div.row', { style: 'justify-content:space-between;width:100%' });
-  const STEPS = ['Type', 'Numbers', 'Who', 'Messages', 'Review'];
+  const STEPS = ['Type', 'Numbers', 'Who', 'Message', 'Review'];
   const inp = (key, attrs = {}) => h('input', { type: 'text', value: st[key], oninput: (e) => { st[key] = attrs.type === 'number' ? Number(e.target.value) : e.target.value; }, ...attrs });
-  const chk = (key, label) => h('label.row', {}, h('input', { type: 'checkbox', checked: !!st[key], onchange: (e) => { st[key] = e.target.checked; } }), h('span', {}, label));
+  const area = (key, rows, ph) => h('textarea', { rows, dir: 'auto', value: st[key], placeholder: ph, oninput: (e) => { st[key] = e.target.value; } });
+  const chk = (key, label, hint) => h('label.cswitch', {}, h('div', {}, h('b', {}, label), hint ? h('span', {}, hint) : null), h('input', { type: 'checkbox', checked: !!st[key], onchange: (e) => { st[key] = e.target.checked; } }));
 
   const pages = [
-    () => h('div.wtypes', {}, [
-      ['auto', 'Always on, for new leads', 'Leads from an ad, with certain words, or on a number join it. It answers them with its instructions and follows up by its hours.'],
-      ['batch', 'One-time, to people in your chats', 'For example: everyone from the last 7 days who asked about Canva. Each gets a personal message, spaced out.'],
-      ['email', 'Email campaign', 'Cold or follow-up emails from your own sending account. Coming next: not available yet.'],
-    ].map(([k, title, hint]) => h(`button.wtype${st.type === k ? '.on' : ''}`, { type: 'button', disabled: k === 'email', onclick: () => { st.type = k; draw(); } }, h('b', {}, title), h('span', {}, hint)))),
-    () => S.accounts.length ? h('div.stack', {}, h('p.muted', { style: 'margin:0' }, 'Which WhatsApp numbers does this campaign use? None ticked = all numbers.'),
-      h('div.checks', {}, S.accounts.map((a) => h('label', {}, h('input', { type: 'checkbox', checked: st.accountIds.includes(a.id), onchange: (e) => { st.accountIds = e.target.checked ? [...st.accountIds, a.id] : st.accountIds.filter((x) => x !== a.id); } }), `${a.name}${a.status?.me ? ` (+${a.status.me})` : ''}`))))
+    () => h('div.wtypes', {}, ['auto', 'batch', 'email'].map((k) => {
+      const ty = TYPES[k];
+      return h(`button.wtype.${ty.tone}${st.type === k ? '.on' : ''}`, { type: 'button', disabled: k === 'email', onclick: () => { st.type = k; draw(); } },
+        badge(k, true), h('div', {}, h('b', {}, ty.title), h('span', {}, ty.hint), h('em', {}, k === 'email' ? 'Coming next' : `Best for: ${ty.best}`)), st.type === k ? h('i.wcheck', {}, '✓') : null);
+    })),
+    () => S.accounts.length ? h('div.stack', {}, h('p.muted', { style: 'margin:0' }, 'Which WhatsApp numbers does it use? None ticked = all numbers.'),
+      h('div.wnums', {}, S.accounts.map((a) => h('label.wnum', {}, h('input', { type: 'checkbox', checked: st.accountIds.includes(a.id), onchange: (e) => { st.accountIds = e.target.checked ? [...st.accountIds, a.id] : st.accountIds.filter((x) => x !== a.id); } }),
+        h('div', {}, h('b', {}, a.name), h('span', {}, a.status?.me ? `+${a.status.me}` : a.type === 'cloud' ? 'Cloud API' : 'QR'), h('span', {}, a.status?.state === 'connected' ? '● Connected' : '○ Not connected'))))))
       : h('div.note.warn', {}, 'No WhatsApp number is linked yet. Link one on the Numbers page; the campaign will use it.'),
     () => st.type === 'auto' ? h('div.stack', {},
       h('p.muted', { style: 'margin:0' }, 'A new lead joins when any one of these matches. Leave all empty to take every new lead on the chosen numbers.'),
-      field('Words in their first message', inp('keywords', { placeholder: 'canva, canva pro' }), 'Give each ad its own pre-filled message, then put a word from it here.'),
-      h('div.grid2', {}, field('Words in the ad title', inp('adText', { placeholder: 'eid' })), field('Chat has WhatsApp label', inp('labels', { placeholder: 'New customer' }))))
+      field('Words in their first message', inp('keywords', { placeholder: 'words from your ad’s pre-filled message' }), 'Tip: give each ad its own pre-filled message, then put one of its words here.'),
+      h('div.grid2', {}, field('Words in the ad title', inp('adText', { placeholder: 'a word from the ad title' })), field('Chat has the WhatsApp label', inp('labels', { placeholder: 'label name' }))))
       : h('div.stack', {},
-        h('div.grid2', {}, field('Chats from the last (days)', inp('days', { type: 'number', min: 1 })), field('About these products or words', inp('products', { placeholder: 'canva, chatgpt' }), 'Found in their messages, summary or customer card.')),
-        h('div.grid2', {}, field('Only these stages', select([['', 'Everyone except buyers'], ['interested', 'Interested / negotiating'], ['purchased', 'Bought (reminders)']], st.stages[0] || '', (v) => { st.stages = v === 'interested' ? ['interested', 'negotiating'] : v ? [v] : []; })),
-          field('Only these tags', inp('tags', { placeholder: 'vip' })))),
+        h('div.grid2', {}, field('Chats from the last (days)', inp('days', { type: 'number', min: 1 })), field('About these products or words', inp('products', { placeholder: 'product names, comma separated' }), 'Found in their messages, summary or customer card.')),
+        h('div.grid2', {}, field('Stage', select([['', 'Everyone except buyers'], ['interested', 'Interested or negotiating'], ['purchased', 'Bought (reminders)']], st.stages[0] || '', (v) => { st.stages = v === 'interested' ? ['interested', 'negotiating'] : v ? [v] : []; })),
+          field('Tag', inp('tags', { placeholder: 'tag name' })))),
     () => h('div.stack', {},
-      field('Name', inp('name', { placeholder: st.type === 'auto' ? 'Eid Canva ad' : 'Canva follow-up, last week' })),
-      st.type === 'auto' ? [
-        field('How to answer these leads', h('textarea', { rows: 3, dir: 'auto', value: st.instruction, oninput: (e) => { st.instruction = e.target.value; }, placeholder: 'Canva Pro yearly offer batao, link bhejo, Eid discount ka zikr karo' })),
-        h('div.grid3', {}, field('Follow up after (hours)', inp('steps')), field('Gap min (min)', inp('gapMin', { type: 'number', min: 0 })), field('Gap max (min)', inp('gapMax', { type: 'number', min: 0 }))),
-        chk('autoReply', 'Auto reply: the agent answers them by itself'), chk('followups', 'Follow up when they go quiet'),
-        field('Put this WhatsApp label on them', inp('label', { placeholder: 'Canva Ad' })),
-      ] : [
-        field('What the message should say', h('textarea', { rows: 3, dir: 'auto', value: st.instruction, oninput: (e) => { st.instruction = e.target.value; }, placeholder: 'Jinhon ne Canva poocha tha unhein yaad dilao ke Eid offer chal raha hai, link bhejo' })),
-        h('div.grid3', {}, field('Start after (minutes)', inp('startIn', { type: 'number', min: 0 })), field('Gap min (min)', inp('gapMin', { type: 'number', min: 1 })), field('Gap max (min)', inp('gapMax', { type: 'number', min: 1 }))),
-      ],
-      chk('send', 'Send by itself (off: every message waits for my OK)'), chk('night', 'May send at night')),
-    () => h('div.stack', { style: 'gap:6px' },
-      h('div.kv', {}, 'Type', h('b', {}, st.type === 'auto' ? 'Always on, for new leads' : 'One-time, to people in your chats')),
-      h('div.kv', {}, 'Numbers', h('b', {}, st.accountIds.length ? st.accountIds.map(accountName).join(', ') : 'All numbers')),
-      st.type === 'auto' ? h('div.kv', {}, 'Who joins', h('b', {}, [st.keywords && `words: ${st.keywords}`, st.adText && `ad: ${st.adText}`, st.labels && `label: ${st.labels}`].filter(Boolean).join(' · ') || 'every new lead'))
-        : h('div.kv', {}, 'Who', h('b', {}, `last ${st.days} days${st.products ? `, about ${st.products}` : ''}${st.tags ? `, tag ${st.tags}` : ''}`)),
-      h('div.kv', {}, 'Gap', h('b', {}, `${st.gapMin}–${st.gapMax} min`)),
-      st.type === 'auto' ? h('div.kv', {}, 'Follow-ups', h('b', {}, st.followups ? `after ${st.steps} hours` : 'off')) : h('div.kv', {}, 'Starts', h('b', {}, st.startIn ? `in ${st.startIn} min` : 'now')),
-      h('div.kv', {}, 'Sending', h('b', {}, st.send ? 'by itself' : 'waits for your OK'))),
+      field('Name', inp('name', { placeholder: st.type === 'auto' ? 'For example: the ad or offer it is for' : 'For example: the offer and the month' })),
+      st.type === 'auto'
+        ? field('How to answer these leads', area('instructions', 3, 'The offer, what to explain, which link to send, what never to promise'))
+        : field('What each message should say', area('instruction', 3, 'For example: remind them of the offer they asked about, with its link')),
+      st.type === 'auto' ? h('div.grid3', {}, field('Follow up after (hours)', inp('steps')), field('Gap min (min)', inp('gapMin', { type: 'number', min: 0 })), field('Gap max (min)', inp('gapMax', { type: 'number', min: 0 })))
+        : h('div.grid3', {}, field('Start after (minutes)', inp('startIn', { type: 'number', min: 0 })), field('Gap min (min)', inp('gapMin', { type: 'number', min: 1 })), field('Gap max (min)', inp('gapMax', { type: 'number', min: 1 }))),
+      h('div.cswitches', {},
+        st.type === 'auto' ? [chk('autoReply', 'Auto reply', 'The agent answers them by itself'), chk('followups', 'Follow-ups', 'Nudge them when they go quiet')] : null,
+        chk('send', 'Send without asking', 'Off: each message waits for your OK'), chk('night', 'Send at night', 'Off: nothing in quiet hours')),
+      st.type === 'auto' ? field('WhatsApp label for these leads (optional)', inp('label', { placeholder: 'label name' })) : null,
+      h('p.muted', { style: 'margin:0;font-size:12.5px' }, 'After creating it you can add files with business instructions and its own message format in Settings.')),
+    () => h('div.wreview', {},
+      [['Type', TYPES[st.type].title], ['Numbers', st.accountIds.length ? st.accountIds.map(accountName).join(', ') : 'All numbers'],
+        st.type === 'auto' ? ['Who joins', [st.keywords && `words: ${st.keywords}`, st.adText && `ad: ${st.adText}`, st.labels && `label: ${st.labels}`].filter(Boolean).join(' · ') || 'Every new lead'] : ['Who', `Last ${st.days} days${st.products ? `, about ${st.products}` : ''}${st.tags ? `, tag ${st.tags}` : ''}`],
+        ['Message', (st.type === 'auto' ? st.instructions : st.instruction) || '—'],
+        st.type === 'auto' ? ['Follow-ups', st.followups ? `after ${st.steps} hours, ${st.gapMin}–${st.gapMax} min apart` : 'off'] : ['Sending', `${st.startIn ? `starts in ${st.startIn} min, ` : ''}${st.gapMin}–${st.gapMax} min apart`],
+        ['Approval', st.send ? 'Sent by itself' : 'Each waits for your OK']].map(([k, v]) => h('div.kv', {}, k, h('b', { dir: 'auto' }, v)))),
   ];
 
   async function create(btn) {
     await act(btn, async () => {
-      const name = st.name || (st.type === 'auto' ? 'New campaign' : st.instruction.slice(0, 60));
       if (st.type === 'auto') {
-        const t = await POST('/api/campaigns', { name, accountIds: st.accountIds, keywords: st.keywords, adText: st.adText, labels: st.labels, instructions: st.instruction, steps: st.steps, gapMin: st.gapMin, gapMax: st.gapMax, approval: !st.send, night: st.night, autoReply: st.autoReply, followups: st.followups, label: st.label });
+        const t = await POST('/api/campaigns', { name: st.name || 'New campaign', accountIds: st.accountIds, keywords: st.keywords, adText: st.adText, labels: st.labels, instructions: st.instructions, steps: st.steps, gapMin: st.gapMin, gapMax: st.gapMax, approval: !st.send, night: st.night, autoReply: st.autoReply, followups: st.followups, label: st.label });
         m.close(); location.hash = `#/campaigns/${t.id}`;
       } else {
-        const r = await POST('/api/campaigns/once', { name, accountIds: st.accountIds, days: st.days, keywords: st.products, stages: st.stages, tags: st.tags, instruction: st.instruction, gapMin: st.gapMin, gapMax: st.gapMax, startInMinutes: st.startIn, send: st.send, night: st.night });
-        m.close(); toast(`Campaign started: ${r.chats} chats are being read and messaged.`); location.hash = `#/campaigns/${r.id}`;
+        const r = await POST('/api/campaigns/once', { name: st.name || st.instruction.slice(0, 60), accountIds: st.accountIds, days: st.days, keywords: st.products, stages: st.stages, tags: st.tags, instruction: st.instruction, gapMin: st.gapMin, gapMax: st.gapMax, startInMinutes: st.startIn, send: st.send, night: st.night });
+        m.close(); toast(`Started: ${r.chats} chats are being read and messaged.`); location.hash = `#/campaigns/${r.id}`;
       }
     });
   }
 
   function draw() {
-    set(stepsBox, STEPS.map((s, i) => h(`span${i === step ? '.on' : i < step ? '.done' : ''}`, {}, `${i + 1}. ${s}`)));
+    set(stepsBox, STEPS.map((s, i) => h(`span${i === step ? '.on' : i < step ? '.done' : ''}`, {}, h('i', {}, i < step ? '✓' : i + 1), s)));
     set(body, pages[step]());
     const next = step < STEPS.length - 1
-      ? h('button.btn.primary', { onclick: () => { if (step === 3 && !st.instruction.trim() && st.type === 'batch') return toast('Write what the message should say', true); step++; draw(); } }, 'Next')
+      ? h('button.btn.primary', { onclick: () => { if (step === 3 && st.type === 'batch' && !st.instruction.trim()) return toast('Write what each message should say', true); step++; draw(); } }, 'Next →')
       : h('button.btn.primary', { onclick: (e) => create(e.target) }, st.type === 'auto' ? 'Create campaign' : 'Start campaign');
-    set(foot, step ? h('button.btn', { onclick: () => { step--; draw(); } }, 'Back') : h('span'), next);
+    set(foot, step ? h('button.btn', { onclick: () => { step--; draw(); } }, '← Back') : h('span'), next);
   }
   const m = modal('New campaign', [stepsBox, body], () => [foot]);
+  m.el.querySelector('.modal')?.classList.add('wide');
   draw();
 }
