@@ -41,6 +41,14 @@ export class CloudConnector {
     return json;
   }
 
+  /** Download a media file (voice note) by its id: Graph gives a short-lived URL that needs the same token. */
+  async media(id) {
+    const info = await this.#api('GET', `/${id}`);
+    const res = await fetch(info.url, { headers: { authorization: `Bearer ${this.config.accessToken}` }, signal: AbortSignal.timeout(30000) });
+    if (!res.ok) throw new Error(`Media download failed (${res.status})`);
+    return Buffer.from(await res.arrayBuffer());
+  }
+
   /** Meta signs every webhook body with the app secret. */
   verifySignature(rawBody, header) {
     if (!this.config.appSecret) return true; // not configured: accept (the dashboard warns about this)
@@ -63,7 +71,8 @@ export class CloudConnector {
           const ts = Number(m.timestamp) * 1000 || Date.now();
           this.lastInbound.set(m.from, { id: m.id, ts });
           const ad = m.referral ? { id: m.referral.source_id ? String(m.referral.source_id) : null, title: m.referral.headline || m.referral.body || null, url: m.referral.source_url || null } : null;
-          out.push({ jid: m.from, phone: m.from, name: names.get(m.from) || null, waId: m.id, fromMe: false, text, type: m.type === 'text' ? 'text' : 'media', ts, ad });
+          const audio = m.type === 'audio' && m.audio?.id ? { mime: m.audio.mime_type || 'audio/ogg', fetch: () => this.media(m.audio.id) } : null;
+          out.push({ jid: m.from, phone: m.from, name: names.get(m.from) || null, waId: m.id, fromMe: false, text, type: m.type === 'text' ? 'text' : 'media', ts, ad, audio });
         }
       }
     }

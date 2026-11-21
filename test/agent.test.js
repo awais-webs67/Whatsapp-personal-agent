@@ -27,6 +27,7 @@ let tpmCount = 0;
 let busyCount = 0;
 let flakyBatch = 0;
 let quotaOnce = 0;
+const voiceCalls = [];
 const budget = { left: 3000, resetAt: 0 }; // scripted answers for the owner-command prompt
 let reply = JSON.stringify({ messages: ['Hi! The price is 2500.', 'Want me to book it?'], stage: 'interested', summary: 'Asked price', handoff: false });
 const server = http.createServer((req, res) => {
@@ -34,6 +35,7 @@ const server = http.createServer((req, res) => {
   req.on('data', (c) => (body += c));
   req.on('end', () => {
     const key = (req.headers.authorization || '').replace('Bearer ', '');
+    if (req.url.endsWith('/audio/transcriptions')) { voiceCalls.push({ key, multipart: /form-data/.test(req.headers['content-type'] || '') && body.includes('whisper-large-v3-turbo') }); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ text: 'Canva Pro ka price kya hai?' })); }
     calls.push({ key, body: body ? JSON.parse(body) : null });
     const send = (status, json, headers = {}) => { res.writeHead(status, { 'content-type': 'application/json', ...headers }); res.end(JSON.stringify(json)); };
     if (key === 'limited') return send(429, { error: { message: 'Rate limit reached' } }, { 'retry-after': '120' });
@@ -1354,4 +1356,20 @@ test('WhatsApp Business labels: labels on the phone become tags; a campaign puts
   assert.ok(!applied.some((a) => a[0] === 'remove'), 'never removes a label');
   const tasks = await import('../src/agent/tasks.js');
   tasks.controlTask(t.id, 'remove');
+});
+
+test('a voice note is turned into text first, and the agent answers what was said', async () => {
+  const id = Number(run('INSERT INTO providers (preset, name, kind, base_url, api_key, model, priority, created_at) VALUES (?,?,?,?,?,?,?,?)', 'groq', 'Groq voice', 'openai', baseUrl, encrypt('whisper'), 'fake-1', 99, now()).lastInsertRowid);
+  reply = JSON.stringify({ messages: ['Canva Pro ka link yeh hai'], stage: 'interested', summary: 'Canva price', handoff: false });
+  const before = calls.length;
+  deliver([{ jid: '923337770001@s.whatsapp.net', waId: 'voice-1', fromMe: false, text: '[voice note]', type: 'media', ts: now(),
+    audio: { mime: 'audio/ogg; codecs=opus', fetch: async () => Buffer.from('OggS fake audio') } }]);
+  const chat = () => get("SELECT * FROM chats WHERE jid = '923337770001@s.whatsapp.net'");
+  await until(() => get("SELECT text FROM messages WHERE wa_id = 'voice-1'")?.text.includes('Canva Pro ka price'), 6000);
+  assert.equal(voiceCalls.at(-1).multipart, true, 'sent as audio to the Whisper model');
+  const voiceAsk = () => calls.slice(before).find((c) => JSON.stringify(c.body?.messages || '').includes('[voice note]'));
+  await until(voiceAsk, 6000);
+  assert.match(JSON.stringify(voiceAsk().body.messages), /\[voice note\] Canva Pro ka price kya hai/, 'the model sees the words, not just [voice note]');
+  assert.match(chat().last_text, /🎤 Canva Pro ka price/);
+  run('DELETE FROM providers WHERE id = ?', id);
 });

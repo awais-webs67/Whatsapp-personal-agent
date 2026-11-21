@@ -6,6 +6,7 @@ import { decide, CLOSED, saveProfile } from './brain.js';
 import { notify, who } from './updates.js';
 import { parseChatCommand, runChatCommand } from './chat-commands.js';
 import { assignCampaign, campaignOf } from './campaigns.js';
+import { queueVoice, voiceReady } from './voice.js';
 
 const timers = new Map(); // chatId -> debounce timer
 const busy = new Set();   // chats currently being answered
@@ -115,6 +116,7 @@ async function answer(chatId) {
       return log('warn', 'agent', `Hourly cap of ${h.maxRepliesPerHour} replies reached on ${account.name}; ${chat.name || chat.jid} left for you`);
     }
 
+    await voiceReady(chatId); // a voice note that is still being turned into text
     // Start thinking immediately; the read receipt and typing indicator play out while the model works.
     let seen = lastCustomerId(chatId);
     let started = now();
@@ -173,7 +175,7 @@ export function answerNow(chatId) {
 
 export function startPipeline() {
   wa.setHandlers({
-    onCustomer, onOwner,
+    onCustomer, onOwner, onVoice: queueVoice,
     isChatCommand: (text) => !!parseChatCommand(text),
     onChatCommand: (chatId, text, { accountId, key, jid }) => {
       const reply = runChatCommand(chatId, text, { answerNow });

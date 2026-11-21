@@ -70,7 +70,8 @@ export const DEFAULT_SETTINGS = {
     repeatGuardHours: 24,               // a new batch skips people who got a message from us this recently
     gapMinSec: 60, gapMaxSec: 240,
   },
-  reading: { auto: true, perTick: 4 },  // keep reading chats that changed (stage + summary), a few at a time
+  reading: { auto: true, perTick: 4 },
+  voice: { transcribe: true },          // voice notes become text (needs a Groq or OpenAI key)  // keep reading chats that changed (stage + summary), a few at a time
   llm: { historyMessages: 12, maxTokens: 1024, timeoutSec: 20, tokenSaver: true, spread: true, knowledgeChars: 6000 },
 };
 

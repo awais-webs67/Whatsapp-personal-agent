@@ -7,8 +7,7 @@ import QRCode from 'qrcode';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import {
   makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers, getContentType,
-  isJidGroup, isJidBroadcast, isJidStatusBroadcast, isJidNewsletter, jidNormalizedUser,
-} from 'baileys';
+  isJidGroup, isJidBroadcast, isJidStatusBroadcast, isJidNewsletter, jidNormalizedUser, downloadMediaMessage } from 'baileys';
 import { DATA_DIR } from '../db.js';
 
 const logger = pino({ level: 'silent' });
@@ -56,6 +55,8 @@ export function toNeutral(msg) {
     ts: Number(msg.messageTimestamp || 0) * 1000 || Date.now(),
     // Click-to-WhatsApp ads: the first message carries the ad it came from (not always, on linked devices).
     ad: adOf(body?.contextInfo?.externalAdReply),
+    // Voice notes can be fetched later and turned into text.
+    audio: type === 'audioMessage' ? { mime: body?.mimetype || 'audio/ogg', fetch: () => downloadMediaMessage(msg, 'buffer', {}) } : null,
     raw: { key: msg.key },
   };
 }

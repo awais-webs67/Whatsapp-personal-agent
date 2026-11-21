@@ -102,6 +102,7 @@ function takePending(chatId, text) {
 }
 
 function ingest(accountId, msgs, live) {
+  const voicesOf = {};
   const account = get('SELECT connected_at, self_jid FROM accounts WHERE id = ?', accountId);
   const touched = new Map();
   db.exec('BEGIN');
@@ -119,6 +120,7 @@ function ingest(accountId, msgs, live) {
       const by = m.fromMe ? (pending?.by || 'owner') : 'customer';
       const res = run('INSERT OR IGNORE INTO messages (chat_id, wa_id, from_me, by, type, text, ts) VALUES (?,?,?,?,?,?,?)', chat.id, m.waId, m.fromMe ? 1 : 0, by, m.type, m.text, m.ts);
       if (!res.changes) continue; // duplicate (already stored, or our own send echoed back)
+      if (live && m.audio && !m.fromMe) (voicesOf[chat.id] ||= []).push(m);
       if (m.ad && !m.fromMe) run('UPDATE chats SET ad_id = COALESCE(ad_id, ?), ad_title = COALESCE(ad_title, ?) WHERE id = ?', m.ad.id, m.ad.title, chat.id);
       // A chat with messages from before this number was linked is not a "new lead".
       if (chat.is_new && account?.connected_at && m.ts < account.connected_at - 60_000) run('UPDATE chats SET is_new = 0 WHERE id = ?', chat.id);
@@ -152,6 +154,8 @@ function ingest(accountId, msgs, live) {
   }
   if (!touched.size) return;
   if (!live) return emit('history', { accountId, chats: touched.size });
+  // Voice notes start turning into text now; the reply to that chat waits for them.
+  for (const [chatId, list] of Object.entries(voicesOf)) for (const m of list) handlers.onVoice?.(Number(chatId), m.waId, m.audio.fetch, m.audio.mime);
   for (const [chatId, t] of touched) {
     for (const c of t.chatCommands || []) handlers.onChatCommand(chatId, c.text, { accountId, key: c.key, jid: c.jid });
     if (!t.last) continue;
