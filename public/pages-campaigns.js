@@ -468,6 +468,7 @@ function campaignPage(id, startTab) {
   }
   const PHASES = { batch: ['Reading and writing', 'Waiting for you', 'Sending', 'Done'], analysis: ['Reading chats', 'Learning', 'Done'] };
 
+  const openTasks = new Set();
   /** Work started inside this campaign (from its Command), each with live progress. */
   async function tasksTab() {
     const list = await GET(`/api/campaigns/${t.id}/tasks`).catch(() => []);
@@ -477,22 +478,39 @@ function campaignPage(id, startTab) {
       const pct = n.total ? Math.round((n.done / n.total) * 100) : x.status === 'done' ? 100 : null;
       const mins = x.nextSend ? Math.round((x.nextSend.at - Date.now()) / 60_000) : null;
       const phases = PHASES[x.kind];
-      return h(`div.card.ctask.${x.status}`, {},
-        h('div.ctask-top', {}, badge(x.kind === 'job' ? 'job' : x.kind),
-          h('div.grow', {}, h('b', { dir: 'auto' }, x.title), h('small', {}, `Task #${x.id} · started ${rel(x.created_at)} ago`)),
-          pill(x),
-          h('div.row', {}, x.status === 'active' && x.kind !== 'job' ? ctl(x, 'pause', 'Pause') : x.status === 'paused' ? ctl(x, 'resume', 'Resume', '.primary') : null, ['active', 'paused'].includes(x.status) && x.kind !== 'job' ? ctl(x, 'remove', 'Stop', '.ghost.danger') : null)),
-        phases ? h('div.cphases', {}, phases.map((ph) => h(`span${ph === n.phase ? '.on' : phases.indexOf(ph) < phases.indexOf(n.phase) ? '.past' : ''}`, {}, ph))) : null,
-        h('div.ctask-now', {}, h('span.ctask-phase', {}, n.phase), h('span', { dir: 'auto' }, n.line)),
-        pct != null ? h('div.cprog', {}, h('i', { style: `width:${pct}%` })) : null,
-        x.nextSend ? h('div.ctask-next', {}, ico('send', 'sm'), `Next message to ${x.nextSend.who} ${mins <= 0 ? 'now' : `in ${mins} min (${clock(x.nextSend.at)})`}`) : null,
-        x.waiting ? h('div.note.warn', { style: 'margin:0' }, x.waiting) : null,
-        x.steps?.length ? h('ol.clive-feed', {}, x.steps.map((r) => h(`li.${r.kind}`, {}, ico({ read: 'book-open', wrote: 'pen-line', sent: 'send', skipped: 'skip-forward', failed: 'circle-alert', paused: 'pause', changed: 'settings-2', done: 'check-check', info: 'info' }[r.kind] || 'info', 'sm'), h('time', {}, clock(r.ts)), h('span', { dir: 'auto' }, r.text)))) : null);
+      const isOpen = openTasks.has(x.id);
+      const tpl = (x.params && typeof x.params === 'object' ? x.params : (() => { try { return JSON.parse(x.params || '{}'); } catch { return {}; } })()).template;
+      const toggleOpen = () => { if (openTasks.has(x.id)) openTasks.delete(x.id); else openTasks.add(x.id); tasksTab(); };
+      return h(`div.card.ctask.${x.status}${isOpen ? '.open' : ''}`, {},
+        h('button.ctask-sum', { type: 'button', 'aria-expanded': isOpen, onclick: toggleOpen },
+          badge(x.kind === 'job' ? 'job' : x.kind),
+          h('div.ctask-main', {},
+            h('div.ctask-title', {}, h('b', { dir: 'auto' }, x.title), pill(x)),
+            h('div.ctask-line', {}, h('span.ctask-phase', {}, n.phase), h('span', { dir: 'auto' }, n.line), x.nextSend ? h('span.ctask-nextin', {}, ico('send', 'sm'), mins <= 0 ? 'now' : `${mins} min`) : null),
+            pct != null ? h('div.cprog.thin', {}, h('i', { style: `width:${pct}%` })) : null),
+          h('span.ctask-chev', { 'aria-hidden': 'true' }, ico('chevron-down', 'sm'))),
+        isOpen ? h('div.ctask-body', {},
+          phases ? h('div.cphases', {}, phases.map((ph) => h(`span${ph === n.phase ? '.on' : phases.indexOf(ph) < phases.indexOf(n.phase) ? '.past' : ''}`, {}, ph))) : null,
+          x.nextSend ? h('div.ctask-next', {}, ico('send', 'sm'), `Next message to ${x.nextSend.who} ${mins <= 0 ? 'now' : `in ${mins} min (${clock(x.nextSend.at)})`}`) : null,
+          x.waiting ? h('div.note.warn', { style: 'margin:0' }, x.waiting) : null,
+          tpl ? h('details.ctask-tpl', {}, h('summary', {}, 'The exact message it sends'), h('div.msg.me', { dir: 'auto', style: 'max-width:100%;white-space:pre-wrap' }, tpl)) : h('div.muted', { dir: 'auto', style: 'font-size:12.5px' }, x.instruction),
+          x.steps?.length ? h('ol.clive-feed', {}, x.steps.map((r) => h(`li.${r.kind}`, {}, ico({ read: 'book-open', wrote: 'pen-line', sent: 'send', skipped: 'skip-forward', failed: 'circle-alert', paused: 'pause', changed: 'settings-2', done: 'check-check', info: 'info' }[r.kind] || 'info', 'sm'), h('time', {}, clock(r.ts)), h('span', { dir: 'auto' }, r.text)))) : null,
+          h('div.row.wrap', {}, h('small.muted', { style: 'flex:1' }, `Task #${x.id} · started ${rel(x.created_at)} ago`),
+            x.status === 'active' && x.kind !== 'job' ? ctl(x, 'pause', 'Pause') : x.status === 'paused' ? ctl(x, 'resume', 'Resume', '.primary') : null,
+            ['active', 'paused'].includes(x.status) && x.kind !== 'job' ? ctl(x, 'remove', 'Stop', '.ghost.danger') : null,
+            h('button.btn.sm', { onclick: () => { tab = 'messages'; load(); } }, 'Messages'))) : null);
     };
+    // The first running task starts open; the others are one line each until clicked.
+    if (!openTasks.size && list.some((x) => x.status === 'active')) openTasks.add(list.find((x) => x.status === 'active').id);
+    const running = list.filter((x) => ['active', 'paused'].includes(x.status));
+    const finished = list.filter((x) => !['active', 'paused'].includes(x.status));
     set(body, h('div.stack', {},
       explain('list-checks', 'Tasks of this campaign', 'Work you ask for in this campaign’s Command, such as “last 5 days ki chats parh kar follow-up bhejo” or “in sab ko label do”, runs here as a task. Each shows what it is doing right now (reading, writing, sending), how far it is, and when the next message goes.',
         h('button.btn.primary', { onclick: () => { tab = 'command'; history.replaceState(null, '', `#/campaigns/${t.id}/command`); load(); } }, ico('terminal', 'sm'), 'Give it a task')),
-      list.length ? list.map(card) : h('div.cempty', {}, h('b', {}, 'No tasks yet'), h('p', {}, 'Open Command and tell this campaign what to do. Its work shows here with live progress.'))));
+      list.length ? [
+        running.length ? h('div.ctask-group', {}, h('div.ctask-gh', {}, `Running (${running.length})`), running.map(card)) : null,
+        finished.length ? h('details.ctask-group', { open: !running.length }, h('summary.ctask-gh', {}, `Finished (${finished.length})`), finished.map(card)) : null,
+      ] : h('div.cempty', {}, h('b', {}, 'No tasks yet'), h('p', {}, 'Open Command and tell this campaign what to do. Its work shows here with live progress.'))));
   }
 
   let cmdReload = null;

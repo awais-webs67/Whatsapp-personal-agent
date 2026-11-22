@@ -86,9 +86,23 @@ function queue(chatId, kind, text, reason, status, dueAt = now(), taskId = null)
  * Change a batch that is already running: what the messages say, the gap between them, whether they go out by
  * themselves. Messages already written but not sent yet are spaced again and, for a new instruction, rewritten.
  */
-export async function changeBatch(taskId, { instruction, interval, autoApprove, audience = 'all', startIn = null } = {}) {
+export async function changeBatch(taskId, { instruction, interval, autoApprove, audience = 'all', startIn = null, template = null } = {}) {
   const mine = campaign.taskId === taskId && campaign.running;
   const changed = [];
+  // The owner's exact message: messages not sent yet get it at once (no AI needed), new ones use it too.
+  if (template) {
+    const p = JSON.parse(get('SELECT params FROM tasks WHERE id = ?', taskId)?.params || '{}');
+    run('UPDATE tasks SET params = ? WHERE id = ?', JSON.stringify({ ...p, template }), taskId);
+    if (mine) campaign.template = template;
+    let n = 0;
+    for (const f of all("SELECT * FROM followups WHERE task_id = ? AND status IN ('pending','approved')", taskId)) {
+      const c = get('SELECT * FROM chats WHERE id = ?', f.chat_id);
+      update('followups', f.id, { text: fillExact(template, c, (p.keywords || [])[0]), reason: 'Your exact message' }, ['text', 'reason']); n++;
+    }
+    taskEvent(taskId, `Your exact message is used now: ${n} message${n === 1 ? '' : 's'} not sent yet were changed to it`, { kind: 'changed' });
+    changed.push(`your exact message (${n} waiting changed)`);
+    instruction = undefined; // nothing to rewrite with AI
+  }
   if (instruction) { if (mine) campaign.instruction = instruction; changed.push('message instruction'); }
   if (typeof autoApprove === 'boolean') {
     if (mine) campaign.autoApprove = autoApprove;
@@ -166,6 +180,48 @@ export async function resumeBatch(task) {
     ? `The agent restarted: carrying on from where it stopped (${campaign.total} chat${campaign.total === 1 ? '' : 's'} left, ${done.size} already done)`
     : 'The agent restarted: every chat was already handled', { kind: 'info' });
   return campaign.total;
+}
+
+/**
+ * The owner's exact message for a task, sent as written: only its blanks are filled for each person. Line breaks,
+ * links, emojis and *bold* stay exactly as the owner wrote them. {{Product_Name}} / {product} / ___ becomes what
+ * this person asked about (in bold), {{Name}} / {name} their name.
+ */
+export function fillExact(template, chat, fallbackProduct = '') {
+  let profile = {};
+  try { profile = JSON.parse(chat.profile || '{}') || {}; } catch { /* none */ }
+  const product = String(profile.wants?.[0] || chat.ad_title || fallbackProduct || 'hamari service').trim();
+  const name = String(chat.name || '').trim();
+  return String(template || '')
+    .replace(/\*?\{\{\s*(product[_ ]?name|product|item|tool)\s*\}\}\*?|\*?\{(product|item)\}\*?|\*?_{3,}\*?/gi, `*${product}*`)
+    .replace(/\{\{\s*(customer[_ ]?name|name)\s*\}\}|\{name\}/gi, name || 'Sir')
+    .replace(/\r/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/** A running one-time task takes in more people (a longer period, other words): only chats it has not handled yet are read. */
+export async function extendBatch(taskId, { sinceDays = null, keywords = null } = {}) {
+  const t = get("SELECT * FROM tasks WHERE id = ? AND kind = 'batch' AND status != 'removed'", Number(taskId));
+  if (!t) throw new Error('No such one-time task');
+  const p = JSON.parse(t.params || '{}') || {};
+  const done = new Set([
+    ...all('SELECT DISTINCT chat_id FROM followups WHERE task_id = ?', t.id).map((r) => r.chat_id),
+    ...all("SELECT DISTINCT chat_id FROM task_events WHERE task_id = ? AND chat_id IS NOT NULL AND kind IN ('read','skipped','wrote')", t.id).map((r) => r.chat_id),
+  ]);
+  const go = async () => {
+    const { readDone, ...args } = p;
+    await runCampaign({ ...args, ...(sinceDays ? { sinceDays } : {}), ...(keywords?.length ? { keywords } : {}), taskId: t.id, skipChatIds: done });
+    taskEvent(t.id, campaign.total ? `Taking in more people: ${campaign.total} more chat${campaign.total === 1 ? '' : 's'} to read (${done.size} already handled)` : `No more chats to add: every matching chat is already in this task (${done.size})`, { kind: 'info' });
+    if (t.status !== 'active') update('tasks', t.id, { status: 'active' }, ['status']);
+    return campaign.total;
+  };
+  // Still reading for this task (or another): add them as soon as that reading ends.
+  if (campaign.running) {
+    (async () => { for (let i = 0; i < 360 && campaign.running; i++) await sleep(5000); if (!campaign.running) await go().catch((e) => log('error', 'tasks', e.message)); })();
+    return { more: null, already: done.size, queued_after_reading: true };
+  }
+  return { more: await go(), already: done.size };
 }
 
 /**
@@ -327,6 +383,9 @@ async function sendApproved() {
         }
         if (f.task_id) {
           taskEvent(f.task_id, `Sent to ${who(chat)}: "${f.text.slice(0, 160)}"`, { kind: 'sent', chatId: chat.id });
+          // Someone a campaign's task wrote to becomes that campaign's lead: its replies and knowledge answer them.
+          const parent = f.task_id && get("SELECT p.id FROM tasks t JOIN tasks p ON p.id = t.parent_id WHERE t.id = ? AND p.kind = 'auto' AND p.status != 'removed'", f.task_id);
+          if (parent && chat.campaign_id !== parent.id) { update('chats', chat.id, { campaign_id: parent.id }, ['campaign_id']); taskEvent(parent.id, `${who(chat)} joined this campaign (messaged by task #${f.task_id})`, { kind: 'info', chatId: chat.id }); }
           // Progress the owner can follow without opening the dashboard: the first message, then the halfway point.
           const c = Object.fromEntries(all('SELECT status, COUNT(*) n FROM followups WHERE task_id = ? GROUP BY status', f.task_id).map((r) => [r.status, r.n]));
           const sentN = c.sent || 0;
@@ -393,10 +452,10 @@ export function whyNotSending(taskId = null) {
   return next > now() ? null : null;
 }
 
-export async function runCampaign({ accountId = null, sinceDays = 90, limit = 200, reanalyze = false, instruction = '', autoApprove = false, intervalMinutes = 0, stages = null, taskId = null, analyzeOnly = false, audience = 'all', tags = [], skipChatIds = null, startAt = null, accountIds = [], keywords = [] } = {}) {
+export async function runCampaign({ accountId = null, sinceDays = 90, limit = 200, reanalyze = false, instruction = '', autoApprove = false, intervalMinutes = 0, stages = null, taskId = null, analyzeOnly = false, audience = 'all', tags = [], skipChatIds = null, startAt = null, accountIds = [], keywords = [], template = '' } = {}) {
   if (campaign.running) throw new Error('Another batch is still reading chats. Wait for it to finish, or remove it on the Tasks page.');
   // Saved with the task, so the work carries on by itself after a restart (see resumeBatch).
-  if (taskId) run('UPDATE tasks SET params = ? WHERE id = ?', JSON.stringify({ ...JSON.parse(get('SELECT params FROM tasks WHERE id = ?', taskId)?.params || '{}'), accountId, sinceDays, limit, reanalyze, instruction, autoApprove, intervalMinutes, stages, analyzeOnly, audience, tags, accountIds, keywords, readDone: false }), taskId);
+  if (taskId) run('UPDATE tasks SET params = ? WHERE id = ?', JSON.stringify({ ...JSON.parse(get('SELECT params FROM tasks WHERE id = ?', taskId)?.params || '{}'), accountId, sinceDays, limit, reanalyze, instruction, autoApprove, intervalMinutes, stages, analyzeOnly, audience, tags, accountIds, keywords, template, readDone: false }), taskId);
   const since = now() - sinceDays * 86_400_000;
   // Analysis reads every customer chat in the period (buyers included); it sends nothing.
   const tagged = tags?.length > 0;
@@ -440,7 +499,7 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
   const nextGap = () => (campaign.range?.length ? rand(campaign.range[0], campaign.range.at(-1)) * 60_000 : campaign.gap * rand(0.8, 1.2));
   // Carrying on after a restart: new messages queue up after the ones already waiting.
   let nextDue = Math.max(now(), startAt || 0, (taskId && get("SELECT MAX(due_at) m FROM followups WHERE task_id = ? AND status IN ('pending','approved')", taskId)?.m) || 0);
-  Object.assign(campaign, { taskId, analyzeOnly, waitingUntil: null, instruction, autoApprove, range, gap, stages: {}, running: true, total: chats.length, done: 0, drafted: 0, skipped: 0, skipReasons: [], failed: 0, cancel: false, startedAt: now(), error: null });
+  Object.assign(campaign, { taskId, analyzeOnly, waitingUntil: null, instruction, template, autoApprove, range, gap, stages: {}, running: true, total: chats.length, done: 0, drafted: 0, skipped: 0, skipReasons: [], failed: 0, cancel: false, startedAt: now(), error: null });
   emit('campaign', campaign);
   log('info', 'campaign', `Reviewing ${chats.length} past conversations`);
   if (taskId && !skipChatIds) {
@@ -461,6 +520,8 @@ export async function runCampaign({ accountId = null, sinceDays = 90, limit = 20
       if (d.skip) {
         taskEvent(taskId, `Skipped ${who(chat)}: ${d.reason || 'not right for this message'}`, { kind: 'skipped', chatId: chat.id }); campaign.skipped++; if (d.reason && campaign.skipReasons.length < 3) campaign.skipReasons.push(`${chat.name || chat.phone || 'someone'}: ${d.reason}`); }
       else {
+        // The owner's exact message when there is one (only its blanks filled), else what the model wrote.
+        if (campaign.template) d.message = fillExact(campaign.template, get('SELECT * FROM chats WHERE id = ?', chat.id), (keywords || [])[0]);
         queue(chat.id, audience === 'buyers' ? 'reminder' : 'campaign', d.message, d.reason, campaign.autoApprove ? 'approved' : 'pending', nextDue, taskId);
         taskEvent(taskId, `Wrote a message for ${who(chat)}${campaign.autoApprove ? `, goes out around ${new Date(Math.max(nextDue, now())).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: getSettings().followup.timezone })}` : ', waiting for your approval'}: "${String(d.message).slice(0, 160)}"`, { kind: 'wrote', chatId: chat.id });
         nextDue = Math.max(nextDue, now()) + nextGap();

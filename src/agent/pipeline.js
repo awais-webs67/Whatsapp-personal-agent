@@ -24,7 +24,13 @@ export function eligibility(chat, account, settings = getSettings()) {
   if (chat.paused_until && chat.paused_until > now()) return [false, 'you replied by hand recently'];
   if (chat.ai_enabled === 1) return [true, ''];
   if (account.reply_mode === 'all') return [true, ''];
-  if (account.reply_mode === 'new_only') return chat.is_new ? [true, ''] : [false, 'existing contact (number is set to "new leads only")'];
+  if (account.reply_mode === 'new_only') {
+    if (chat.is_new) return [true, ''];
+    // Someone you put in a campaign (or who joined one) is answered by it when its auto reply is on.
+    const t = chat.campaign_id ? get("SELECT * FROM tasks WHERE id = ? AND kind = 'auto' AND status = 'active'", chat.campaign_id) : null;
+    if (t && !JSON.parse(t.params || '{}').isDefault && campaignOf(chat).config.autoReply !== false) return [true, ''];
+    return [false, 'an existing contact, and this number answers new leads only (add them to a campaign, or switch the agent on for this chat)'];
+  }
   return [false, 'number is set to manual'];
 }
 

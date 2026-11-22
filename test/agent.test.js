@@ -1831,3 +1831,20 @@ test('labelling skips chats that already have the label on the phone, even when 
   assert.equal(r.chats, 1);
   assert.equal(r.already, 1);
 });
+
+test('a task sends the owner\'s exact message, and campaign members get replies even as older contacts', async () => {
+  const { fillExact } = await import('../src/agent/followups.js');
+  const { eligibility } = await import('../src/agent/pipeline.js');
+  const camps = await import('../src/agent/campaigns.js');
+  const tpl = '*Assalam-o-Alaikum Dear Customer!*\n\nAap ne hamari ad par {{Product_Name}} ke liye rabta kiya tha.\n\n👉 Channel 1: https://whatsapp.com/channel/abc\n🌐 https://example.com';
+  const out = fillExact(tpl, { name: 'Ali', profile: JSON.stringify({ wants: ['Flow Ultra'] }) });
+  assert.equal(out, '*Assalam-o-Alaikum Dear Customer!*\n\nAap ne hamari ad par *Flow Ultra* ke liye rabta kiya tha.\n\n👉 Channel 1: https://whatsapp.com/channel/abc\n🌐 https://example.com', 'lines, links and bold kept; the product filled in bold');
+  const account = { enabled: 1, reply_mode: 'new_only' };
+  const t = camps.createAuto({ name: 'Members get replies', keywords: ['membersreply'] }, 'test');
+  const old = { id: 0, is_new: 0, campaign_id: null, needs_human: 0 };
+  assert.equal(eligibility(old, account)[0], false, 'an older contact outside campaigns is not answered');
+  assert.equal(eligibility({ ...old, campaign_id: t.id }, account)[0], true, 'inside a campaign with auto reply on, they are');
+  camps.updateAuto(t.id, { autoReply: false }, 'test');
+  assert.equal(eligibility({ ...old, campaign_id: t.id }, account)[0], false);
+  (await import('../src/agent/tasks.js')).controlTask(t.id, 'remove');
+});

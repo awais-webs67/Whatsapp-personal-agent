@@ -762,3 +762,22 @@ a.numlink:hover h3 { color: var(--orange-text, var(--orange)); text-decoration: 
 .inbox.cmd .chatrow b { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .compose-wrap .composer textarea { height: 42px; max-height: 140px; line-height: 20px; overflow-y: hidden; }
 .compose-wrap .composer textarea::placeholder { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Tasks: one line each, open for details */
+.ctask { padding: 0; gap: 0; overflow: hidden; }
+.ctask-sum { all: unset; box-sizing: border-box; width: 100%; display: flex; align-items: center; gap: 12px; padding: 12px 16px; cursor: pointer; }
+.ctask-sum:hover { background: color-mix(in srgb, var(--orange) 4%, transparent); }
+.ctask-sum:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
+.ctask-main { flex: 1; min-width: 0; display: grid; gap: 5px; }
+.ctask-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.ctask-title b { flex: 1; min-width: 0; color: var(--ink); font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ctask-line { display: flex; gap: 8px; align-items: baseline; font-size: 13px; color: var(--slate); min-width: 0; }
+.ctask-line > span:nth-child(2) { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ctask-nextin { flex: none; display: inline-flex; gap: 4px; align-items: center; font-weight: 600; color: var(--orange-text, var(--orange)); }
+.ctask-chev { flex: none; color: var(--muted); transition: transform .15s; }
+.ctask.open .ctask-chev { transform: rotate(180deg); }
+.ctask-body { display: grid; gap: 10px; padding: 4px 16px 14px 62px; border-top: 1px dashed var(--line); padding-top: 12px; }
+.ctask-tpl summary { cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--slate); margin-bottom: 6px; }
+.ctask-group { display: grid; gap: 8px; }
+.ctask-gh { font-size: 13px; font-weight: 600; color: var(--slate); padding: 4px 2px; cursor: default; }
+details.ctask-group > summary { cursor: pointer; }
+@media (max-width: 760px) { .ctask-body { padding-left: 16px; } .ctask-sum { padding: 12px; } }

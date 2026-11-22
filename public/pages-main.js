@@ -141,6 +141,9 @@ export function inbox(openId) {
           h(`span.pill${chat.auto ? '.hot' : ''}`, { title: chat.autoReason || 'The agent answers this chat on its own' }, chat.auto ? 'Agent on' : 'Agent off')),
         h('button.iconbtn.dark.th-info', { title: 'Customer details', 'aria-label': 'Customer details', onclick: () => el.classList.toggle('showside') }, ico('panel-right'))),
       chat.needs_human ? h('div.banner.bad', {}, h('div.grow', {}, h('b', {}, 'Needs you. '), chat.handoff_reason || 'The agent asked for help.'), h('button.btn.sm', { onclick: () => patch({ resume: true }, 'Agent resumed') }, 'Hand back to agent')) : null,
+      // Why the agent is quiet in this chat, with the one click that changes it.
+      !chat.auto && !chat.needs_human && !(chat.paused_until > Date.now()) && chat.autoReason ? h('div.banner.warn', {}, h('div.grow', {}, h('b', {}, 'The agent is not replying here: '), chat.autoReason, '.'),
+        h('button.btn.sm.primary', { onclick: () => patch({ aiEnabled: true }, 'The agent now replies in this chat') }, 'Reply in this chat')) : null,
       !chat.needs_human && chat.paused_until > Date.now() ? h('div.banner.warn', {}, h('div.grow', {}, `You replied by hand, so the agent is quiet until ${clock(chat.paused_until)}.`), h('button.btn.sm', { onclick: () => patch({ resume: true }, 'Agent resumed') }, 'Resume now')) : null,
       thread,
       h('div.compose-wrap', {}, hints, replyBar, h('div.composer', {}, input, h('div.composer-act', {}, remindBtn, suggestBtn, sendBtn))));

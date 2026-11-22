@@ -120,7 +120,7 @@ export function switchIntent(t) {
 /** "randomly 10,15,6,25 minutes" / "6 se 25 minute random" -> [6, 25] */
 export function randomMinutes(t) {
   // "5 to 7 minutes", "5-7 min", "5 se 7 minute" is a range even without the word random.
-  const r = /(\d+)\s*(?:to|-|–|se|sy|tak)\s*(\d+)\s*(?:minute|minutes|mins?|mint|mnt)/i.exec(t);
+  const r = /(\d+)\s*(?:to|-|–|se|sy|sa|say|sey|tak)\s*(\d+)\s*(?:minute|minutes|mins?|mint|mnt)/i.exec(t);
   if (r && Number(r[1]) > 0 && Number(r[2]) > 0 && r[1] !== r[2]) return [Math.min(+r[1], +r[2]), Math.max(+r[1], +r[2])];
   if (!/random|randomly|alag\s*alag|kabhi/i.test(t)) return null;
   const m = /((?:\d+\s*(?:,|se|to|-|aur|and|or|\/)\s*)+\d+)\s*(?:minute|minutes|mins?|mint|mnt)/i.exec(t);

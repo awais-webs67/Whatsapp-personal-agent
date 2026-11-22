@@ -33,7 +33,7 @@ import { listTasks, createTask, controlTask, startTasks, taskView } from './agen
 import { taskEvents } from './agent/task-log.js';
 import { startWatchdog, health } from './agent/watchdog.js';
 import { report } from './agent/reports.js';
-import { ensureDefaultCampaign, updateAuto, createAuto, changesOf, AUTO_FIELDS, setLabeler, statsOf as campaignStats, addCampaignFile, removeCampaignFile } from './agent/campaigns.js';
+import { campaignOf, ensureDefaultCampaign, updateAuto, createAuto, changesOf, AUTO_FIELDS, setLabeler, statsOf as campaignStats, addCampaignFile, removeCampaignFile } from './agent/campaigns.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // On slow or IPv6-broken connections Node's fetch gives up after 250 ms per address and reports
@@ -249,7 +249,9 @@ app.delete('/api/accounts/:id', wrap(async (req) => {
 // ---------- chats ----------
 const chatView = (c) => {
   const account = get('SELECT * FROM accounts WHERE id = ?', c.account_id);
-  const [auto, reason] = eligibility(c, account);
+  let [auto, reason] = eligibility(c, account);
+  // The lead's campaign can switch replies off too.
+  if (auto && c.ai_enabled !== 1) { const camp = campaignOf(c); if (camp.config.autoReply === false) [auto, reason] = [false, `auto reply is off in the campaign "${camp.task.title}"`]; }
   return { ...c, lead: leadScore(c), tagList: tagsOf(c), title: c.name || (c.phone ? `+${c.phone}` : c.jid.split('@')[0]), accountName: account?.name, accountType: account?.type, auto, autoReason: reason };
 };
 app.get('/api/chats', wrap((req) => {
@@ -717,6 +719,13 @@ export function start(port = Number(process.env.PORT) || 3000) {
   syncSharedAI();
   const def = ensureDefaultCampaign();
   // Once: every campaign gets its own knowledge (a copy of the default campaign's), so each can be changed alone.
+  // Once: people a campaign's task already wrote to become that campaign's leads.
+  if (!kvGet('taskLeadsJoined')) {
+    for (const r of all("SELECT DISTINCT f.chat_id, p.id pid FROM followups f JOIN tasks t ON t.id = f.task_id JOIN tasks p ON p.id = t.parent_id WHERE f.status = 'sent' AND p.kind = 'auto' AND p.status != 'removed'")) {
+      run('UPDATE chats SET campaign_id = ? WHERE id = ? AND (campaign_id IS NULL OR campaign_id = ?)', r.pid, r.chat_id, def.id);
+    }
+    kvSet('taskLeadsJoined', true);
+  }
   if (!kvGet('knowledgeSplit2')) {
     const base = knowledgeOf(def.id).values;
     for (const t of all("SELECT id, params FROM tasks WHERE kind IN ('auto','batch') AND status != 'removed' AND id != ?", def.id)) {
