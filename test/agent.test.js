@@ -1687,4 +1687,8 @@ test('big or permanent changes ask "Kar dun? Haan / Nahi" first, and only run on
   r = await handleCommand('no', { threadId: th });
   assert.equal(get('SELECT status FROM tasks WHERE id = ?', t.id).status, 'active');
   (await import('../src/agent/tasks.js')).controlTask(t.id, 'remove');
+  // Two different labels "Flow Google" and "Google Flow": the exact name is the one meant.
+  wa.onLabel(1, { id: '9', name: 'Google Flow', color: 4 });
+  assert.deepEqual(wa.findLabels(1, 'google flow').map((l) => l.label_id), ['9']);
+  assert.deepEqual(wa.findLabels(1, 'Flow Google').map((l) => l.label_id), ['8']);
 });

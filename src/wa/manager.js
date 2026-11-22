@@ -228,7 +228,12 @@ export function onLabelChat(accountId, jid, labelId, type) {
 /** "Flow Google", "google flow", "Google-Flow" are the same label: case, punctuation and word order do not matter. */
 export const labelKey = (name) => String(name || '').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean).sort().join(' ');
 /** The labels of one number whose name means `name` (several when the phone has duplicates). */
-export const findLabels = (accountId, name) => all('SELECT * FROM wa_labels WHERE account_id = ? AND deleted = 0 ORDER BY CAST(label_id AS INTEGER)', accountId).filter((l) => labelKey(l.name) === labelKey(name));
+export function findLabels(accountId, name) {
+  const rows = all('SELECT * FROM wa_labels WHERE account_id = ? AND deleted = 0 ORDER BY CAST(label_id AS INTEGER)', accountId);
+  // The exact name (any case) wins: "Google Flow" never means a different label called "Flow Google".
+  const exact = rows.filter((l) => l.name.trim().toLowerCase() === String(name || '').trim().toLowerCase());
+  return exact.length ? exact : rows.filter((l) => labelKey(l.name) === labelKey(name));
+}
 /** Every label on every number, with how many chats carry it. */
 export function labelsList() {
   return all('SELECT l.*, a.name account FROM wa_labels l JOIN accounts a ON a.id = l.account_id WHERE l.deleted = 0 ORDER BY a.id, l.name').map((l) => ({
