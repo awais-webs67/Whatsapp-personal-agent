@@ -1,5 +1,7 @@
 # AivraSol Agent Desk
 
+> **Full, current guide to the project (architecture, campaigns, commands, data, rules): see [PROJECT.md](PROJECT.md).**
+
 A self-hosted WhatsApp sales agent. Customers who reach you from ads get answered by an AI
 that knows your products, writes like you, replies at a human pace, and follows up with
 people who showed interest but never bought. You watch and steer everything from a web dashboard.
