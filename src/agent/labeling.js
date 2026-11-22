@@ -49,7 +49,7 @@ export function previewLabel(label, filters = {}, { create = false } = {}) {
   return {
     label: found[0]?.name || name, exists: found.length > 0, duplicates: found.length > 1 ? found.length : 0, create: !found.length && create,
     chats: rows.length, examples: rows.slice(0, 5).map(who),
-    ...(found.length || create ? {} : { error: `There is no label called "${name}" on WhatsApp. Your labels: ${all_.map((l) => l.name).join(', ') || 'none synced yet'}. Say the exact name, or ask to make a new label.` }),
+    ...(found.length || create ? {} : { error: `There is no label called "${name}" on WhatsApp. Your labels: ${all_.map((l) => l.name).join(', ') || 'none synced yet'}. Say the exact name, or ask to make a new label. If you made it on the phone just now, say "labels refresh karo".` }),
   };
 }
 

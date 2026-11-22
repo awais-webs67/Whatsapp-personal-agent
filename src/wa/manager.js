@@ -1,6 +1,6 @@
 // Owns every connected number and is the single place messages enter and leave the database.
 import { db, all, get, run, now, parse, update } from '../db.js';
-import { decrypt, emit, log } from '../core.js';
+import { decrypt, emit, log, kvGet, kvSet } from '../core.js';
 import { QrConnector } from './baileys.js';
 import { CloudConnector } from './cloud.js';
 
@@ -50,6 +50,9 @@ function hooksFor(account) {
     // WhatsApp asks for a re-send when the other phone could not decrypt one of our messages.
     getMessage: (waId) => get('SELECT m.text FROM messages m JOIN chats c ON c.id = m.chat_id WHERE c.account_id = ? AND m.wa_id = ? AND m.from_me = 1', account.id, waId)?.text || null,
     onLabel: (l) => onLabel(account.id, l),
+    // No labels known for this number yet (and not tried in the last day): load them from WhatsApp once.
+    needsLabels: () => !get('SELECT 1 x FROM wa_labels WHERE account_id = ? LIMIT 1', account.id) && now() - (Number(kvGet(`labelsTried:${account.id}`)) || 0) > 86_400_000 && (kvSet(`labelsTried:${account.id}`, now()), true),
+    onLabelsLoaded: () => { const n = get('SELECT COUNT(*) n FROM wa_labels WHERE account_id = ? AND deleted = 0', account.id).n; log('info', 'whatsapp', `${account.name}: ${n} WhatsApp label${n === 1 ? '' : 's'} loaded`); emit('labels', { accountId: account.id }); },
     onLabelChat: (jid, labelId, type) => onLabelChat(account.id, jid, labelId, type),
     onContacts: (contacts) => {
       for (const c of contacts) {
@@ -291,6 +294,13 @@ export async function removeLabel(chat, label) {
     log('warn', 'whatsapp', `Could not take the label "${label.name}" off ${chat.name || chat.jid}: ${e.message}`);
     return false;
   }
+}
+
+/** Load the labels of one number (or every connected number) from WhatsApp again. Returns how many are known. */
+export async function refreshLabels(accountId = null) {
+  const ids = accountId ? [Number(accountId)] : [...connectors.keys()];
+  for (const id of ids) await connectors.get(id)?.refreshLabels?.();
+  return get(`SELECT COUNT(*) n FROM wa_labels WHERE deleted = 0${accountId ? ' AND account_id = ?' : ''}`, ...(accountId ? [Number(accountId)] : [])).n;
 }
 
 /** Delete a label on the phone; WhatsApp takes it off every chat. */

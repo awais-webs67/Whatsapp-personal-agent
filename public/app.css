@@ -616,3 +616,8 @@ a.numlink:hover h3 { color: var(--orange-text, var(--orange)); text-decoration: 
   .ctable td.cnum, .ctable td.n { display: none; }
   .cname-in { min-width: 0; }
 }
+.cexplain { display: flex; gap: 14px; align-items: flex-start; padding: 14px 18px; background: var(--white); border: 1px solid var(--line); border-left: 3px solid var(--orange); border-radius: 12px; flex-wrap: wrap; }
+.cexplain-i { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; flex: none; background: color-mix(in srgb, var(--orange) 10%, transparent); color: var(--orange); }
+.cexplain b { color: var(--ink); font-size: 14px; }
+.cexplain p { margin: 3px 0 0; color: var(--slate); font-size: 13px; line-height: 1.5; }
+.cexplain .grow { min-width: min(100%, 300px); }

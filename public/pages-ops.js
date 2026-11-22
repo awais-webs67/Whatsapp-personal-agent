@@ -107,6 +107,7 @@ export function numbers() {
           h('div.row.wrap', { style: 'justify-content:flex-end' },
             h('div', { style: 'width:200px' }, select(MODES, a.replyMode, (v) => act(null, () => PATCH(`/api/accounts/${a.id}`, { replyMode: v }), 'Saved'), { 'aria-label': 'Who the agent answers', title: 'Who the agent answers on this number' })),
             h('a.btn.sm.primary', { href: `#/inbox/n${a.id}` }, ico('message-square-text', 'sm'), `Chats (${num(a.chats)})`),
+            a.type === 'qr' && s.state === 'connected' ? h('button.btn.sm', { title: 'Load this number’s WhatsApp Business labels again', onclick: (e) => act(e.target, async () => { const r = await POST('/api/labels/refresh', { accountId: a.id }); toast(`${r.labels} label${r.labels === 1 ? '' : 's'} loaded from WhatsApp`); }) }, ico('tag', 'sm'), 'Load labels') : null,
             actions,
             h('button.btn.sm.ghost.danger', { onclick: (e) => confirm(`Remove ${a.name} and all its stored chats?`) && act(e.target, () => DEL(`/api/accounts/${a.id}`), 'Removed') }, 'Remove'))),
         linking ? h('div.pad', { style: 'border-top:1px solid var(--line)' }, h('div.qrbox', {},

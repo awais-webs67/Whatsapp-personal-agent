@@ -24,6 +24,7 @@ import { updateCampaign } from './agent/campaign-edit.js';
 import { labelChats } from './agent/labeling.js';
 import { leadScore } from './agent/score.js';
 import { mediaStatus } from './agent/voice.js';
+import { previewMembers, addMembers } from './agent/members.js';
 import { knowledgeOf, saveKnowledge, copyKnowledge, KNOW } from './agent/campaign-knowledge.js';
 import * as email from './email/index.js';
 import { setEmailStats } from './agent/tasks.js';
@@ -452,6 +453,7 @@ app.post('/api/tasks', wrap((req) => ({ id: createTask({ kind: 'scheduled', titl
 // Automatic campaigns: their own settings, entry rules and history.
 app.get('/api/health', wrap(() => health()));
 app.get('/api/reports', wrap((req) => report(Number(req.query.days) || 30)));
+app.post('/api/labels/refresh', wrap(async (req) => ({ labels: await wa.refreshLabels(req.body?.accountId || null) })));
 app.get('/api/labels', wrap(() => all('SELECT a.id account_id, a.name account, l.label_id id, l.name, l.color FROM wa_labels l JOIN accounts a ON a.id = l.account_id WHERE l.deleted = 0 ORDER BY a.id, l.name')));
 // One campaign's own dashboard: its numbers, people, messages.
 const campaignRow = (id) => (id === 'default' ? ensureDefaultCampaign() : need(get("SELECT * FROM tasks WHERE id = ? AND status != 'removed'", Number(id)), 'Campaign'));
@@ -473,6 +475,12 @@ app.get('/api/campaigns/:id/people', wrap((req) => {
     const f = get('SELECT status, due_at, sent_at FROM followups WHERE task_id = ? AND chat_id = ? ORDER BY id DESC LIMIT 1', t.id, c.id);
     return { id: c.id, lead: leadScore(c), title: c.name || (c.phone ? `+${c.phone}` : `chat ${c.id}`), stage: c.stage, tags: tagsOf(c), lastAt: c.last_msg_at, lastIn: c.last_in_at, ad: c.ad_title, nextFollowup: c.next_followup_at, followups: c.followup_count, message: f || null };
   });
+}));
+app.post('/api/campaigns/:id/members', wrap((req) => {
+  const b = req.body || {};
+  const filters = { adText: b.adText, keywords: b.keywords, hours: b.hours, days: b.days, tags: b.tags, stage: b.stage };
+  if (b.dryRun) { const { ids, ...p } = previewMembers(campaignRow(req.params.id).id, filters); return p; }
+  return addMembers(campaignRow(req.params.id).id, filters, 'dashboard');
 }));
 app.get('/api/campaigns/:id/messages', wrap((req) => {
   const t = campaignRow(req.params.id);

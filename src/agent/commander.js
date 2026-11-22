@@ -19,6 +19,7 @@ import { humanSend } from './pipeline.js';
 import { learnFromChats, learnFromWebsite, learnFromProfile } from './learn.js';
 import { campaignQuick, campaignBrief } from './campaign-command.js';
 import { KNOW, knowledgeOf, saveKnowledge } from './campaign-knowledge.js';
+import { previewMembers, addMembers } from './members.js';
 
 const MAX_STEPS = 8;
 const DAY = 86_400_000;
@@ -246,17 +247,33 @@ const TOOLS = {
   },
   list_labels: {
     doc: 'list_labels {} - the WhatsApp Business labels that really exist on each number, with how many chats have each. Use it whenever the owner asks about labels, and before naming a label.',
-    run: () => ({ labels: wa.labelsList().map((l) => ({ name: l.name, number: l.account, chats: l.chats })) }),
+    run: async () => {
+      // None known yet: the number was linked before labels were read. Load them from WhatsApp first.
+      if (!wa.labelsList().length) await wa.refreshLabels().catch(() => {});
+      const labels = wa.labelsList().map((l) => ({ name: l.name, number: l.account, chats: l.chats }));
+      return labels.length ? { labels } : { labels: [], note: 'No WhatsApp Business labels could be loaded. Labels exist only on WhatsApp Business numbers linked by QR. Try "labels refresh karo" in a minute.' };
+    },
+  },
+  add_to_campaign: {
+    doc: 'add_to_campaign {"id": 14, "ad_text": ["google flow"], "keywords": [], "hours": 5, "days": 0, "tags": [], "stage": ""} - bring people ALREADY in the chats into an always-on campaign (they move from their old campaign and get this one\'s replies and follow-ups). Use for "jo log X ad se aaye unhein is campaign mein daal do".',
+    preview: (a) => { const { ids, ...p } = previewMembers(a.id || activeCampaign, labelFilters(a)); return p; },
+    confirm: (p) => `${p.chats} log campaign "${p.campaign}" mein aa jayenge${p.examples.length ? ` (${p.examples.join(', ')}${p.chats > 5 ? '…' : ''})` : ''}. Abhi ye yahan hain: ${Object.entries(p.from).map(([k, n]) => `${k}: ${n}`).join(', ')}. In ke follow-ups ab is campaign ke hisaab se honge.`,
+    run: (a) => addMembers(a.id || activeCampaign, labelFilters(a), 'command'),
+  },
+  refresh_labels: {
+    doc: 'refresh_labels {} - load the WhatsApp Business labels again from the phone (when a label the owner made is not found).',
+    run: async () => ({ labels_now: await wa.refreshLabels() }),
   },
   label_chats: {
     doc: 'label_chats {"label": "Flow Google", "create_new": false, "ad_text": ["eid"], "keywords": [], "campaign_id": null, "hours": 0, "days": 0, "tags": [], "stage": ""} - put a WhatsApp Business label on every matching chat that does not have it yet: came from an ad whose title has these words, talked about these words, belongs to a campaign, came in the last N hours or days, has a tag or stage. It always uses the EXISTING label with that name (any case or word order: "google flow" finds "Flow Google"). Set "create_new": true ONLY when the owner clearly asks to make a new label. "last 5 hours" = "hours": 5.',
-    preview: (a) => previewLabel(a.label, labelFilters(a), { create: !!a.create_new }),
+    // A label not found may be one made on the phone that we never received: load the labels again and look once more.
+    preview: async (a) => { let p = previewLabel(a.label, labelFilters(a), { create: !!a.create_new }); if (p.error) { await wa.refreshLabels().catch(() => {}); p = previewLabel(a.label, labelFilters(a), { create: !!a.create_new }); } return p; },
     confirm: (p) => p.error ? null : `"${p.label}" label ${p.chats} chat${p.chats === 1 ? '' : 's'} par lagega${p.examples.length ? ` (${p.examples.join(', ')}${p.chats > 5 ? '…' : ''})` : ''}. ${p.exists ? 'Ye label WhatsApp par pehle se hai, wahi use hoga.' : 'Ye NAYA label banega.'}${p.duplicates ? ` Note: is naam ke ${p.duplicates} labels hain.` : ''}`,
     run: (a) => labelChats(a.label, labelFilters(a), { create: !!a.create_new }),
   },
   remove_label: {
     doc: 'remove_label {"label": "Google Flow", "delete_label": false, "ad_text": [], "keywords": [], "campaign_id": null, "hours": 0, "days": 0, "tags": [], "stage": ""} - take a WhatsApp label OFF chats: those matching the filters, or every chat that has it when no filter is given. "delete_label": true (with no filters) deletes the label itself on WhatsApp, every copy of that name. Use for "label hata do", "remove the label", "ye label delete karo", and to undo a label_chats.',
-    preview: (a) => previewUnlabel(a.label, labelFilters(a), { deleteLabel: !!a.delete_label }),
+    preview: async (a) => { let p = previewUnlabel(a.label, labelFilters(a), { deleteLabel: !!a.delete_label }); if (p.error) { await wa.refreshLabels().catch(() => {}); p = previewUnlabel(a.label, labelFilters(a), { deleteLabel: !!a.delete_label }); } return p; },
     confirm: (p) => p.error ? null : p.delete ? `"${p.label}" label WhatsApp se poora DELETE ho jayega${p.copies > 1 ? ` (is naam ke ${p.copies} labels, sab)` : ''}. Ye ${p.chats} chats se hat jayega.` : `"${p.label}" label ${p.chats} chat${p.chats === 1 ? '' : 's'} se hatega${p.examples.length ? ` (${p.examples.join(', ')}${p.chats > 5 ? '…' : ''})` : ''}. Label khud rahega.`,
     run: (a) => unlabelChats(a.label, labelFilters(a), { deleteLabel: !!a.delete_label }),
   },

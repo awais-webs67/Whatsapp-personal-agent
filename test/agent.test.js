@@ -1505,7 +1505,7 @@ test('every campaign carries its own instructions, message format and files into
   const off = TOOLS_FOR_TEST.remove_label.run({ label: 'EID LEAD' });
   assert.ok(off.chats >= 1);
   assert.doesNotMatch(get("SELECT tags FROM chats WHERE jid = '923331110002@s.whatsapp.net'").tags || '', /eid-lead/);
-  assert.ok(TOOLS_FOR_TEST.list_labels.run().labels.some((l) => l.name === 'Eid Lead'));
+  assert.ok((await TOOLS_FOR_TEST.list_labels.run()).labels.some((l) => l.name === 'Eid Lead'));
 });
 
 test('email campaigns: import a list, write each email, send through SMTP with unsubscribe and footer, bounce, stop on reply, never mail an unsubscribed address again', async () => {
@@ -1723,4 +1723,20 @@ test('each campaign has its own knowledge: a copy at the start, then changed alo
   const tasks = await import('../src/agent/tasks.js');
   tasks.controlTask(a.id, 'remove'); tasks.controlTask(b.id, 'remove');
   kn.saveKnowledge(def.id, { offer: '', faqs: '' }, 'test');
+});
+
+test('people already in the chats can be brought into a campaign, after seeing who', async () => {
+  const camps = await import('../src/agent/campaigns.js');
+  const m = await import('../src/agent/members.js');
+  const t = camps.createAuto({ name: 'Bring them in', keywords: ['bringthemin'] }, 'test');
+  run("UPDATE chats SET ad_title = 'Google Flow Ultra offer' WHERE jid = '444@s.whatsapp.net'");
+  const none = m.previewMembers(t.id, {});
+  assert.match(none.error, /Say who/);
+  const p = m.previewMembers(t.id, { adText: ['google flow'] });
+  assert.ok(p.chats >= 1);
+  const r = m.addMembers(t.id, { adText: ['google flow'] }, 'test');
+  assert.equal(r.added, p.chats);
+  assert.equal(get("SELECT campaign_id FROM chats WHERE jid = '444@s.whatsapp.net'").campaign_id, t.id);
+  assert.equal(m.previewMembers(t.id, { adText: ['google flow'] }).chats, 0, 'already in');
+  (await import('../src/agent/tasks.js')).controlTask(t.id, 'remove');
 });

@@ -120,6 +120,8 @@ export class QrConnector {
         this.retries = 0;
         this.pairPhone = null;
         this.hooks.onStatus({ state: 'connected', me: digits(jidNormalizedUser(sock.user?.id)) || sock.user?.id, pushName: sock.user?.name || null });
+        // Labels arrive only once, when a number is first linked. If we have none, ask WhatsApp for them again.
+        if (this.hooks.needsLabels?.()) setTimeout(() => { if (sock === this.sock) this.refreshLabels().catch((e) => this.hooks.onNotice?.('warn', `could not load WhatsApp labels: ${e.message}`)); }, 20_000);
       }
       if (connection === 'close') {
         const code = lastDisconnect?.error?.output?.statusCode;
@@ -206,6 +208,16 @@ export class QrConnector {
   /** Put an existing label on a chat (WhatsApp Business only). */
   async addChatLabel(jid, labelId) { await this.#need().addChatLabel(jid, String(labelId)); }
   async removeChatLabel(jid, labelId) { await this.#need().removeChatLabel(jid, String(labelId)); }
+  /**
+   * Load every WhatsApp Business label (and which chat has which) again from WhatsApp. Labels are sent only when
+   * a number is first linked, so a number linked earlier needs this once. The phone's labels are not changed.
+   */
+  async refreshLabels() {
+    const s = this.#need();
+    await s.authState.keys.set({ 'app-state-sync-version': { regular: null, regular_low: null, regular_high: null } });
+    await s.resyncAppState(['regular', 'regular_low', 'regular_high'], true);
+    this.hooks.onLabelsLoaded?.();
+  }
   /** Make a new label on the phone. */
   async createLabel(id, name, color = 0) { await this.#need().addLabel('', { id: String(id), name, color, deleted: false }); }
   /** Delete a label on the phone (WhatsApp takes it off every chat). */
