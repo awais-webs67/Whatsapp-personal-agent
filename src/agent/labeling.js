@@ -6,6 +6,7 @@ import { all, get, run, now } from '../db.js';
 import { log, emit } from '../core.js';
 import * as wa from '../wa/manager.js';
 import { taskEvent } from './task-log.js';
+import { stepJob, finishJob } from './jobs.js';
 
 const HOUR = 3_600_000;
 const list = (v) => (Array.isArray(v) ? v : v ? String(v).split(',') : []).map((x) => String(x).trim().toLowerCase()).filter(Boolean);
@@ -54,7 +55,7 @@ export function previewLabel(label, filters = {}, { create = false } = {}) {
 }
 
 /** Put the label on every matching chat that does not have it yet. Returns at once; the labels go on one by one. */
-export function labelChats(label, filters = {}, { taskId = null, gapMs = 1500, create = false } = {}) {
+export function labelChats(label, filters = {}, { taskId = null, gapMs = 1500, create = false, jobId = null } = {}) {
   const p = previewLabel(label, filters, { create });
   if (p.error) return p;
   const rows = findChats(filters);
@@ -70,11 +71,13 @@ export function labelChats(label, filters = {}, { taskId = null, gapMs = 1500, c
     let ok = 0;
     for (const c of rows) {
       if (await wa.applyLabel(c, name, { create }).catch(() => false)) ok++;
+      stepJob(jobId, rows.indexOf(c) + 1);
       await new Promise((r) => setTimeout(r, process.env.NODE_ENV === 'test' ? 0 : gapMs));
     }
     const line = `Label "${name}": ${ok} of ${rows.length} chats labelled on WhatsApp${ok < rows.length ? ' (the rest got the tag only)' : ''}.`;
     log('info', 'labels', line);
     if (taskId) taskEvent(taskId, line, { kind: 'info' });
+    finishJob(jobId, line);
   })();
   return { label: name, tag, chats: p.chats, examples: p.examples, existing: p.exists, made: p.create };
 }
@@ -96,7 +99,7 @@ export function previewUnlabel(label, filters = {}, { deleteLabel = false } = {}
  * Take a label off chats (those matching the filters, or every chat that has it). With deleteLabel and no
  * filters the label itself is deleted on the phone (every copy of that name), which takes it off every chat.
  */
-export function unlabelChats(label, filters = {}, { deleteLabel = false, taskId = null, gapMs = 800 } = {}) {
+export function unlabelChats(label, filters = {}, { deleteLabel = false, taskId = null, gapMs = 800, jobId = null } = {}) {
   const p = previewUnlabel(label, filters, { deleteLabel });
   if (p.error) return p;
   const found = existing(label);
@@ -115,15 +118,18 @@ export function unlabelChats(label, filters = {}, { deleteLabel = false, taskId 
       const line = `Label "${p.label}" deleted on WhatsApp (${ok} of ${found.length} cop${found.length === 1 ? 'y' : 'ies'}); it is off ${rows.length} chats.`;
       log('info', 'labels', line);
       if (taskId) taskEvent(taskId, line, { kind: 'changed' });
+      finishJob(jobId, line);
       return;
     }
     for (const c of rows) {
       for (const l of found.filter((x) => x.accountId === c.account_id)) if (await wa.removeLabel(c, l).catch(() => false)) ok++;
+      stepJob(jobId, rows.indexOf(c) + 1);
       await new Promise((r) => setTimeout(r, process.env.NODE_ENV === 'test' ? 0 : gapMs));
     }
     const line = `Label "${p.label}" taken off ${ok} of ${rows.length} chats on WhatsApp.`;
     log('info', 'labels', line);
     if (taskId) taskEvent(taskId, line, { kind: 'changed' });
+    finishJob(jobId, line);
   })();
   return { label: p.label, chats: p.chats, examples: p.examples, deleted: p.delete, copies: p.copies, removed: true };
 }

@@ -34,7 +34,7 @@ function shell(me) {
   // Accounts (hub): the admin also manages clients; a client sees how much shared AI is left today.
   if (me?.role === 'admin' && !ROUTES.some((r) => r[0] === 'clients')) ROUTES.push(['clients', 'Clients', 'users', clients, 'Admin']);
   const banner = viewingBanner(me);
-  const who = me ? h('small.muted', {}, me.viewing ? `Signed in as ${me.username}` : `${me.name || me.username}${!me.viewing && me.role === 'client' && me.sharedAi ? ` · AI today ${me.aiUsedToday}${me.aiDaily ? `/${me.aiDaily}` : ''}` : ''}`) : null;
+  const who = me ? h('small', {}, me.viewing ? `Viewing as ${me.username}` : me.role === 'client' && me.sharedAi ? `AI today ${me.aiUsedToday}${me.aiDaily ? `/${me.aiDaily}` : ''}` : me.role === 'admin' ? 'Admin' : 'Owner') : null;
   const pilot = toggle(S.autopilot, async (on) => {
     await act(null, () => PUT('/api/settings', { autopilot: on }), on ? 'Autopilot on: the agent replies by itself' : 'Autopilot off: nothing is sent automatically');
     S.autopilot = on;
@@ -42,11 +42,14 @@ function shell(me) {
   const reader = toggle(true, async (on) => {
     await act(null, () => PUT('/api/settings', { reading: { auto: on } }), on ? 'The agent keeps reading chats that change' : 'Reading new chats is off');
   }, 'Read new chats');
+  // Bottom of the sidebar: the two account switches, then who is signed in.
+  const initials = String(me?.name || me?.username || 'Owner').split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase();
   const foot = h('div.foot', {},
-    h('div.pilot', {}, h('span', {}, 'Agent on', h('small', {}, 'Master switch for all campaigns')), pilot),
-    h('div.pilot', {}, h('span', {}, 'Read chats', h('small', {}, 'Keeps notes on chats that change')), reader),
-    who,
-    h('button.linkbtn', { onclick: () => POST('/api/auth/logout').then(() => location.reload()) }, 'Sign out'));
+    h('div.foot-switches', {},
+      h('div.pilot', {}, h('span', {}, 'Agent', h('small', {}, 'Replies and follow-ups')), pilot),
+      h('div.pilot', {}, h('span', {}, 'Read chats', h('small', {}, 'Notes on changed chats')), reader)),
+    h('div.foot-user', {}, h('span.avatar', { 'aria-hidden': 'true' }, initials), h('div.grow', {}, h('b', {}, me?.name || me?.username || 'Owner'), who),
+      h('button.iconbtn', { title: 'Sign out', 'aria-label': 'Sign out', onclick: () => POST('/api/auth/logout').then(() => location.reload()) }, ico('log-out', 'sm'))));
   // Phones: four main pages in the bottom bar; everything else (and the switches) under "More".
   const more = h('button.more', { type: 'button', 'aria-label': 'More pages and switches', onclick: () => openMore() }, ico('menu'), h('span', {}, 'More'));
   const aside = h('aside.nav', {},

@@ -95,6 +95,13 @@ export function campaignContext(taskId) {
   if (!t) return null;
   const p = parseParams(t);
   const c = t.kind === 'auto' ? configOf(t) : p;
+  // A task inside a campaign carries the campaign's instructions, files and layout too.
+  const parent = t.parent_id ? campaignContext(t.parent_id) : null;
+  if (parent) {
+    return { ...parent, id: t.id, title: parent.title, kind: t.kind, isDefault: parent.isDefault,
+      instructions: [parent.instructions, String(c.instructions || '').trim()].filter(Boolean).join('\n'), format: String(c.format || '').trim() || parent.format,
+      followupStyle: String(c.followupStyle || '').trim() || parent.followupStyle, files: [...parent.files, ...(Array.isArray(p.files) ? p.files : [])] };
+  }
   return { id: t.id, title: t.title, kind: t.kind, isDefault: !!p.isDefault, instructions: String(c.instructions || '').trim(), format: String(c.format || '').trim(),
     followupStyle: String(c.followupStyle || '').trim(), files: Array.isArray(p.files) ? p.files : [],
     offer: String(c.offer || '').trim(), prices: c.prices || '', links: String(c.links || '').trim(), shopLink: String(c.shopLink || '').trim() };

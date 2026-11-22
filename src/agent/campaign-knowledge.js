@@ -86,6 +86,8 @@ export function copyKnowledge(fromId, toId, source = 'dashboard') {
 export function knowledgeSettings(settings, taskId) {
   const t = taskId && taskOf(taskId);
   if (!t) return settings;
+  // A task inside a campaign uses the campaign's knowledge, then anything of its own.
+  if (t.parent_id) settings = knowledgeSettings(settings, t.parent_id);
   const p = parse(t);
   const b = { ...settings.business };
   for (const [k, bk] of KNOW) if (bk && p[k] !== undefined && p[k] !== null && String(p[k]).trim() !== '') b[bk] = p[k];

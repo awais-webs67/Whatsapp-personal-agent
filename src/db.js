@@ -206,7 +206,7 @@ CREATE TABLE IF NOT EXISTS commands (
 );
 `);
 // Additive migrations for databases created by earlier versions.
-for (const sql of ['ALTER TABLE accounts ADD COLUMN self_jid TEXT', "ALTER TABLE providers ADD COLUMN use_for TEXT NOT NULL DEFAULT 'all'", 'ALTER TABLE followups ADD COLUMN task_id INTEGER', 'ALTER TABLE tasks ADD COLUMN ignore_quiet INTEGER NOT NULL DEFAULT 0', 'ALTER TABLE commands ADD COLUMN thread_id INTEGER', 'ALTER TABLE tasks ADD COLUMN thread_id INTEGER', 'ALTER TABLE chats ADD COLUMN tags TEXT', 'ALTER TABLE tasks ADD COLUMN params TEXT', 'ALTER TABLE chats ADD COLUMN campaign_id INTEGER', 'ALTER TABLE chats ADD COLUMN ad_id TEXT', 'ALTER TABLE chats ADD COLUMN ad_title TEXT', 'ALTER TABLE chats ADD COLUMN profile TEXT']) {
+for (const sql of ['ALTER TABLE accounts ADD COLUMN self_jid TEXT', "ALTER TABLE providers ADD COLUMN use_for TEXT NOT NULL DEFAULT 'all'", 'ALTER TABLE followups ADD COLUMN task_id INTEGER', 'ALTER TABLE tasks ADD COLUMN ignore_quiet INTEGER NOT NULL DEFAULT 0', 'ALTER TABLE commands ADD COLUMN thread_id INTEGER', 'ALTER TABLE tasks ADD COLUMN thread_id INTEGER', 'ALTER TABLE chats ADD COLUMN tags TEXT', 'ALTER TABLE tasks ADD COLUMN params TEXT', 'ALTER TABLE chats ADD COLUMN campaign_id INTEGER', 'ALTER TABLE chats ADD COLUMN ad_id TEXT', 'ALTER TABLE chats ADD COLUMN ad_title TEXT', 'ALTER TABLE chats ADD COLUMN profile TEXT', 'ALTER TABLE tasks ADD COLUMN parent_id INTEGER']) {
   try { db.exec(sql); } catch { /* column already exists */ }
 }
 

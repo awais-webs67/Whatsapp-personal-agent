@@ -29,7 +29,7 @@ import { knowledgeOf, saveKnowledge, copyKnowledge, KNOW } from './agent/campaig
 import * as email from './email/index.js';
 import { setEmailStats } from './agent/tasks.js';
 import { handleCommand, startCommander, listThreads, newThread, campaignThread } from './agent/commander.js';
-import { listTasks, createTask, controlTask, startTasks } from './agent/tasks.js';
+import { listTasks, createTask, controlTask, startTasks, taskView } from './agent/tasks.js';
 import { taskEvents } from './agent/task-log.js';
 import { startWatchdog, health } from './agent/watchdog.js';
 import { report } from './agent/reports.js';
@@ -481,6 +481,15 @@ app.post('/api/campaigns/:id/members', wrap((req) => {
   const filters = { adText: b.adText, keywords: b.keywords, hours: b.hours, days: b.days, tags: b.tags, stage: b.stage };
   if (b.dryRun) { const { ids, ...p } = previewMembers(campaignRow(req.params.id).id, filters); return p; }
   return addMembers(campaignRow(req.params.id).id, filters, 'dashboard');
+}));
+// The tasks inside one campaign (work started from its Command), each with its live progress and next message.
+app.get('/api/campaigns/:id/tasks', wrap((req) => {
+  const t = campaignRow(req.params.id);
+  return all("SELECT * FROM tasks WHERE parent_id = ? AND status != 'removed' ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END, id DESC LIMIT 100", t.id).map((x) => {
+    const v = taskView(x);
+    const next = get("SELECT f.due_at, COALESCE(c.name, '+' || c.phone) who FROM followups f JOIN chats c ON c.id = f.chat_id WHERE f.task_id = ? AND f.status = 'approved' ORDER BY f.due_at LIMIT 1", x.id);
+    return { ...v, nextSend: next && x.status === 'active' ? { at: next.due_at, who: next.who } : null, steps: taskEvents(x.id, 6) };
+  });
 }));
 app.get('/api/campaigns/:id/messages', wrap((req) => {
   const t = campaignRow(req.params.id);

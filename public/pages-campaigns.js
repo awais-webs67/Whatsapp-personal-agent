@@ -10,6 +10,7 @@ const TYPES = {
   auto: { label: 'Always on', tone: 'auto', icon: 'radio-tower', title: 'Always on, for new leads', hint: 'New leads join by the ad they came from, words in their first message, a label or a number. It answers them with its own instructions and follows up on its own hours.', best: 'Ads and inbound leads' },
   batch: { label: 'One-time', tone: 'once', icon: 'send', title: 'One-time, to people in your chats', hint: 'Pick people already in your chats by period, product, stage or tag. Each one gets a personal message, spaced out.', best: 'Offers, reminders, win-backs' },
   scheduled: { label: 'Scheduled', tone: 'sched', icon: 'calendar-clock', title: 'Scheduled', hint: 'Repeats an instruction on a schedule.', best: 'Daily reports' },
+  job: { label: 'Job', tone: 'sched', icon: 'list-checks', title: 'Job', hint: 'Work done for a campaign.', best: '' },
   analysis: { label: 'Reading', tone: 'read', icon: 'book-open', title: 'Reading', hint: 'Reads chats and learns from them.', best: 'Learning' },
   email: { label: 'Email', tone: 'email', icon: 'mail', title: 'Email campaign', hint: 'Personal cold or follow-up emails from your own mailbox: a sequence in one thread, warm-up, office hours, unsubscribe, stops on reply.', best: 'Cold outreach to business emails' },
 };
@@ -72,7 +73,8 @@ export function campaigns(arg, sub) {
   const draw = (list) => {
     last = list;
     const q = search.value.trim().toLowerCase();
-    const shown = list.filter((t) => ['active', 'paused', 'done', 'failed'].includes(t.status));
+    const kids = list.filter((t) => t.parent_id).reduce((m, t) => ({ ...m, [t.parent_id]: [...(m[t.parent_id] || []), t] }), {});
+    const shown = list.filter((t) => !t.parent_id && ['active', 'paused', 'done', 'failed'].includes(t.status));
     const counts = { all: shown.length, running: shown.filter((t) => t.status === 'active').length, auto: shown.filter((t) => t.kind === 'auto').length, batch: shown.filter((t) => t.kind === 'batch').length, email: shown.filter((t) => t.kind === 'email').length, done: shown.filter((t) => ['done', 'failed'].includes(t.status)).length };
     set(filterBar, [['all', 'All'], ['running', 'Running'], ['auto', 'Always on'], ['batch', 'One-time'], ['email', 'Email'], ['done', 'Finished']].map(([k, l]) =>
       h(`button${filter === k ? '.on' : ''}`, { onclick: () => { filter = k; draw(last); } }, l, h('span', {}, counts[k]))));
@@ -99,7 +101,7 @@ export function campaigns(arg, sub) {
         const open = () => { location.hash = `#/campaigns/${t.id}`; };
         return h(`tr.${t.status}`, { onclick: (e) => { if (!e.target.closest('.switch, input, a, button')) open(); } },
           h('td.csw', {}, sw),
-          h('td.cname', {}, h('div.cname-in', {}, badge(t.kind), h('div', {}, h('a', { href: `#/campaigns/${t.id}`, dir: 'auto' }, t.title), h('small', {}, `${ty.label}${c.isDefault ? ' · default' : ''} · #${t.id}`)))),
+          h('td.cname', {}, h('div.cname-in', {}, badge(t.kind), h('div', {}, h('a', { href: `#/campaigns/${t.id}`, dir: 'auto' }, t.title), h('small', {}, `${ty.label}${c.isDefault ? ' · default' : ''} · #${t.id}`, (kids[t.id] || []).filter((k) => k.status === 'active').length ? h('span.ctaskcount', {}, `${(kids[t.id] || []).filter((k) => k.status === 'active').length} running task${(kids[t.id] || []).filter((k) => k.status === 'active').length === 1 ? '' : 's'}`) : null)))),
           h('td.cdel', {}, pill(t), h('small', { dir: 'auto' }, st.line), st.pct != null ? h('div.cprog.thin', {}, h('i', { style: `width:${Math.round(st.pct)}%` })) : null),
           h('td.cnum', {}, h('span', {}, ico(t.kind === 'email' ? 'mail' : 'smartphone', 'sm'), where)),
           h('td.n', {}, cell(n.people)), h('td.n', {}, cell(n.sent)), h('td.n', {}, cell(n.replied)), h('td.n', {}, cell(n.bought)),
@@ -136,11 +138,11 @@ function campaignPage(id, startTab) {
           t.kind === 'scheduled' ? ctl('run', 'Run now') : null, c.isDefault ? null : ctl('remove', 'Remove', '.ghost.danger'))),
       h('div.chero-stats', {}, st.metrics.map(([n, l]) => metric(n, l)), t.stats && ['auto', 'batch'].includes(t.kind) ? metric(t.stats.replied ?? 0, 'Replied') : null, t.kind === 'email' && t.stats ? metric(t.stats.bounced ?? 0, 'Bounced') : null),
       st.pct != null ? h('div.chero-prog', {}, h('div.cprog', {}, h('i', { style: `width:${Math.round(st.pct)}%` })), h('span', {}, `${st.line} · ${Math.round(st.pct)}%`)) : h('div.chero-prog', {}, h('span', {}, st.line))));
-    const TABS = [['overview', 'Overview', 'layout-dashboard'], ['knowledge', 'Knowledge', 'book-open-text'], ['settings', 'Settings', 'sliders-horizontal'], ['people', 'People', 'users'], ['messages', 'Messages', 'messages-square'], ['test', 'Test', 'flask-conical'], ['command', 'Command', 'terminal'], ['log', 'Log', 'history']];
-    const has = (k) => ['overview', 'command', 'log'].includes(k) || (['knowledge', 'test'].includes(k) ? ['auto', 'batch'].includes(t.kind) : ['auto', 'batch', 'email'].includes(t.kind));
+    const TABS = [['overview', 'Overview', 'layout-dashboard'], ['tasks', 'Tasks', 'list-checks'], ['knowledge', 'Knowledge', 'book-open-text'], ['settings', 'Settings', 'sliders-horizontal'], ['people', 'People', 'users'], ['messages', 'Messages', 'messages-square'], ['test', 'Test', 'flask-conical'], ['command', 'Command', 'terminal'], ['log', 'Log', 'history']];
+    const has = (k) => ['overview', 'command', 'log'].includes(k) || (k === 'tasks' && ['auto', 'batch'].includes(t.kind)) || (['knowledge', 'test'].includes(k) ? ['auto', 'batch'].includes(t.kind) : ['auto', 'batch', 'email'].includes(t.kind));
     if (!has(tab)) tab = 'overview';
     set(tabsBar, TABS.filter(([k]) => has(k)).map(([k, label, icon]) => h(`button${tab === k ? '.on' : ''}`, { role: 'tab', 'aria-selected': tab === k, onclick: () => { tab = k; history.replaceState(null, '', `#/campaigns/${t.id}/${k}`); load(); } }, ico(icon, 'sm'), label)));
-    if (redrawBody) ({ overview, knowledge: knowledgeTab, command: commandTab, people, messages, settings: settingsTab, test: testTab, log: logTab }[tab])();
+    if (redrawBody) ({ overview, tasks: tasksTab, knowledge: knowledgeTab, command: commandTab, people, messages, settings: settingsTab, test: testTab, log: logTab }[tab])();
   }
 
   function overview() {
@@ -318,6 +320,14 @@ function campaignPage(id, startTab) {
       now_.push(['send', h('span', {}, 'Next message to ', h('a', { href: `#/inbox/${t.nextSend.chatId}` }, t.nextSend.who), mins <= 0 ? (t.waiting ? ' · goes out as soon as sending can start' : ' · going out now') : ` at ${clock(t.nextSend.at)} · in ${mins} min`)]);
     }
     if (t.waiting) now_.push(['circle-alert', t.waiting]);
+    // Tasks running inside this campaign, each with where it is.
+    if (['auto', 'batch'].includes(t.kind)) {
+      for (const x of (await GET(`/api/campaigns/${t.id}/tasks`).catch(() => [])).filter((k) => k.status === 'active').slice(0, 4)) {
+        const n = taskNow(x);
+        const mins = x.nextSend ? Math.round((x.nextSend.at - Date.now()) / 60_000) : null;
+        now_.push(['list-checks', h('span', {}, h('b', {}, `Task #${x.id} · ${n.phase}: `), n.line, x.nextSend ? ` · next to ${x.nextSend.who} ${mins <= 0 ? 'now' : `in ${mins} min`}` : ''), n.total ? (n.done / n.total) * 100 : null]);
+      }
+    }
     if (!now_.length && t.status === 'active') now_.push(['radio', t.kind === 'auto' ? 'Waiting for new leads and quiet chats to follow up' : t.kind === 'email' ? `${num(t.stats?.waiting || 0)} emails to go, sent in office hours` : t.kind === 'scheduled' ? `Next run ${t.next_run_at ? `at ${when(t.next_run_at)}` : 'not set'}` : 'Nothing left to send']);
     if (!now_.length) now_.push(['check-check', t.status === 'done' ? 'Finished' : 'Not running']);
     const steps = await GET(`/api/tasks/${t.id}/events?limit=8`).catch(() => []);
@@ -435,6 +445,56 @@ function campaignPage(id, startTab) {
     input.focus();
   }
 
+  /** Where one task inside the campaign is: its phase (reading, writing, sending), done of total, and what comes next. */
+  function taskNow(x) {
+    const p = x.progress || {};
+    if (x.kind === 'job') {
+      const j = p.job || {};
+      return { phase: x.status === 'done' ? 'Done' : 'Working', done: j.done, total: j.total, line: x.status === 'done' ? x.last_result : `${num(j.done)} of ${num(j.total)} ${j.what || 'done'}` };
+    }
+    if (x.kind === 'analysis') {
+      if (p.reading) return { phase: 'Reading chats', done: p.reading.done, total: p.reading.total, line: `Reading ${num(p.reading.done)} of ${num(p.reading.total)}${p.reading.current ? ` · now ${p.reading.current}` : ''}` };
+      return { phase: x.status === 'done' ? 'Done' : 'Learning', line: x.last_result || 'Learning from what it read' };
+    }
+    if (x.kind === 'batch') {
+      const sent = p.sent || 0, queued = p.queued || 0, drafts = p.drafts || 0;
+      if (p.reading) return { phase: 'Reading and writing', done: p.reading.done, total: p.reading.total, line: `Read ${num(p.reading.done)} of ${num(p.reading.total)} chats${p.reading.current ? ` · now ${p.reading.current}` : ''} · ${num(drafts + queued + sent)} messages written` };
+      if (drafts && !queued) return { phase: 'Waiting for you', done: sent, total: sent + drafts, line: `${num(drafts)} message${drafts === 1 ? '' : 's'} wait for your OK` };
+      if (queued) return { phase: 'Sending', done: sent, total: sent + queued, line: `${num(sent)} of ${num(sent + queued)} sent` };
+      return { phase: x.status === 'done' ? 'Done' : 'Finished sending', done: sent, total: sent, line: x.last_result || `${num(sent)} sent` };
+    }
+    if (x.kind === 'scheduled') return { phase: x.status === 'active' ? 'Scheduled' : 'Done', line: `${x.scheduleText}${x.next_run_at && x.status === 'active' ? ` · next run ${when(x.next_run_at)}` : ''}${x.last_result ? ` · last: ${x.last_result.slice(0, 120)}` : ''}` };
+    return { phase: x.status, line: x.last_result || '' };
+  }
+  const PHASES = { batch: ['Reading and writing', 'Waiting for you', 'Sending', 'Done'], analysis: ['Reading chats', 'Learning', 'Done'] };
+
+  /** Work started inside this campaign (from its Command), each with live progress. */
+  async function tasksTab() {
+    const list = await GET(`/api/campaigns/${t.id}/tasks`).catch(() => []);
+    const ctl = (x, action, label, cls = '') => h(`button.btn.sm${cls}`, { onclick: (e) => (action !== 'remove' || confirm(`Stop and remove task #${x.id}? Messages it has not sent are cancelled.`)) && act(e.target, async () => { await PATCH(`/api/tasks/${x.id}`, { action }); tasksTab(); }) }, label);
+    const card = (x) => {
+      const n = taskNow(x);
+      const pct = n.total ? Math.round((n.done / n.total) * 100) : x.status === 'done' ? 100 : null;
+      const mins = x.nextSend ? Math.round((x.nextSend.at - Date.now()) / 60_000) : null;
+      const phases = PHASES[x.kind];
+      return h(`div.card.ctask.${x.status}`, {},
+        h('div.ctask-top', {}, badge(x.kind === 'job' ? 'job' : x.kind),
+          h('div.grow', {}, h('b', { dir: 'auto' }, x.title), h('small', {}, `Task #${x.id} · started ${rel(x.created_at)} ago`)),
+          pill(x),
+          h('div.row', {}, x.status === 'active' && x.kind !== 'job' ? ctl(x, 'pause', 'Pause') : x.status === 'paused' ? ctl(x, 'resume', 'Resume', '.primary') : null, ['active', 'paused'].includes(x.status) && x.kind !== 'job' ? ctl(x, 'remove', 'Stop', '.ghost.danger') : null)),
+        phases ? h('div.cphases', {}, phases.map((ph) => h(`span${ph === n.phase ? '.on' : phases.indexOf(ph) < phases.indexOf(n.phase) ? '.past' : ''}`, {}, ph))) : null,
+        h('div.ctask-now', {}, h('span.ctask-phase', {}, n.phase), h('span', { dir: 'auto' }, n.line)),
+        pct != null ? h('div.cprog', {}, h('i', { style: `width:${pct}%` })) : null,
+        x.nextSend ? h('div.ctask-next', {}, ico('send', 'sm'), `Next message to ${x.nextSend.who} ${mins <= 0 ? 'now' : `in ${mins} min (${clock(x.nextSend.at)})`}`) : null,
+        x.waiting ? h('div.note.warn', { style: 'margin:0' }, x.waiting) : null,
+        x.steps?.length ? h('ol.clive-feed', {}, x.steps.map((r) => h(`li.${r.kind}`, {}, ico({ read: 'book-open', wrote: 'pen-line', sent: 'send', skipped: 'skip-forward', failed: 'circle-alert', paused: 'pause', changed: 'settings-2', done: 'check-check', info: 'info' }[r.kind] || 'info', 'sm'), h('time', {}, clock(r.ts)), h('span', { dir: 'auto' }, r.text)))) : null);
+    };
+    set(body, h('div.stack', {},
+      explain('list-checks', 'Tasks of this campaign', 'Work you ask for in this campaign’s Command, such as “last 5 days ki chats parh kar follow-up bhejo” or “in sab ko label do”, runs here as a task. Each shows what it is doing right now (reading, writing, sending), how far it is, and when the next message goes.',
+        h('button.btn.primary', { onclick: () => { tab = 'command'; history.replaceState(null, '', `#/campaigns/${t.id}/command`); load(); } }, ico('terminal', 'sm'), 'Give it a task')),
+      list.length ? list.map(card) : h('div.cempty', {}, h('b', {}, 'No tasks yet'), h('p', {}, 'Open Command and tell this campaign what to do. Its work shows here with live progress.'))));
+  }
+
   let cmdReload = null;
   /** Commands inside the campaign: everything said here is about this campaign. */
   async function commandTab() {
@@ -485,7 +545,7 @@ function campaignPage(id, startTab) {
       h('div.card', {}, h('header', {}, h('h2', {}, 'Settings history')), h('div.pad', {}, changes.length ? h('ol.tlog', {}, changes.map((r) => h('li', {}, h('time', {}, when(r.ts)), h('span.pill', {}, r.source), h('span', { dir: 'auto' }, `${r.field}: ${show(r.before)} → ${show(r.after)}`)))) : h('div.muted', {}, 'No changes yet.')))));
   }
 
-  live.on('tasks', () => { if (tab === 'overview') load(); else load(false); });
+  live.on('tasks', () => { if (tab === 'overview' || tab === 'tasks') load(); else load(false); });
   live.on('command', () => { if (tab === 'command') cmdReload?.(); });
   // The “in N min” countdown stays right while the page is open.
   const tick = setInterval(() => { if (!el.isConnected) return clearInterval(tick); if (tab === 'overview' && t) drawLive(body.querySelector('.clive') || h('div')); }, 30_000);

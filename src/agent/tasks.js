@@ -61,14 +61,15 @@ export function describeSchedule(s) {
   return 'Unknown schedule';
 }
 
-export function createTask({ title, instruction, kind = 'scheduled', schedule = { type: 'once' }, ignoreQuiet = false, threadId = null }) {
+export function createTask({ title, instruction, kind = 'scheduled', schedule = { type: 'once' }, ignoreQuiet = false, threadId = null, parentId = null, status = 'active', params = null }) {
   const text = String(instruction || '').trim();
   if (!text) throw new Error('Describe what the task should do');
   const sched = kind !== 'scheduled' ? null : normaliseSchedule(schedule);
-  const { lastInsertRowid } = run('INSERT INTO tasks (title, instruction, kind, schedule, status, next_run_at, runs, ignore_quiet, thread_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
-    String(title || text).slice(0, 120), text.slice(0, 1000), kind, JSON.stringify(sched), 'active', kind !== 'scheduled' ? null : nextRun(sched), 0, ignoreQuiet ? 1 : 0, threadId, now());
+  const { lastInsertRowid } = run('INSERT INTO tasks (title, instruction, kind, schedule, status, next_run_at, runs, ignore_quiet, thread_id, parent_id, params, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+    String(title || text).slice(0, 120), text.slice(0, 1000), kind, JSON.stringify(sched), status, kind !== 'scheduled' ? null : nextRun(sched), 0, ignoreQuiet ? 1 : 0, threadId, parentId ? Number(parentId) : null, params ? JSON.stringify(params) : null, now());
   const id = Number(lastInsertRowid);
   taskEvent(id, `Task created${sched ? ` (${describeSchedule(sched)})` : ''}: ${text.slice(0, 300)}`, { kind: 'info' });
+  if (parentId) taskEvent(Number(parentId), `New task #${id}: ${String(title || text).slice(0, 200)}`, { kind: 'info' });
   log('info', 'tasks', `Task #${id} created: ${String(title || text).slice(0, 80)}${sched ? ` (${describeSchedule(sched)})` : ''}`);
   emit('tasks');
   return id;
@@ -118,6 +119,8 @@ export function normaliseSchedule(s = {}) {
 export function taskView(t) {
   const schedule = parse(t.schedule, null);
   const view = { ...t, schedule, scheduleText: t.kind === 'auto' ? 'Automatic: always on' : t.kind === 'batch' ? 'Follow-up batch' : t.kind === 'analysis' ? 'Reading and learning from chats' : describeSchedule(schedule) };
+  // A job inside a campaign (labels, adding people): its own progress, done/total.
+  if (t.kind === 'job') { const p = parse(t.params, {}) || {}; return { ...view, scheduleText: 'Job', progress: { job: { done: p.done || 0, total: p.total || 0, what: p.what || '' } }, waiting: null }; }
   if (t.kind === 'email') return { ...view, scheduleText: 'Email campaign', stats: emailStatsRef ? emailStatsRef(t.id) : null, progress: null, waiting: null };
   if (t.kind === 'auto') {
     const c = configOf(t);

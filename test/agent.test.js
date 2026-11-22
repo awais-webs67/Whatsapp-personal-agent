@@ -1764,3 +1764,23 @@ test('inside a campaign the agent searches every chat, and "this product" means 
   assert.match(brief, /"zebrapro"/);
   (await import('../src/agent/tasks.js')).controlTask(t.id, 'remove');
 });
+
+test('work started inside a campaign becomes a task of that campaign, using its knowledge', async () => {
+  const camps = await import('../src/agent/campaigns.js');
+  const kn = await import('../src/agent/campaign-knowledge.js');
+  const { handleCommand } = await import('../src/agent/commander.js');
+  const { campaignContext } = camps;
+  const t = camps.createAuto({ name: 'Parent campaign', keywords: ['parentcamp'] }, 'test');
+  kn.saveKnowledge(t.id, { offer: 'Parent offer Rs 777', instructions: 'Always mention the parent offer' }, 'test');
+  cmdReplies = [JSON.stringify({ action: 'start_followups', args: { days: 5, instruction: 'remind them', send: false } }), JSON.stringify({ reply: 'Shuru kar diya.' })];
+  await handleCommand('last 5 din ki chats parh kar follow up bhejo', { campaignId: t.id });
+  const child = get('SELECT * FROM tasks WHERE parent_id = ? ORDER BY id DESC LIMIT 1', t.id);
+  assert.ok(child, 'the batch is a task of the campaign');
+  assert.equal(child.kind, 'batch');
+  assert.match(campaignContext(child.id).instructions, /parent offer/, 'it carries the campaign rules');
+  const { getSettings } = await import('../src/core.js');
+  assert.equal(camps.withCampaign(getSettings(), child.id).business.catalog, 'Parent offer Rs 777', 'and the campaign products');
+  const tasks = await import('../src/agent/tasks.js');
+  try { tasks.controlTask(child.id, 'remove'); } catch { /* already done */ }
+  tasks.controlTask(t.id, 'remove');
+});

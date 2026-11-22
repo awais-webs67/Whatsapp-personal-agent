@@ -89,6 +89,7 @@ export function campaignBrief(id) {
 You can see and search ALL WhatsApp chats on every number (find_chats, read_chat), not only this campaign's people.
 "Is product", "is campaign ka product", "is offer" means what this campaign is about: ${product.length ? `the words ${product.map((w) => `"${w}"`).join(', ')}` : `"${t.title}"`}${product.length ? ` (campaign "${t.title}")` : ''}. Use these as find_chats words (and ad_text) when the owner says that.
 To bring found people into this campaign use add_to_campaign with the same filters.
+Work the owner asks for here (reading chats and sending follow-ups, labels, schedules) becomes a task of this campaign with live progress. When the owner says that from now on new people about something should be handled here, add those words to this campaign's keywords or ad_text with update_task (keep the words it already has).
 Everything in this conversation is about campaign #${t.id} unless the owner names another number. "Is", "ye", "this" and orders without a number mean campaign #${t.id}: pass id ${t.id} (task_id ${t.id}) to update_task, label_chats and the like. Do not start a new campaign unless the owner clearly asks for a new one.
 Where it is now:\n${campaignStatus(t)}`;
 }

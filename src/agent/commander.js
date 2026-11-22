@@ -21,6 +21,7 @@ import { learnFromChats, learnFromWebsite, learnFromProfile } from './learn.js';
 import { campaignQuick, campaignBrief } from './campaign-command.js';
 import { KNOW, knowledgeOf, saveKnowledge } from './campaign-knowledge.js';
 import { previewMembers, addMembers } from './members.js';
+import { startJob, finishJob } from './jobs.js';
 
 const MAX_STEPS = 8;
 const DAY = 86_400_000;
@@ -97,7 +98,7 @@ const TOOLS = {
       const s = getSettings().followup;
       const range = nums(a.interval_minutes).filter((n) => n > 0);
       const interval = range.length >= 2 ? [Math.min(...range), Math.max(...range)] : Math.max(1, range[0] || 5);
-      const taskId = createTask({ kind: 'batch', threadId: activeThread, ignoreQuiet: !!a.ignore_quiet_hours, title: `${audience === 'buyers' ? 'Reminders to buyers' : 'Follow-ups'}: ${String(a.instruction || 'quiet leads').slice(0, 80)}`, instruction: `${{ buyers: 'People who bought, ', non_buyers: 'People who did not buy, ', all: '' }[audience]}last ${days(a.days)} days${stageList(a.stages).length ? `, stages ${stageList(a.stages).join(', ')}` : ''}, every ${interval} min, ${a.send ? 'sends automatically' : 'drafts for approval'}. ${a.instruction || ''}`.trim() });
+      const taskId = createTask({ kind: 'batch', threadId: activeThread, parentId: activeCampaign, ignoreQuiet: !!a.ignore_quiet_hours, title: `${audience === 'buyers' ? 'Reminders to buyers' : 'Follow-ups'}: ${String(a.instruction || 'quiet leads').slice(0, 80)}`, instruction: `${{ buyers: 'People who bought, ', non_buyers: 'People who did not buy, ', all: '' }[audience]}last ${days(a.days)} days${stageList(a.stages).length ? `, stages ${stageList(a.stages).join(', ')}` : ''}, every ${interval} min, ${a.send ? 'sends automatically' : 'drafts for approval'}. ${a.instruction || ''}`.trim() });
       await runCampaign({ taskId, sinceDays: days(a.days), limit: Math.min(500, Number(a.limit) || 100), reanalyze: true, instruction: String(a.instruction || '').slice(0, 600), autoApprove: !!a.send, intervalMinutes: interval, stages: stageList(a.stages), audience, tags, keywords: Array.isArray(a.keywords) ? a.keywords : a.keywords ? [a.keywords] : [], accountIds: nums(a.numbers), startAt: Number(a.start_in_minutes) > 0 ? now() + Number(a.start_in_minutes) * 60_000 : null });
       if (!campaign.total) run("UPDATE tasks SET status = 'removed' WHERE id = ?", taskId); // nothing to do: no empty task left behind
       return { started: campaign.total > 0, ...(campaign.total ? {} : { reason: 'every matching chat already has a follow-up waiting, or has too few messages to follow up on' }), task_id: taskId, chats_being_read: campaign.total, interval_minutes: interval, first_at: Number(a.start_in_minutes) > 0 ? now() + Number(a.start_in_minutes) * 60_000 : null, mode: a.send ? 'sends automatically' : 'drafts wait for approval',
@@ -108,7 +109,7 @@ const TOOLS = {
     doc: 'schedule_task {"instruction": "what to do each time, in the owner\'s words", "every_minutes": 30} or {"instruction": "...", "daily_at": "10:00"} or {"instruction": "...", "at": "18:30"} - set up a task that runs later or repeatedly. The instruction is carried out like a new request each time.',
     run: (a) => {
       const schedule = a.every_minutes ? { type: 'every', minutes: Number(a.every_minutes) } : a.daily_at ? { type: 'daily', time: String(a.daily_at) } : { type: 'once', at: a.at ? String(a.at) : undefined };
-      const id = createTask({ kind: 'scheduled', threadId: activeThread, instruction: String(a.instruction || ''), title: a.title, schedule });
+      const id = createTask({ kind: 'scheduled', threadId: activeThread, parentId: activeCampaign, instruction: String(a.instruction || ''), title: a.title, schedule });
       const t = taskView(get('SELECT * FROM tasks WHERE id = ?', id));
       return { task_id: id, schedule: t.scheduleText, first_run: t.next_run_at ? new Date(t.next_run_at).toISOString() : null };
     },
@@ -152,7 +153,7 @@ const TOOLS = {
   analyse_chats: {
     doc: 'analyse_chats {"days": 90, "again": false} - read the customer chats of the period, record each one\'s stage and summary, then learn the owner\'s offers, prices and tone from them. Chats read before with nothing new since are skipped; "again": true reads them all again (only when the owner says again / dobara). Sends nothing.',
     run: async (a) => {
-      const taskId = createTask({ kind: 'analysis', threadId: activeThread, title: `Read and learn from chats (last ${days(a.days, 90)} days)`, instruction: 'Read every customer chat, record its stage and summary, then learn offers, prices and tone from the chats the owner answered.' });
+      const taskId = createTask({ kind: 'analysis', threadId: activeThread, parentId: activeCampaign, title: `Read and learn from chats (last ${days(a.days, 90)} days)`, instruction: 'Read every customer chat, record its stage and summary, then learn offers, prices and tone from the chats the owner answered.' });
       await runCampaign({ taskId, analyzeOnly: true, sinceDays: days(a.days, 90), limit: Math.min(1000, Number(a.limit) || 300), reanalyze: !!a.again });
       if (!campaign.total) run("UPDATE tasks SET status = 'removed' WHERE id = ?", taskId);
       if (campaign.total) return { started: true, task_id: taskId, chats_being_read: campaign.total };
@@ -263,7 +264,11 @@ const TOOLS = {
     doc: 'add_to_campaign {"id": 14, "ad_text": ["google flow"], "keywords": [], "hours": 5, "days": 0, "tags": [], "stage": ""} - bring people ALREADY in the chats into an always-on campaign (they move from their old campaign and get this one\'s replies and follow-ups). Use for "jo log X ad se aaye unhein is campaign mein daal do".',
     preview: (a) => { const { ids, ...p } = previewMembers(a.id || activeCampaign, labelFilters(a)); return p; },
     confirm: (p) => `${p.chats} log campaign "${p.campaign}" mein aa jayenge${p.examples.length ? ` (${p.examples.join(', ')}${p.chats > 5 ? '…' : ''})` : ''}. Abhi ye yahan hain: ${Object.entries(p.from).map(([k, n]) => `${k}: ${n}`).join(', ')}. In ke follow-ups ab is campaign ke hisaab se honge.`,
-    run: (a) => addMembers(a.id || activeCampaign, labelFilters(a), 'command'),
+    run: (a) => {
+      const r = addMembers(a.id || activeCampaign, labelFilters(a), 'command');
+      if (r.added) finishJob(startJob(a.id || activeCampaign, `Bring ${r.added} people into this campaign`, r.added, 'added'), `${r.added} people joined: ${r.examples.join(', ')}${r.added > 5 ? '…' : ''}`);
+      return r;
+    },
   },
   refresh_labels: {
     doc: 'refresh_labels {} - load the WhatsApp Business labels again from the phone (when a label the owner made is not found).',
@@ -274,13 +279,21 @@ const TOOLS = {
     // A label not found may be one made on the phone that we never received: load the labels again and look once more.
     preview: async (a) => { let p = previewLabel(a.label, labelFilters(a), { create: !!a.create_new }); if (p.error) { await wa.refreshLabels().catch(() => {}); p = previewLabel(a.label, labelFilters(a), { create: !!a.create_new }); } return p; },
     confirm: (p) => p.error ? null : `"${p.label}" label ${p.chats} chat${p.chats === 1 ? '' : 's'} par lagega${p.examples.length ? ` (${p.examples.join(', ')}${p.chats > 5 ? '…' : ''})` : ''}. ${p.exists ? 'Ye label WhatsApp par pehle se hai, wahi use hoga.' : 'Ye NAYA label banega.'}${p.duplicates ? ` Note: is naam ke ${p.duplicates} labels hain.` : ''}`,
-    run: (a) => labelChats(a.label, labelFilters(a), { create: !!a.create_new }),
+    run: (a) => {
+      const p = previewLabel(a.label, labelFilters(a), { create: !!a.create_new });
+      const jobId = activeCampaign && !p.error && p.chats ? startJob(activeCampaign, `Put the label "${p.label}" on ${p.chats} chats`, p.chats, 'labelled') : null;
+      return labelChats(a.label, labelFilters(a), { create: !!a.create_new, jobId, taskId: activeCampaign });
+    },
   },
   remove_label: {
     doc: 'remove_label {"label": "Google Flow", "delete_label": false, "ad_text": [], "keywords": [], "campaign_id": null, "hours": 0, "days": 0, "tags": [], "stage": ""} - take a WhatsApp label OFF chats: those matching the filters, or every chat that has it when no filter is given. "delete_label": true (with no filters) deletes the label itself on WhatsApp, every copy of that name. Use for "label hata do", "remove the label", "ye label delete karo", and to undo a label_chats.',
     preview: async (a) => { let p = previewUnlabel(a.label, labelFilters(a), { deleteLabel: !!a.delete_label }); if (p.error) { await wa.refreshLabels().catch(() => {}); p = previewUnlabel(a.label, labelFilters(a), { deleteLabel: !!a.delete_label }); } return p; },
     confirm: (p) => p.error ? null : p.delete ? `"${p.label}" label WhatsApp se poora DELETE ho jayega${p.copies > 1 ? ` (is naam ke ${p.copies} labels, sab)` : ''}. Ye ${p.chats} chats se hat jayega.` : `"${p.label}" label ${p.chats} chat${p.chats === 1 ? '' : 's'} se hatega${p.examples.length ? ` (${p.examples.join(', ')}${p.chats > 5 ? '…' : ''})` : ''}. Label khud rahega.`,
-    run: (a) => unlabelChats(a.label, labelFilters(a), { deleteLabel: !!a.delete_label }),
+    run: (a) => {
+      const p = previewUnlabel(a.label, labelFilters(a), { deleteLabel: !!a.delete_label });
+      const jobId = activeCampaign && !p.error && p.chats ? startJob(activeCampaign, p.delete ? `Delete the label "${p.label}"` : `Take the label "${p.label}" off ${p.chats} chats`, p.chats, 'done') : null;
+      return unlabelChats(a.label, labelFilters(a), { deleteLabel: !!a.delete_label, jobId, taskId: activeCampaign });
+    },
   },
   help: {
     doc: 'help {} - list what the owner can say in Command.',
