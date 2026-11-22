@@ -1813,3 +1813,21 @@ test('a reply quotes the message it answers, on WhatsApp and in the chat', async
   assert.equal(row.reply_to, 'quote-me-1');
   assert.equal(row.reply_text, 'Delivery kab tak hogi?');
 });
+
+test('labelling skips chats that already have the label on the phone, even when the phone names them by hidden ID', async () => {
+  const { previewLabel, labelChats } = await import('../src/agent/labeling.js');
+  wa.onLabel(1, { id: '31', name: 'Flow Test', color: 2 });
+  const a = get("SELECT * FROM chats WHERE jid = '444@s.whatsapp.net'");
+  const b = get("SELECT * FROM chats WHERE account_id = 1 AND id != ? AND jid NOT LIKE '%@g.us' ORDER BY id LIMIT 1", a.id);
+  for (const c of [a, b]) run('INSERT INTO messages (chat_id, wa_id, from_me, by, type, text, ts) VALUES (?,?,?,?,?,?,?)', c.id, `fu-${c.id}`, 0, 'customer', 'text', 'flowtestultra ka price?', now());
+  run('UPDATE chats SET last_in_at = ? WHERE id IN (?, ?)', now(), a.id, b.id);
+  // The phone says chat a has the label, naming it by a hidden ID whose number is a's.
+  wa.onLabelChat(1, '12345@lid', '31', 'add', a.jid);
+  const p = previewLabel('flow test', { keywords: ['flowtestultra'], hours: 48 });
+  assert.equal(p.matched, 2);
+  assert.equal(p.already, 1, 'a already has it');
+  assert.equal(p.chats, 1);
+  const r = labelChats('flow test', { keywords: ['flowtestultra'], hours: 48 }, { gapMs: 0 });
+  assert.equal(r.chats, 1);
+  assert.equal(r.already, 1);
+});

@@ -53,7 +53,7 @@ function hooksFor(account) {
     // No labels known for this number yet (and not tried in the last day): load them from WhatsApp once.
     needsLabels: () => !get('SELECT 1 x FROM wa_label_chats WHERE account_id = ? LIMIT 1', account.id) && now() - (Number(kvGet(`labelsTried:${account.id}`)) || 0) > 86_400_000 && (kvSet(`labelsTried:${account.id}`, now()), true),
     onLabelsLoaded: () => { const n = get('SELECT COUNT(*) n FROM wa_labels WHERE account_id = ? AND deleted = 0', account.id).n; log('info', 'whatsapp', `${account.name}: ${n} WhatsApp label${n === 1 ? '' : 's'} loaded`); emit('labels', { accountId: account.id }); },
-    onLabelChat: (jid, labelId, type) => onLabelChat(account.id, jid, labelId, type),
+    onLabelChat: (jid, labelId, type, alt) => onLabelChat(account.id, jid, labelId, type, alt),
     onContacts: (contacts) => {
       for (const c of contacts) {
         run('UPDATE chats SET name = COALESCE(name, ?), phone = COALESCE(phone, ?) WHERE account_id = ? AND jid = ?', c.name, c.phone, account.id, c.jid);
@@ -218,18 +218,26 @@ export function onLabel(accountId, l) {
   }
 }
 
-function chatByJid(accountId, jid) {
-  return get('SELECT * FROM chats WHERE account_id = ? AND (jid = ? OR jid = ? OR phone = ?)', accountId, jid, String(jid).split('@')[0] + '@s.whatsapp.net', String(jid).split('@')[0]);
+function chatByJid(accountId, jid, alt = null) {
+  for (const j of [jid, alt].filter(Boolean)) {
+    const n = String(j).split('@')[0].split(':')[0];
+    const c = get('SELECT * FROM chats WHERE account_id = ? AND (jid = ? OR jid = ? OR phone = ?)', accountId, j, `${n}@s.whatsapp.net`, n);
+    if (c) return c;
+  }
+  return null;
 }
 
-export function onLabelChat(accountId, jid, labelId, type) {
+export function onLabelChat(accountId, jid, labelId, type, alt = null) {
   // The phone's own record first, even for a chat or label we do not know yet.
   if (jid) {
-    if (type === 'remove') run('DELETE FROM wa_label_chats WHERE account_id = ? AND label_id = ? AND jid = ?', accountId, String(labelId), String(jid));
-    else run('INSERT OR IGNORE INTO wa_label_chats (account_id, label_id, jid) VALUES (?,?,?)', accountId, String(labelId), String(jid));
+    if (type === 'remove') run('DELETE FROM wa_label_chats WHERE account_id = ? AND label_id = ? AND (jid = ? OR jid = ? OR alt = ?)', accountId, String(labelId), String(jid), String(alt || ''), String(jid));
+    else {
+      run('INSERT OR IGNORE INTO wa_label_chats (account_id, label_id, jid, alt) VALUES (?,?,?,?)', accountId, String(labelId), String(jid), alt);
+      if (alt) run('UPDATE wa_label_chats SET alt = ? WHERE account_id = ? AND label_id = ? AND jid = ? AND alt IS NULL', alt, accountId, String(labelId), String(jid));
+    }
   }
   const label = get('SELECT * FROM wa_labels WHERE account_id = ? AND label_id = ?', accountId, String(labelId));
-  const chat = chatByJid(accountId, jid);
+  const chat = chatByJid(accountId, jid, alt);
   if (!label?.name || !chat) return;
   const tag = labelTag(label.name);
   const now_ = tagsOfChat(chat);
@@ -255,11 +263,18 @@ export function labelsList() {
   }));
 }
 
+/** Whether the phone says this chat has this label (by its number or its hidden ID), or we just put it on. */
+export function chatHasLabel(chat, label) {
+  if (String(chat.tags || '').includes(`,${labelTag(label.name)},`)) return true;
+  const n = String(chat.phone || '').replace(/\D/g, '');
+  return !!get('SELECT 1 x FROM wa_label_chats WHERE account_id = ? AND label_id = ? AND (jid = ? OR alt = ? OR jid = ? OR alt = ?) LIMIT 1', chat.account_id, label.label_id, chat.jid, chat.jid, `${n}@s.whatsapp.net`, `${n}@s.whatsapp.net`);
+}
+
 /** Make each chat's label tags match the phone exactly: tags the phone does not have are taken off, missing ones added. */
 export function reconcileLabelTags(accountId) {
   for (const l of all('SELECT * FROM wa_labels WHERE account_id = ?', accountId)) {
     const tag = labelTag(l.name);
-    const onPhone = new Set(all('SELECT jid FROM wa_label_chats WHERE account_id = ? AND label_id = ?', accountId, l.label_id).map((r) => chatByJid(accountId, r.jid)?.id).filter(Boolean));
+    const onPhone = new Set(all('SELECT jid, alt FROM wa_label_chats WHERE account_id = ? AND label_id = ?', accountId, l.label_id).map((r) => chatByJid(accountId, r.jid, r.alt)?.id).filter(Boolean));
     for (const c of all('SELECT id, tags FROM chats WHERE account_id = ? AND tags LIKE ?', accountId, `%,${tag},%`)) if (l.deleted || !onPhone.has(c.id)) setTags(c.id, tagsOfChat(c).filter((t) => t !== tag));
     if (!l.deleted) for (const id of onPhone) { const c = get('SELECT id, tags FROM chats WHERE id = ?', id); if (!tagsOfChat(c).includes(tag)) setTags(id, [...tagsOfChat(c), tag]); }
   }

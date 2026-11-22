@@ -172,7 +172,11 @@ export class QrConnector {
     sock.ev.on('contacts.upsert', (c) => this.#contacts(c));
     // WhatsApp Business labels: names and which chat has which label, kept in step with the phone.
     sock.ev.on('labels.edit', (l) => this.hooks.onLabel?.(l));
-    sock.ev.on('labels.association', ({ association: a, type }) => { if (a?.type === 'label_jid' || a?.chatId) this.hooks.onLabelChat?.(a.chatId, a.labelId, type); });
+    // WhatsApp may name the chat by its hidden ID (@lid) or by the phone number; we keep both so it matches our chat.
+    sock.ev.on('labels.association', async ({ association: a, type }) => {
+      if (!(a?.type === 'label_jid' || a?.chatId)) return;
+      this.hooks.onLabelChat?.(a.chatId, a.labelId, type, await this.altJid(a.chatId));
+    });
   }
 
   #contacts(contacts) {
@@ -227,6 +231,12 @@ export class QrConnector {
     await s.authState.keys.set({ 'app-state-sync-version': { regular: null, regular_low: null, regular_high: null } });
     await s.resyncAppState(['regular', 'regular_low', 'regular_high'], true);
     this.hooks.onLabelsLoaded?.();
+  }
+  /** The other name of a chat: the phone number for a hidden @lid ID, or the @lid for a phone number. */
+  async altJid(jid) {
+    const map = this.sock?.signalRepository?.lidMapping;
+    if (!map || !jid) return null;
+    try { return String(jid).endsWith('@lid') ? (await map.getPNForLID(jid)) || null : (await map.getLIDForPN(jid)) || null; } catch { return null; }
   }
   /** Make a new label on the phone. */
   async createLabel(id, name, color = 0) { await this.#need().addLabel('', { id: String(id), name, color, deleted: false }); }

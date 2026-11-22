@@ -45,20 +45,26 @@ export function previewLabel(label, filters = {}, { create = false } = {}) {
   const name = String(label || '').trim().slice(0, 40);
   if (!name) throw new Error('Which label? Say its name as it is on WhatsApp.');
   const found = existing(name);
-  const rows = findChats(filters).filter((c) => !String(c.tags || '').includes(`,${wa.labelTag(found[0]?.name || name)},`));
+  const matched = findChats(filters);
+  // Who already has it (on the phone, by number or hidden ID): they are left alone.
+  const has = (c) => found.some((l) => l.accountId === c.account_id && wa.chatHasLabel(c, l)) || (!found.length && String(c.tags || '').includes(`,${wa.labelTag(name)},`));
+  const rows = matched.filter((c) => !has(c));
   const all_ = wa.labelsList();
   return {
     label: found[0]?.name || name, exists: found.length > 0, duplicates: found.length > 1 ? found.length : 0, create: !found.length && create,
-    chats: rows.length, examples: rows.slice(0, 5).map(who),
+    matched: matched.length, already: matched.length - rows.length, onLabel: all_.filter((l) => found.some((f) => f.label_id === l.id && f.accountId === l.accountId)).reduce((n, l) => n + l.chats, 0),
+    chats: rows.length, examples: rows.slice(0, 5).map(who), ids: rows.map((c) => c.id),
     ...(found.length || create ? {} : { error: `There is no label called "${name}" on WhatsApp. Your labels: ${all_.map((l) => l.name).join(', ') || 'none synced yet'}. Say the exact name, or ask to make a new label. If you made it on the phone just now, say "labels refresh karo".` }),
   };
 }
 
 /** Put the label on every matching chat that does not have it yet. Returns at once; the labels go on one by one. */
-export function labelChats(label, filters = {}, { taskId = null, gapMs = 1500, create = false, jobId = null } = {}) {
+export function labelChats(label, filters = {}, { taskId = null, gapMs = null, create = false, jobId = null } = {}) {
   const p = previewLabel(label, filters, { create });
   if (p.error) return p;
-  const rows = findChats(filters);
+  // Only the chats that do not have it yet.
+  const want = new Set(p.ids);
+  const rows = findChats(filters).filter((c) => want.has(c.id));
   const name = p.label;
   const tag = wa.labelTag(name);
   // The tag is put on at once (works everywhere); the phone label follows, paced like a person.
@@ -72,14 +78,15 @@ export function labelChats(label, filters = {}, { taskId = null, gapMs = 1500, c
     for (const c of rows) {
       if (await wa.applyLabel(c, name, { create }).catch(() => false)) ok++;
       stepJob(jobId, rows.indexOf(c) + 1);
-      await new Promise((r) => setTimeout(r, process.env.NODE_ENV === 'test' ? 0 : gapMs));
+      // Like a person going through chats: a few seconds each, never the same gap twice.
+      await new Promise((r) => setTimeout(r, process.env.NODE_ENV === 'test' ? 0 : gapMs ?? 4000 + Math.random() * 6000));
     }
     const line = `Label "${name}": ${ok} of ${rows.length} chats labelled on WhatsApp${ok < rows.length ? ' (the rest got the tag only)' : ''}.`;
     log('info', 'labels', line);
     if (taskId) taskEvent(taskId, line, { kind: 'info' });
     finishJob(jobId, line);
   })();
-  return { label: name, tag, chats: p.chats, examples: p.examples, existing: p.exists, made: p.create };
+  return { label: name, tag, chats: p.chats, already: p.already, matched: p.matched, examples: p.examples, existing: p.exists, made: p.create };
 }
 
 /** What taking a label off would do: which labels and how many chats. */

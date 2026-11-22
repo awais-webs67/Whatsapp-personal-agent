@@ -275,10 +275,10 @@ const TOOLS = {
     run: async () => { await wa.refreshLabels(); return { labels: wa.labelsList().map((l) => ({ name: l.name, number: l.account, chats: l.chats })) }; },
   },
   label_chats: {
-    doc: 'label_chats {"label": "Flow Google", "create_new": false, "ad_text": ["eid"], "keywords": [], "campaign_id": null, "hours": 0, "days": 0, "tags": [], "stage": ""} - put a WhatsApp Business label on every matching chat that does not have it yet: came from an ad whose title has these words, talked about these words, belongs to a campaign, came in the last N hours or days, has a tag or stage. It always uses the EXISTING label with that name (any case or word order: "google flow" finds "Flow Google"). Set "create_new": true ONLY when the owner clearly asks to make a new label. "last 5 hours" = "hours": 5.',
+    doc: 'label_chats {"label": "Flow Google", "create_new": false, "ad_text": ["eid"], "keywords": [], "campaign_id": null, "hours": 0, "days": 0, "tags": [], "stage": ""} - put a WhatsApp Business label on every matching chat that does not have it yet: came from an ad whose title has these words, talked about these words, belongs to a campaign, came in the last N hours or days, has a tag or stage. It always uses the EXISTING label with that name (any case or word order: "google flow" finds "Flow Google"). Set "create_new": true ONLY when the owner clearly asks to make a new label. "last 5 hours" = "hours": 5. For "people from the X ad or about X" put X in keywords (keywords also match the ad title and every message), e.g. keywords ["flow ultra", "flow"]. Chats that already have the label are skipped by itself, so never say they will be labelled again.',
     // A label not found may be one made on the phone that we never received: load the labels again and look once more.
     preview: async (a) => { let p = previewLabel(a.label, labelFilters(a), { create: !!a.create_new }); if (p.error) { await wa.refreshLabels().catch(() => {}); p = previewLabel(a.label, labelFilters(a), { create: !!a.create_new }); } return p; },
-    confirm: (p) => p.error ? null : `"${p.label}" label ${p.chats} chat${p.chats === 1 ? '' : 's'} par lagega${p.examples.length ? ` (${p.examples.join(', ')}${p.chats > 5 ? '…' : ''})` : ''}. ${p.exists ? 'Ye label WhatsApp par pehle se hai, wahi use hoga.' : 'Ye NAYA label banega.'}${p.duplicates ? ` Note: is naam ke ${p.duplicates} labels hain.` : ''}`,
+    confirm: (p) => p.error ? null : `${p.matched} chat${p.matched === 1 ? '' : 's'} mili. In mein se ${p.already} par "${p.label}" pehle se hai${p.onLabel ? ` (label par abhi kul ${p.onLabel})` : ''}.\n${p.chats} NAYI chat${p.chats === 1 ? '' : 's'} par lagega${p.examples.length ? `: ${p.examples.join(', ')}${p.chats > 5 ? '…' : ''}` : ''}.\n${p.exists ? 'WhatsApp ka existing label use hoga' : 'Ye NAYA label banega'}, ek ek kar ke, har chat ke beech 4–10 second.${p.duplicates ? ` Note: is naam ke ${p.duplicates} labels hain.` : ''}`,
     run: (a) => {
       const p = previewLabel(a.label, labelFilters(a), { create: !!a.create_new });
       const jobId = activeCampaign && !p.error && p.chats ? startJob(activeCampaign, `Put the label "${p.label}" on ${p.chats} chats`, p.chats, 'labelled') : null;
@@ -499,7 +499,7 @@ function facts(steps) {
     if (s.action === 'analyse_chats' && !r.started && r.reason) out.push(`ℹ️ ${r.reason[0].toUpperCase()}${r.reason.slice(1)}.`);
     if (s.action === 'update_task' && !r.error) out.push(r.changed?.length ? `✏️ Task #${r.task_id} changed: ${r.changed.join('; ')}.${r.rewriting ? ` Rewriting the ${r.rewriting} message${r.rewriting === 1 ? '' : 's'} not sent yet.` : ''} No new task was made.${nextLine(r.task_id)}` : `⚠️ Task #${r.task_id}: nothing to change.`);
     if (s.action === 'help') out.push(r.help);
-    if (s.action === 'label_chats' && !r.error && !r.confirm) out.push(`🏷️ "${r.label}" ${r.existing ? '(existing label)' : r.made ? '(new label)' : ''} goes on ${r.chats} chat${r.chats === 1 ? '' : 's'}${r.examples?.length ? ` (${r.examples.join(', ')}${r.chats > 5 ? '…' : ''})` : ''}, one by one on WhatsApp.`);
+    if (s.action === 'label_chats' && !r.error && !r.confirm) out.push(r.chats ? `🏷️ "${r.label}" goes on ${r.chats} new chat${r.chats === 1 ? '' : 's'}${r.examples?.length ? ` (${r.examples.join(', ')}${r.chats > 5 ? '…' : ''})` : ''}, one by one, a few seconds apart.${r.already ? ` ${r.already} already had it.` : ''}` : `🏷️ All ${r.matched ?? 0} matching chats already have "${r.label}". Nothing to add.`);
     if (s.action === 'remove_label' && !r.error && !r.confirm) out.push(r.deleted ? `🗑️ "${r.label}" label deleted on WhatsApp; it is off ${r.chats} chats.` : `🏷️ "${r.label}" comes off ${r.chats} chat${r.chats === 1 ? '' : 's'}, one by one on WhatsApp.`);
     if (['label_chats', 'remove_label'].includes(s.action) && r.error) out.push(`⚠️ ${r.error}`);
     if (s.action === 'create_campaign' && !r.error) out.push(`📣 Campaign #${r.campaign_id} "${r.name}" is on. New leads that match join it. See it on the Campaigns page.`);
@@ -621,11 +621,11 @@ async function gate(action, args, scheduled) {
   let p;
   try { p = await tool.preview(args); } catch (e) { return { result: { error: e.message } }; }
   if (p?.error) return { result: p };
-  if (p && p.chats === 0) return { result: { ...p, nothing: 'No chat needs this change, so nothing was done.' } };
+  if (p && p.chats === 0) return { result: { ...p, ids: undefined, nothing: p.matched ? `All ${p.matched} matching chats already have it, so nothing was done.` : 'No chat matched, so nothing was done. Try more hours or other words.' } };
   const ask = tool.confirm(p);
   if (!ask) return null;
   kvSet(`pending:${activeThread}`, { action, args, at: now() });
-  return { ask: true, reply: `${ask}\n\nKar dun? Haan / Nahi`, steps: [{ action, args, result: { confirm: true, ...p } }] };
+  return { ask: true, reply: `${ask}\n\nKar dun? Haan / Nahi`, steps: [{ action, args, result: { confirm: true, ...p, ids: undefined } }] };
 }
 
 let queue = Promise.resolve();
@@ -694,6 +694,10 @@ export function handleCommand(text, { chatId = null, scheduled = false, label = 
     // An answer to "Kar dun? Haan / Nahi".
     const pend = scheduled ? null : kvGet(`pending:${thread}`);
     if (pend) kvSet(`pending:${thread}`, null);
+    // Neither yes nor no: the owner is questioning the proposal. The model sees what was proposed and answers that.
+    if (pend && now() - pend.at < 15 * 60_000 && !((YES.test(text) || NO.test(text)) && text.length < 40)) {
+      text = `${text}\n\n[Note from the system: you had proposed ${pend.action} ${JSON.stringify(pend.args)} and asked "Kar dun?". The owner answered with the message above instead of yes or no. Address exactly what they say; if they want a different scope, call the action again with the new filters.]`;
+    }
     if (pend && now() - pend.at < 15 * 60_000 && (YES.test(text) || NO.test(text)) && text.length < 40) {
       if (NO.test(text)) out = { reply: 'Theek hai, kuch nahi kiya.', steps: [] };
       else {
