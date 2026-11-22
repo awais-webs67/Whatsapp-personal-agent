@@ -12,7 +12,8 @@ import { createTask, listTasks, taskView, controlTask, setTaskRunner, setCampaig
 import { quickIntent, ASKS_PERMISSION, TIMING_ONLY, startDelay, parseInterval, randomMinutes } from './intent.js';
 import { shortcut } from './shortcuts.js';
 import { updateAuto, createAuto, setAllAuto, ensureDefaultCampaign } from './campaigns.js';
-import { labelChats, previewLabel, unlabelChats, previewUnlabel } from './labeling.js';
+import { labelChats, previewLabel, unlabelChats, previewUnlabel, findChats } from './labeling.js';
+import { leadScore } from './score.js';
 import { updateCampaign } from './campaign-edit.js';
 import { normTags, hasAnyTag } from './tags.js';
 import { humanSend } from './pipeline.js';
@@ -59,14 +60,18 @@ const TOOLS = {
     },
   },
   find_chats: {
-    doc: `find_chats {"days": 5, "stages": ["interested"], "text": "website", "limit": 20} - list chats active in the period. "stages" and "text" are optional. Stages: ${STAGES.join(', ')}.`,
-    run: ({ days: d, stages, text, limit }) => {
-      const st = stageList(stages);
-      const rows = all(`SELECT * FROM chats WHERE last_in_at >= ? ${st.length ? `AND stage IN (${st.map(() => '?').join(',')})` : ''}
-                        ${text ? 'AND (name LIKE ? OR phone LIKE ? OR summary LIKE ? OR last_text LIKE ?)' : ''} ORDER BY last_in_at DESC LIMIT ?`,
-        now() - days(d) * DAY, ...st, ...(text ? Array(4).fill(`%${text}%`) : []), Math.min(25, Number(limit) || 10));
-      const total = get(`SELECT COUNT(*) n FROM chats WHERE last_in_at >= ? ${st.length ? `AND stage IN (${st.map(() => '?').join(',')})` : ''}`, now() - days(d) * DAY, ...st).n;
-      return { total, shown: rows.length, chats: rows.map((c) => ({ id: c.id, name: title(c), stage: c.stage, about: clip(c.summary || c.last_text, 90), hours_ago: Math.round((now() - c.last_in_at) / 3_600_000), ...(c.needs_human ? { needs_owner: true } : {}) })) };
+    doc: `find_chats {"days": 6, "hours": 0, "words": ["google flow", "flow"], "ad_text": [], "stages": [], "campaign_id": null, "limit": 15} - search ALL WhatsApp chats on every number: who wrote in the last days or hours, about these words (anywhere in their messages, summary, profile or the ad they came from), from an ad with this title, at these stages, or in a campaign. Returns how many, a count per stage, how many hot leads, and the best matches with what each wanted. Stages: ${STAGES.join(', ')}.`,
+    run: (a) => {
+      const words = [...(Array.isArray(a.words) ? a.words : a.words ? String(a.words).split(',') : []), ...(a.text ? [a.text] : [])].map((w) => String(w).trim()).filter(Boolean);
+      const st = stageList(a.stages);
+      let rows = findChats({ keywords: words, adText: a.ad_text, days: a.hours ? 0 : days(a.days), hours: Number(a.hours) || 0, campaignId: a.campaign_id || null });
+      if (st.length) rows = rows.filter((c) => st.includes(c.stage));
+      const byStage = rows.reduce((m, c) => ({ ...m, [c.stage]: (m[c.stage] || 0) + 1 }), {});
+      const scored = rows.map((c) => ({ c, l: leadScore(c) })).sort((x, y) => y.l.score - x.l.score);
+      return {
+        total: rows.length, by_stage: byStage, hot_leads: scored.filter((x) => x.l.label === 'hot').length,
+        chats: scored.slice(0, Math.min(40, Number(a.limit) || 15)).map(({ c, l }) => ({ id: c.id, name: title(c), stage: c.stage, lead: `${l.label} ${l.score}`, about: clip(c.summary || c.last_text, 110), ...(c.ad_title ? { ad: clip(c.ad_title, 50) } : {}), hours_ago: c.last_in_at ? Math.round((now() - c.last_in_at) / 3_600_000) : null, campaign: c.campaign_id || null, ...(c.needs_human ? { needs_owner: true } : {}) })),
+      };
     },
   },
   read_chat: {

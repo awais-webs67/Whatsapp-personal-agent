@@ -82,7 +82,13 @@ export async function campaignQuick(id, text) {
 export function campaignBrief(id) {
   const t = get('SELECT * FROM tasks WHERE id = ?', Number(id));
   if (!t) return '';
+  let p = {};
+  try { p = JSON.parse(t.params || '{}') || {}; } catch { /* none */ }
+  const product = [...new Set([...(p.keywords || []), ...(p.adText || [])].map((w) => String(w).trim()).filter(Boolean))];
   return `\n\n## The owner is writing inside campaign #${t.id} "${t.title}" (${t.kind})
+You can see and search ALL WhatsApp chats on every number (find_chats, read_chat), not only this campaign's people.
+"Is product", "is campaign ka product", "is offer" means what this campaign is about: ${product.length ? `the words ${product.map((w) => `"${w}"`).join(', ')}` : `"${t.title}"`}${product.length ? ` (campaign "${t.title}")` : ''}. Use these as find_chats words (and ad_text) when the owner says that.
+To bring found people into this campaign use add_to_campaign with the same filters.
 Everything in this conversation is about campaign #${t.id} unless the owner names another number. "Is", "ye", "this" and orders without a number mean campaign #${t.id}: pass id ${t.id} (task_id ${t.id}) to update_task, label_chats and the like. Do not start a new campaign unless the owner clearly asks for a new one.
 Where it is now:\n${campaignStatus(t)}`;
 }

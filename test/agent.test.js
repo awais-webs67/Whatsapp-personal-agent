@@ -104,7 +104,13 @@ before(async () => {
   deliver = wa.attachFake(1, fake).deliver;
   pipeline.startPipeline();
 });
-after(() => { server.close(); fs.rmSync(tmp, { recursive: true, force: true }); });
+after(() => {
+  server.closeAllConnections?.();
+  server.close();
+  fs.rmSync(tmp, { recursive: true, force: true });
+  // Background work (paced label loops, keep-alive sockets) must not keep the test process open.
+  setTimeout(() => process.exit(), 3000).unref();
+});
 
 test('helpers', () => {
   assert.equal(parseDuration('12'), 12);
@@ -1738,5 +1744,23 @@ test('people already in the chats can be brought into a campaign, after seeing w
   assert.equal(r.added, p.chats);
   assert.equal(get("SELECT campaign_id FROM chats WHERE jid = '444@s.whatsapp.net'").campaign_id, t.id);
   assert.equal(m.previewMembers(t.id, { adText: ['google flow'] }).chats, 0, 'already in');
+  (await import('../src/agent/tasks.js')).controlTask(t.id, 'remove');
+});
+
+test('inside a campaign the agent searches every chat, and "this product" means the campaign\'s product', async () => {
+  const camps = await import('../src/agent/campaigns.js');
+  const { TOOLS_FOR_TEST } = await import('../src/agent/commander.js');
+  const { campaignBrief } = await import('../src/agent/campaign-command.js');
+  const chat = get("SELECT * FROM chats WHERE jid = '444@s.whatsapp.net'");
+  run('INSERT INTO messages (chat_id, wa_id, from_me, by, type, text, ts) VALUES (?,?,?,?,?,?,?)', chat.id, 'zebra-1', 0, 'customer', 'text', 'Bhai zebrapro wala plan kitne ka hai?', now());
+  run('UPDATE chats SET last_in_at = ? WHERE id = ?', now(), chat.id);
+  const r = TOOLS_FOR_TEST.find_chats.run({ days: 6, words: ['zebrapro'] });
+  assert.equal(r.total, 1, 'found by a word deep in the messages, and the total counts the filter');
+  assert.equal(r.chats[0].id, chat.id);
+  assert.ok(r.by_stage[chat.stage] >= 1);
+  const t = camps.createAuto({ name: 'Zebra campaign', keywords: ['zebrapro'] }, 'test');
+  const brief = campaignBrief(t.id);
+  assert.match(brief, /ALL WhatsApp chats/);
+  assert.match(brief, /"zebrapro"/);
   (await import('../src/agent/tasks.js')).controlTask(t.id, 'remove');
 });
