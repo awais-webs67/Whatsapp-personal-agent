@@ -73,7 +73,7 @@ function shell(me) {
   GET('/api/health').then(drawHealth).catch(() => {});
   const el = h('div.shell', {},
     aside,
-    h('div', { style: 'display:flex;flex-direction:column;min-width:0' }, banner, healthBox, outlet));
+    h('div.mainwrap', {}, banner, healthBox, outlet));
 
   const badge = (id, n) => {
     navLinks[id].querySelector('.count')?.remove();
@@ -102,6 +102,8 @@ function shell(me) {
     subs.clear();
     for (const [key, a] of Object.entries(navLinks)) { a.classList.toggle('on', key === r[0]); a.toggleAttribute('aria-current', key === r[0]); }
     more.classList.toggle('on', !PRIMARY.includes(r[0]));
+    // Inbox and Command fill the screen under any warning bar; other pages scroll as usual.
+    el.querySelector('.mainwrap').classList.toggle('full', ['inbox', 'command'].includes(r[0]));
     set(outlet, r[3](arg, sub));
     document.title = `${r[1]} · AivraSol Agent Desk`;
   }

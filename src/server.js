@@ -285,7 +285,7 @@ app.get('/api/chats/export.csv', wrap((req, res) => {
 }));
 app.get('/api/chats/:id', wrap((req) => {
   const chat = need(get('SELECT * FROM chats WHERE id = ?', Number(req.params.id)), 'Chat');
-  const messages = all('SELECT id, from_me, by, type, text, ts FROM (SELECT * FROM messages WHERE chat_id = ? ORDER BY ts DESC, id DESC LIMIT 400) ORDER BY ts, id', chat.id);
+  const messages = all('SELECT id, from_me, by, type, text, ts, reply_to, reply_text FROM (SELECT * FROM messages WHERE chat_id = ? ORDER BY ts DESC, id DESC LIMIT 400) ORDER BY ts, id', chat.id);
   const followups = all("SELECT * FROM followups WHERE chat_id = ? AND status IN ('pending','approved') ORDER BY id", chat.id);
   return { chat: chatView(chat), messages, followups };
 }));
@@ -309,7 +309,7 @@ app.post('/api/chats/:id/send', wrap(async (req) => {
   if (!text) throw bad('Message is empty');
   const id = Number(req.params.id);
   need(get('SELECT id FROM chats WHERE id = ?', id), 'Chat');
-  await wa.sendText(id, text, 'owner');
+  await wa.sendText(id, text, 'owner', { replyTo: req.body.replyTo || null });
   onOwner(id);
   return { ok: true };
 }));

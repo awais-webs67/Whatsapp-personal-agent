@@ -53,6 +53,28 @@ export const PATCH = (u, b) => api('PATCH', u, b);
 export const PUT = (u, b) => api('PUT', u, b);
 export const DEL = (u) => api('DELETE', u);
 
+/** A message box that grows with its text (up to its max-height), like a chat app. */
+export function autosize(t) {
+  const fit = () => { t.style.height = 'auto'; t.style.height = `${Math.min(t.scrollHeight + 2, 140)}px`; t.style.overflowY = t.scrollHeight > 140 ? 'auto' : 'hidden'; };
+  t.addEventListener('input', fit);
+  requestAnimationFrame(fit);
+  return t;
+}
+/** Copy text to the clipboard (with a fallback for older browsers), then say so. */
+export async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); } catch {
+    const t = Object.assign(document.createElement('textarea'), { value: text });
+    t.style.cssText = 'position:fixed;opacity:0';
+    document.body.append(t); t.select(); document.execCommand('copy'); t.remove();
+  }
+  toast('Copied');
+}
+/** Initials and a calm colour for a person, the same every time. */
+export function avatar(name, id = 0, cls = '') {
+  const words = String(name || '?').replace(/^\+/, '').split(/\s+/).filter(Boolean);
+  const ini = /^\d/.test(words[0] || '') ? '#' : words.map((w) => w[0]).join('').slice(0, 2).toUpperCase();
+  return h(`span.avatar${cls}`, { 'aria-hidden': 'true', style: `--hue:${(Number(id) * 47) % 360}` }, ini || '?');
+}
 export function toast(msg, bad = false) {
   const t = h(`div.toast${bad ? '.bad' : ''}`, { role: bad ? 'alert' : 'status' }, msg);
   document.getElementById('toasts').append(t);

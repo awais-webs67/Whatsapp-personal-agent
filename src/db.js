@@ -135,6 +135,13 @@ CREATE TABLE IF NOT EXISTS task_events (
 );
 CREATE INDEX IF NOT EXISTS task_events_task ON task_events(task_id, id);
 
+-- Which chat has which WhatsApp label, exactly as the phone says (counts come from here, not from tags).
+CREATE TABLE IF NOT EXISTS wa_label_chats (
+  account_id INTEGER NOT NULL,
+  label_id TEXT NOT NULL,
+  jid TEXT NOT NULL,
+  PRIMARY KEY (account_id, label_id, jid)
+);
 CREATE TABLE IF NOT EXISTS wa_labels (
   account_id INTEGER NOT NULL,
   label_id TEXT NOT NULL,
@@ -206,7 +213,7 @@ CREATE TABLE IF NOT EXISTS commands (
 );
 `);
 // Additive migrations for databases created by earlier versions.
-for (const sql of ['ALTER TABLE accounts ADD COLUMN self_jid TEXT', "ALTER TABLE providers ADD COLUMN use_for TEXT NOT NULL DEFAULT 'all'", 'ALTER TABLE followups ADD COLUMN task_id INTEGER', 'ALTER TABLE tasks ADD COLUMN ignore_quiet INTEGER NOT NULL DEFAULT 0', 'ALTER TABLE commands ADD COLUMN thread_id INTEGER', 'ALTER TABLE tasks ADD COLUMN thread_id INTEGER', 'ALTER TABLE chats ADD COLUMN tags TEXT', 'ALTER TABLE tasks ADD COLUMN params TEXT', 'ALTER TABLE chats ADD COLUMN campaign_id INTEGER', 'ALTER TABLE chats ADD COLUMN ad_id TEXT', 'ALTER TABLE chats ADD COLUMN ad_title TEXT', 'ALTER TABLE chats ADD COLUMN profile TEXT', 'ALTER TABLE tasks ADD COLUMN parent_id INTEGER']) {
+for (const sql of ['ALTER TABLE accounts ADD COLUMN self_jid TEXT', "ALTER TABLE providers ADD COLUMN use_for TEXT NOT NULL DEFAULT 'all'", 'ALTER TABLE followups ADD COLUMN task_id INTEGER', 'ALTER TABLE tasks ADD COLUMN ignore_quiet INTEGER NOT NULL DEFAULT 0', 'ALTER TABLE commands ADD COLUMN thread_id INTEGER', 'ALTER TABLE tasks ADD COLUMN thread_id INTEGER', 'ALTER TABLE chats ADD COLUMN tags TEXT', 'ALTER TABLE tasks ADD COLUMN params TEXT', 'ALTER TABLE chats ADD COLUMN campaign_id INTEGER', 'ALTER TABLE chats ADD COLUMN ad_id TEXT', 'ALTER TABLE chats ADD COLUMN ad_title TEXT', 'ALTER TABLE chats ADD COLUMN profile TEXT', 'ALTER TABLE tasks ADD COLUMN parent_id INTEGER', 'ALTER TABLE messages ADD COLUMN reply_to TEXT', 'ALTER TABLE messages ADD COLUMN reply_text TEXT']) {
   try { db.exec(sql); } catch { /* column already exists */ }
 }
 

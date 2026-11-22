@@ -91,7 +91,7 @@ const addProvider = (name, key, priority) =>
   Number(run('INSERT INTO providers (preset, name, kind, base_url, api_key, model, priority, created_at) VALUES (?,?,?,?,?,?,?,?)', 'custom', name, 'openai', baseUrl, encrypt(key), 'fake-1', priority, now()).lastInsertRowid);
 
 const sent = [];
-const fake = { sendText: async (jid, text) => { sent.push({ jid, text }); return `out-${sent.length}`; }, typing: async () => {}, markRead: async () => {}, idle: async () => {} };
+const fake = { sendText: async (jid, text, opts = {}) => { sent.push(opts.quote ? { jid, text, quote: opts.quote } : { jid, text }); return `out-${sent.length}`; }, typing: async () => {}, markRead: async () => {}, idle: async () => {} };
 let deliver;
 const until = async (cond, ms = 4000) => { const t = Date.now(); while (!cond()) { if (Date.now() - t > ms) throw new Error('timed out waiting'); await new Promise((r) => setTimeout(r, 20)); } };
 
@@ -1783,4 +1783,33 @@ test('work started inside a campaign becomes a task of that campaign, using its 
   const tasks = await import('../src/agent/tasks.js');
   try { tasks.controlTask(child.id, 'remove'); } catch { /* already done */ }
   tasks.controlTask(t.id, 'remove');
+});
+
+test('label counts are what the phone says, and stale tags are corrected on refresh', async () => {
+  wa.onLabel(1, { id: '21', name: 'Count Me', color: 1 });
+  const chat = get("SELECT * FROM chats WHERE jid = '444@s.whatsapp.net'");
+  wa.onLabelChat(1, chat.jid, '21', 'add');
+  wa.onLabelChat(1, '923009999999@s.whatsapp.net', '21', 'add'); // on the phone, not in our chats
+  assert.equal(wa.labelsList().find((l) => l.name === 'Count Me').chats, 2, 'counted as the phone counts');
+  // A tag the agent put on without the phone having the label is taken off when reconciled.
+  const other = get("SELECT * FROM chats WHERE jid != '444@s.whatsapp.net' AND account_id = 1 LIMIT 1");
+  run('UPDATE chats SET tags = ? WHERE id = ?', ',count-me,', other.id);
+  wa.reconcileLabelTags(1);
+  assert.doesNotMatch(get('SELECT tags FROM chats WHERE id = ?', other.id).tags || '', /count-me/);
+  assert.match(get('SELECT tags FROM chats WHERE id = ?', chat.id).tags, /,count-me,/);
+  wa.onLabelChat(1, chat.jid, '21', 'remove');
+  assert.equal(wa.labelsList().find((l) => l.name === 'Count Me').chats, 1);
+});
+
+test('a reply quotes the message it answers, on WhatsApp and in the chat', async () => {
+  const chat = get("SELECT * FROM chats WHERE jid = '444@s.whatsapp.net'");
+  run('INSERT INTO messages (chat_id, wa_id, from_me, by, type, text, ts) VALUES (?,?,?,?,?,?,?)', chat.id, 'quote-me-1', 0, 'customer', 'text', 'Delivery kab tak hogi?', now());
+  const orig = get("SELECT id FROM messages WHERE wa_id = 'quote-me-1'");
+  await wa.sendText(chat.id, 'Aaj shaam tak', 'owner', { replyTo: orig.id });
+  const last = sent.at(-1);
+  assert.equal(last.text, 'Aaj shaam tak');
+  assert.deepEqual(last.quote, { id: 'quote-me-1', fromMe: false, text: 'Delivery kab tak hogi?' });
+  const row = get("SELECT reply_to, reply_text FROM messages WHERE chat_id = ? AND text = 'Aaj shaam tak'", chat.id);
+  assert.equal(row.reply_to, 'quote-me-1');
+  assert.equal(row.reply_text, 'Delivery kab tak hogi?');
 });

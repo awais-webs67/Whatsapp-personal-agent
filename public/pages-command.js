@@ -1,4 +1,4 @@
-import { h, set, GET, POST, PUT, PATCH, DEL, act, toggle, clock, rel } from './ui.js';
+import { h, set, ico, autosize, GET, POST, PUT, PATCH, DEL, act, toggle, clock, rel, copyText, toast } from './ui.js';
 import { S, live } from './state.js';
 
 const EXAMPLES = [
@@ -19,12 +19,13 @@ const remember = (id) => { try { localStorage.setItem('cmdThread', String(id || 
 
 /** Conversations with the agent, saved like chats. The same works from WhatsApp's "Message yourself" chat. */
 export function command() {
-  const st = { threads: [], current: remembered(), rows: [], waiting: false, note: '' };
+  const st = { threads: [], current: remembered(), rows: [], waiting: false, note: '', reply: null };
   const list = h('div.chatlist', { role: 'list', 'aria-label': 'Conversations' });
   const thread = h('div.thread', { style: 'flex:1' });
   const title = h('h2');
-  const input = h('textarea', { dir: 'auto', rows: 2, placeholder: 'Tell the agent what to do, in your own words', 'aria-label': 'Command',
+  const input = h('textarea', { dir: 'auto', rows: 1, placeholder: 'Tell the agent what to do, in your own words', 'aria-label': 'Command',
     onkeydown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send.click(); } } });
+  autosize(input);
   const wrap = h('div.inbox.cmd');
 
   function drawList() {
@@ -40,16 +41,25 @@ export function command() {
     set(title, t ? t.title : 'New chat');
     const asking = (r, i) => i === st.rows.length - 1 && r.role !== 'owner' && r.steps?.some((s) => s.result?.confirm);
     const answer = (word) => { input.value = word; send.click(); };
-    set(thread, st.rows.length ? st.rows.map((r, i) => r.role === 'owner'
-      ? h('div.msg.me', { dir: 'auto' }, r.text, h('small', {}, clock(r.ts)))
-      : h('div.msg', { dir: 'auto' }, r.text,
-        asking(r, i) ? h('div.confirm', {}, h('button.btn.sm.primary', { onclick: () => answer('Haan') }, 'Haan, kar do'), h('button.btn.sm', { onclick: () => answer('Nahi') }, 'Nahi')) : null,
-        r.steps?.length && !asking(r, i) ? h('div.steps', {}, r.steps.map((s) => h(`div.step${s.result?.error ? '.bad' : ''}`, { title: JSON.stringify(s.args) }, h(`i.dia${s.result?.error ? '.bad' : '.ok'}`), STEP[s.action] || s.action, s.result?.error ? `: ${s.result.error}` : ''))) : null,
-        h('small', {}, clock(r.ts))))
+    // Each message can be copied, or answered with a quote of it.
+    const actions = (r) => h('div.mact', {},
+      h('button', { type: 'button', title: 'Reply to this', 'aria-label': 'Reply', onclick: () => { st.reply = r.text; drawReply(); input.focus(); } }, ico('reply', 'sm')),
+      h('button', { type: 'button', title: 'Copy', 'aria-label': 'Copy', onclick: () => copyText(r.text) }, ico('copy', 'sm')));
+    const quoteOf = (text) => { const m = /^↪ "([\s\S]*?)"\n([\s\S]*)$/.exec(text); return m ? [m[1], m[2]] : [null, text]; };
+    set(thread, st.rows.length ? st.rows.map((r, i) => {
+      const [q, text] = quoteOf(r.text);
+      return r.role === 'owner'
+        ? h('div.cmsg-row.me', {}, h('div.msg.me', { tabindex: 0 }, q ? h('div.quote', { dir: 'auto' }, q) : null, h('div.mtext', { dir: 'auto' }, text), h('small', {}, clock(r.ts)), actions(r)))
+        : h('div.cmsg-row', {}, h('span.botav', { 'aria-hidden': 'true' }, ico('bot', 'sm')),
+          h('div.msg.agent', { tabindex: 0 }, h('div.mtext', { dir: 'auto' }, r.text),
+            asking(r, i) ? h('div.confirm', {}, h('button.btn.sm.primary', { onclick: () => answer('Haan') }, ico('check', 'sm'), 'Haan, kar do'), h('button.btn.sm', { onclick: () => answer('Nahi') }, 'Nahi')) : null,
+            r.steps?.length && !asking(r, i) ? h('div.steps', {}, r.steps.map((s) => h(`div.step${s.result?.error ? '.bad' : ''}`, { title: JSON.stringify(s.args) }, h(`i.dia${s.result?.error ? '.bad' : '.ok'}`), STEP[s.action] || s.action.replace(/_/g, ' '), s.result?.error ? `: ${s.result.error}` : ''))) : null,
+            h('small', {}, clock(r.ts)), actions(r)));
+    })
       : h('div.empty', { style: 'margin:auto;max-width:560px' }, h('b', {}, 'Give the agent a job'),
         'It can read chats, report numbers, run follow-ups on a schedule, message a customer, remember offers and learn from your site. Everything here is saved, and the agent remembers what you said earlier in this chat.',
         h('div.stack', { style: 'margin-top:16px;text-align:left' }, EXAMPLES.map((x) => h('button.chip', { style: 'white-space:normal;text-align:left;padding:8px 10px', onclick: () => { input.value = x; input.focus(); } }, x)))),
-    st.waiting ? h('div.msg', { style: 'opacity:.7' }, 'Working on it…', st.note ? h('small', {}, st.note) : null) : null);
+    st.waiting ? h('div.cmsg-row', {}, h('span.botav', { 'aria-hidden': 'true' }, ico('bot', 'sm')), h('div.msg.agent.typing', {}, h('span.dots', {}, h('i'), h('i'), h('i')), h('span', {}, st.note || 'Working on it…'))) : null);
     thread.scrollTop = thread.scrollHeight;
   }
 
@@ -68,14 +78,18 @@ export function command() {
   }
 
   const send = h('button.btn.primary', { onclick: async () => {
-    const text = input.value.trim();
+    let text = input.value.trim();
     if (!text || st.waiting) return;
+    // A reply carries the message it answers, so the agent knows what "this" is.
+    if (st.reply) { text = `↪ "${st.reply.slice(0, 400)}"\n${text}`; st.reply = null; drawReply(); }
     if (!st.current) { const { id } = await POST('/api/commands/threads'); st.current = id; remember(id); }
-    input.value = ''; st.waiting = true; st.note = '';
+    input.value = ''; input.style.height = ''; st.waiting = true; st.note = '';
     st.rows = [...st.rows, { role: 'owner', text, ts: Date.now() }];
     drawThread();
     act(send, () => POST('/api/commands', { text, thread: st.current })).finally(() => { st.waiting = false; loadRows(); loadThreads(); });
-  } }, 'Send');
+  } }, ico('send', 'sm'), h('span', {}, 'Send'));
+  const replyBar = h('div.replybar');
+  const drawReply = () => set(replyBar, st.reply ? [ico('reply', 'sm'), h('div.grow', { dir: 'auto' }, h('b', {}, 'Replying to'), h('span', {}, st.reply)), h('button.iconbtn.dark', { type: 'button', 'aria-label': 'Cancel reply', onclick: () => { st.reply = null; drawReply(); } }, ico('x', 'sm'))] : []);
 
   const viaWa = toggle(true, (on) => act(null, () => PUT('/api/settings', { commandsViaWhatsApp: on }), on ? 'Commands from WhatsApp are on' : 'Commands from WhatsApp are off'), 'Accept commands from WhatsApp');
   GET('/api/settings').then((s) => { viaWa.querySelector('input').checked = s.commandsViaWhatsApp; });
@@ -87,12 +101,12 @@ export function command() {
       list),
     h('section.threadcol', {},
       h('div.thread-head', {},
-        h('button.btn.ghost.sm', { class: 'back', onclick: () => wrap.classList.remove('open') }, 'Back'),
-        h('div.grow', {}, title, h('div.muted', { style: 'font-size:12px' }, 'Orders start as soon as you send them, and the agent reports progress here. Daily caps and quiet hours still apply.')),
-        h('button.btn.sm', { onclick: rename }, 'Rename'),
-        h('a.btn.sm', { href: '#/campaigns' }, 'Campaigns')),
+        h('button.iconbtn.dark', { class: 'back', 'aria-label': 'Back to conversations', onclick: () => wrap.classList.remove('open') }, ico('arrow-left')),
+        h('span.botav.big', { 'aria-hidden': 'true' }, ico('bot')),
+        h('div.grow.th-name', {}, title, h('div.muted', {}, 'Orders start as soon as you send them. Daily caps and quiet hours still apply.')),
+        h('button.iconbtn.dark', { title: 'Rename this conversation', 'aria-label': 'Rename', onclick: rename }, ico('pencil', 'sm'))),
       thread,
-      h('div.composer', {}, input, send)));
+      h('div.compose-wrap', {}, replyBar, h('div.composer', {}, input, h('div.composer-act', {}, send)))));
 
   live.on('command', (d) => { loadThreads(); if (!d?.thread || d.thread === st.current) loadRows(); });
   // Show what the agent is doing while it waits (rate-limit pauses, model switches).

@@ -73,7 +73,7 @@ export class CloudConnector {
           const ad = m.referral ? { id: m.referral.source_id ? String(m.referral.source_id) : null, title: m.referral.headline || m.referral.body || null, url: m.referral.source_url || null } : null;
           const audio = m.type === 'audio' && m.audio?.id ? { mime: m.audio.mime_type || 'audio/ogg', fetch: () => this.media(m.audio.id) } : null;
           const image = m.type === 'image' && m.image?.id ? { mime: m.image.mime_type || 'image/jpeg', fetch: () => this.media(m.image.id) } : null;
-          out.push({ jid: m.from, phone: m.from, name: names.get(m.from) || null, waId: m.id, fromMe: false, text, type: m.type === 'text' ? 'text' : 'media', ts, ad, audio, image });
+          out.push({ jid: m.from, phone: m.from, name: names.get(m.from) || null, waId: m.id, fromMe: false, text, type: m.type === 'text' ? 'text' : 'media', ts, ad, audio, image, replyTo: m.context?.id || null });
         }
       }
     }
@@ -83,9 +83,9 @@ export class CloudConnector {
   /** `lastInAt` comes from the database so the 24h rule survives restarts. */
   windowOpen(lastInAt) { return !!lastInAt && Date.now() - lastInAt < DAY; }
 
-  async sendText(jid, text, { lastInAt } = {}) {
+  async sendText(jid, text, { lastInAt, quote } = {}) {
     if (!this.windowOpen(lastInAt ?? this.lastInbound.get(jid)?.ts)) return this.sendTemplate(jid);
-    const res = await this.#api('POST', `/${this.config.phoneNumberId}/messages`, { messaging_product: 'whatsapp', to: jid, type: 'text', text: { body: text, preview_url: false } });
+    const res = await this.#api('POST', `/${this.config.phoneNumberId}/messages`, { messaging_product: 'whatsapp', to: jid, type: 'text', text: { body: text, preview_url: false }, ...(quote?.id ? { context: { message_id: quote.id } } : {}) });
     return res.messages?.[0]?.id || null;
   }
 

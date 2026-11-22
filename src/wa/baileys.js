@@ -31,6 +31,13 @@ const digits = (jid) => (jid && /@(s\.whatsapp\.net|c\.us)$/.test(jid) ? jid.spl
 
 const adOf = (a) => (a && (a.sourceId || a.title) ? { id: a.sourceId ? String(a.sourceId) : null, title: a.title || null, url: a.sourceUrl || null } : null);
 
+const quotedText = (q) => {
+  if (!q) return null;
+  const t = getContentType(q);
+  const b = t && q[t];
+  return (typeof b === 'string' ? b : b?.text || b?.caption || (LABELS[t] ? `[${LABELS[t]}]` : '')).slice(0, 300) || null;
+};
+
 /** Baileys message -> our neutral shape, or null for things we don't track (groups, reactions...). */
 export function toNeutral(msg) {
   const jid = msg.key?.remoteJid;
@@ -58,6 +65,9 @@ export function toNeutral(msg) {
     // Voice notes can be fetched later and turned into text.
     audio: type === 'audioMessage' ? { mime: body?.mimetype || 'audio/ogg', fetch: () => downloadMediaMessage(msg, 'buffer', {}) } : null,
     image: type === 'imageMessage' ? { mime: body?.mimetype || 'image/jpeg', fetch: () => downloadMediaMessage(msg, 'buffer', {}) } : null,
+    // A reply to an earlier message: which one, and what it said.
+    replyTo: body?.contextInfo?.stanzaId || null,
+    replyText: quotedText(body?.contextInfo?.quotedMessage),
     raw: { key: msg.key },
   };
 }
@@ -223,8 +233,10 @@ export class QrConnector {
   /** Delete a label on the phone (WhatsApp takes it off every chat). */
   async deleteLabel(id, name, color = 0) { await this.#need().addLabel('', { id: String(id), name, color, deleted: true }); }
 
-  async sendText(jid, text) {
-    const sent = await this.#need().sendMessage(jid, { text });
+  async sendText(jid, text, { quote } = {}) {
+    // A reply quotes the earlier message, the way it looks when you reply on the phone.
+    const quoted = quote?.id ? { key: { remoteJid: jid, id: quote.id, fromMe: !!quote.fromMe }, message: { conversation: quote.text || '' } } : undefined;
+    const sent = await this.#need().sendMessage(jid, { text }, quoted ? { quoted } : undefined);
     return sent?.key?.id || null;
   }
   async typing(jid, on) {

@@ -51,7 +51,7 @@ function hooksFor(account) {
     getMessage: (waId) => get('SELECT m.text FROM messages m JOIN chats c ON c.id = m.chat_id WHERE c.account_id = ? AND m.wa_id = ? AND m.from_me = 1', account.id, waId)?.text || null,
     onLabel: (l) => onLabel(account.id, l),
     // No labels known for this number yet (and not tried in the last day): load them from WhatsApp once.
-    needsLabels: () => !get('SELECT 1 x FROM wa_labels WHERE account_id = ? LIMIT 1', account.id) && now() - (Number(kvGet(`labelsTried:${account.id}`)) || 0) > 86_400_000 && (kvSet(`labelsTried:${account.id}`, now()), true),
+    needsLabels: () => !get('SELECT 1 x FROM wa_label_chats WHERE account_id = ? LIMIT 1', account.id) && now() - (Number(kvGet(`labelsTried:${account.id}`)) || 0) > 86_400_000 && (kvSet(`labelsTried:${account.id}`, now()), true),
     onLabelsLoaded: () => { const n = get('SELECT COUNT(*) n FROM wa_labels WHERE account_id = ? AND deleted = 0', account.id).n; log('info', 'whatsapp', `${account.name}: ${n} WhatsApp label${n === 1 ? '' : 's'} loaded`); emit('labels', { accountId: account.id }); },
     onLabelChat: (jid, labelId, type) => onLabelChat(account.id, jid, labelId, type),
     onContacts: (contacts) => {
@@ -121,7 +121,8 @@ function ingest(accountId, msgs, live) {
         continue;
       }
       const by = m.fromMe ? (pending?.by || 'owner') : 'customer';
-      const res = run('INSERT OR IGNORE INTO messages (chat_id, wa_id, from_me, by, type, text, ts) VALUES (?,?,?,?,?,?,?)', chat.id, m.waId, m.fromMe ? 1 : 0, by, m.type, m.text, m.ts);
+      const quotedText = m.replyTo ? (m.replyText || get('SELECT text FROM messages WHERE chat_id = ? AND wa_id = ?', chat.id, m.replyTo)?.text || null) : null;
+      const res = run('INSERT OR IGNORE INTO messages (chat_id, wa_id, from_me, by, type, text, ts, reply_to, reply_text) VALUES (?,?,?,?,?,?,?,?,?)', chat.id, m.waId, m.fromMe ? 1 : 0, by, m.type, m.text, m.ts, m.replyTo || null, quotedText ? String(quotedText).slice(0, 300) : null);
       if (!res.changes) continue; // duplicate (already stored, or our own send echoed back)
       if (live && (m.audio || m.image) && !m.fromMe) (voicesOf[chat.id] ||= []).push(m);
       if (m.ad && !m.fromMe) run('UPDATE chats SET ad_id = COALESCE(ad_id, ?), ad_title = COALESCE(ad_title, ?) WHERE id = ?', m.ad.id, m.ad.title, chat.id);
@@ -174,22 +175,25 @@ function ingest(accountId, msgs, live) {
 
 // ---------- sending ----------
 /** Send one bubble and record it. `by` is ai | owner | followup. */
-export async function sendText(chatId, text, by = 'ai') {
+export async function sendText(chatId, text, by = 'ai', { replyTo = null } = {}) {
   const chat = get('SELECT * FROM chats WHERE id = ?', chatId);
   if (!chat) throw new Error('Chat not found');
   const conn = connectors.get(chat.account_id);
   if (!conn || statusOf(chat.account_id).state !== 'connected') throw new Error('This WhatsApp number is not connected');
   const entry = { text, by, at: now() };
   pendingBot.set(chatId, [...(pendingBot.get(chatId) || []).filter((p) => now() - p.at < 120_000), entry]);
+  // Replying to one message: quote it on WhatsApp too.
+  const q = replyTo ? get('SELECT wa_id, from_me, text FROM messages WHERE id = ? AND chat_id = ?', Number(replyTo), chatId) : null;
+  const quote = q && !String(q.wa_id).startsWith('local-') ? { id: q.wa_id, fromMe: !!q.from_me, text: q.text } : null;
   let waId;
   try {
-    waId = await conn.sendText(chat.jid, text, { lastInAt: chat.last_in_at });
+    waId = await conn.sendText(chat.jid, text, { lastInAt: chat.last_in_at, quote });
   } catch (e) {
     takePending(chatId, text);
     throw e;
   }
   const ts = now();
-  run('INSERT OR IGNORE INTO messages (chat_id, wa_id, from_me, by, type, text, ts) VALUES (?,?,1,?,?,?,?)', chatId, waId || `local-${ts}`, by, 'text', text, ts);
+  run('INSERT OR IGNORE INTO messages (chat_id, wa_id, from_me, by, type, text, ts, reply_to, reply_text) VALUES (?,?,1,?,?,?,?,?,?)', chatId, waId || `local-${ts}`, by, 'text', text, ts, q?.wa_id || null, q ? String(q.text || '').slice(0, 300) : null);
   run('UPDATE chats SET last_out_at = ?, last_msg_at = ?, last_text = ?, unread = 0 WHERE id = ?', ts, ts, text.slice(0, 200), chatId);
   emit('chat', { chatId });
   return waId;
@@ -219,6 +223,11 @@ function chatByJid(accountId, jid) {
 }
 
 export function onLabelChat(accountId, jid, labelId, type) {
+  // The phone's own record first, even for a chat or label we do not know yet.
+  if (jid) {
+    if (type === 'remove') run('DELETE FROM wa_label_chats WHERE account_id = ? AND label_id = ? AND jid = ?', accountId, String(labelId), String(jid));
+    else run('INSERT OR IGNORE INTO wa_label_chats (account_id, label_id, jid) VALUES (?,?,?)', accountId, String(labelId), String(jid));
+  }
   const label = get('SELECT * FROM wa_labels WHERE account_id = ? AND label_id = ?', accountId, String(labelId));
   const chat = chatByJid(accountId, jid);
   if (!label?.name || !chat) return;
@@ -241,8 +250,20 @@ export function findLabels(accountId, name) {
 export function labelsList() {
   return all('SELECT l.*, a.name account FROM wa_labels l JOIN accounts a ON a.id = l.account_id WHERE l.deleted = 0 ORDER BY a.id, l.name').map((l) => ({
     account: l.account, accountId: l.account_id, id: l.label_id, name: l.name,
-    chats: get('SELECT COUNT(*) n FROM chats WHERE account_id = ? AND tags LIKE ?', l.account_id, `%,${labelTag(l.name)},%`).n,
+    // As the phone counts them.
+    chats: get('SELECT COUNT(*) n FROM wa_label_chats WHERE account_id = ? AND label_id = ?', l.account_id, l.label_id).n,
   }));
+}
+
+/** Make each chat's label tags match the phone exactly: tags the phone does not have are taken off, missing ones added. */
+export function reconcileLabelTags(accountId) {
+  for (const l of all('SELECT * FROM wa_labels WHERE account_id = ?', accountId)) {
+    const tag = labelTag(l.name);
+    const onPhone = new Set(all('SELECT jid FROM wa_label_chats WHERE account_id = ? AND label_id = ?', accountId, l.label_id).map((r) => chatByJid(accountId, r.jid)?.id).filter(Boolean));
+    for (const c of all('SELECT id, tags FROM chats WHERE account_id = ? AND tags LIKE ?', accountId, `%,${tag},%`)) if (l.deleted || !onPhone.has(c.id)) setTags(c.id, tagsOfChat(c).filter((t) => t !== tag));
+    if (!l.deleted) for (const id of onPhone) { const c = get('SELECT id, tags FROM chats WHERE id = ?', id); if (!tagsOfChat(c).includes(tag)) setTags(id, [...tagsOfChat(c), tag]); }
+  }
+  emit('chat', {});
 }
 const making = new Map(); // accountId -> promise: one label is made at a time, so two orders never make two copies
 
@@ -299,7 +320,20 @@ export async function removeLabel(chat, label) {
 /** Load the labels of one number (or every connected number) from WhatsApp again. Returns how many are known. */
 export async function refreshLabels(accountId = null) {
   const ids = accountId ? [Number(accountId)] : [...connectors.keys()];
-  for (const id of ids) await connectors.get(id)?.refreshLabels?.();
+  for (const id of ids) {
+    const conn = connectors.get(id);
+    if (!conn?.refreshLabels) continue;
+    // Start from the phone's full list: old records are dropped, then the snapshot fills them again.
+    const keep = all('SELECT * FROM wa_label_chats WHERE account_id = ?', id);
+    run('DELETE FROM wa_label_chats WHERE account_id = ?', id);
+    try {
+      await conn.refreshLabels();
+    } catch (e) {
+      for (const r of keep) run('INSERT OR IGNORE INTO wa_label_chats (account_id, label_id, jid) VALUES (?,?,?)', r.account_id, r.label_id, r.jid);
+      throw e;
+    }
+    reconcileLabelTags(id);
+  }
   return get(`SELECT COUNT(*) n FROM wa_labels WHERE deleted = 0${accountId ? ' AND account_id = ?' : ''}`, ...(accountId ? [Number(accountId)] : [])).n;
 }
 

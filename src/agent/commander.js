@@ -252,10 +252,10 @@ const TOOLS = {
     },
   },
   list_labels: {
-    doc: 'list_labels {} - the WhatsApp Business labels that really exist on each number, with how many chats have each. Use it whenever the owner asks about labels, and before naming a label.',
-    run: async () => {
-      // None known yet: the number was linked before labels were read. Load them from WhatsApp first.
-      if (!wa.labelsList().length) await wa.refreshLabels().catch(() => {});
+    doc: 'list_labels {"fresh": false} - the WhatsApp Business labels that really exist on each number, with how many chats have each AS THE PHONE COUNTS THEM. Use it whenever the owner asks about labels or how many chats a label has, and before naming a label. "fresh": true reloads from the phone first (when the owner says check again, live, or that a number looks wrong). Report the number exactly as returned.',
+    run: async ({ fresh } = {}) => {
+      // Counts come from the phone's own list; reload it when asked to check live, or when we have none.
+      if (fresh || !wa.labelsList().some((l) => l.chats)) await wa.refreshLabels().catch(() => {});
       const labels = wa.labelsList().map((l) => ({ name: l.name, number: l.account, chats: l.chats }));
       return labels.length ? { labels } : { labels: [], note: 'No WhatsApp Business labels could be loaded. Labels exist only on WhatsApp Business numbers linked by QR. Try "labels refresh karo" in a minute.' };
     },
@@ -272,7 +272,7 @@ const TOOLS = {
   },
   refresh_labels: {
     doc: 'refresh_labels {} - load the WhatsApp Business labels again from the phone (when a label the owner made is not found).',
-    run: async () => ({ labels_now: await wa.refreshLabels() }),
+    run: async () => { await wa.refreshLabels(); return { labels: wa.labelsList().map((l) => ({ name: l.name, number: l.account, chats: l.chats })) }; },
   },
   label_chats: {
     doc: 'label_chats {"label": "Flow Google", "create_new": false, "ad_text": ["eid"], "keywords": [], "campaign_id": null, "hours": 0, "days": 0, "tags": [], "stage": ""} - put a WhatsApp Business label on every matching chat that does not have it yet: came from an ad whose title has these words, talked about these words, belongs to a campaign, came in the last N hours or days, has a tag or stage. It always uses the EXISTING label with that name (any case or word order: "google flow" finds "Flow Google"). Set "create_new": true ONLY when the owner clearly asks to make a new label. "last 5 hours" = "hours": 5.',
