@@ -469,6 +469,7 @@ function campaignPage(id, startTab) {
   const PHASES = { batch: ['Reading and writing', 'Waiting for you', 'Sending', 'Done'], analysis: ['Reading chats', 'Learning', 'Done'] };
 
   const openTasks = new Set();
+  let tasksSeen = false;
   /** Work started inside this campaign (from its Command), each with live progress. */
   async function tasksTab() {
     const list = await GET(`/api/campaigns/${t.id}/tasks`).catch(() => []);
@@ -501,7 +502,9 @@ function campaignPage(id, startTab) {
             h('button.btn.sm', { onclick: () => { tab = 'messages'; load(); } }, 'Messages'))) : null);
     };
     // The first running task starts open; the others are one line each until clicked.
-    if (!openTasks.size && list.some((x) => x.status === 'active')) openTasks.add(list.find((x) => x.status === 'active').id);
+    // Only on first view: after that, what you open or close stays that way.
+    if (!tasksSeen && list.some((x) => x.status === 'active')) openTasks.add(list.find((x) => x.status === 'active').id);
+    tasksSeen = true;
     const running = list.filter((x) => ['active', 'paused'].includes(x.status));
     const finished = list.filter((x) => !['active', 'paused'].includes(x.status));
     set(body, h('div.stack', {},

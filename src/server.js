@@ -12,7 +12,7 @@ import { listProviders, publicProvider, callProvider, complete, hydrate, syncBal
 import { chooseModel } from './llm/client.js';
 import * as wa from './wa/manager.js';
 import { STAGES, decide, buildSystem } from './agent/brain.js';
-import { startPipeline, onOwner, eligibility, answerNow } from './agent/pipeline.js';
+import { startPipeline, onOwner, eligibility, answerNow, deleteChat } from './agent/pipeline.js';
 import { runChatCommand, COMMANDS } from './agent/chat-commands.js';
 import { startFollowups, runCampaign, campaign, whyNotSending, followupStatus } from './agent/followups.js';
 import { learnFromChats, learnFromWebsite, learnFromProfile, learning } from './agent/learn.js';
@@ -290,6 +290,11 @@ app.get('/api/chats/:id', wrap((req) => {
   const messages = all('SELECT id, from_me, by, type, text, ts, reply_to, reply_text FROM (SELECT * FROM messages WHERE chat_id = ? ORDER BY ts DESC, id DESC LIMIT 400) ORDER BY ts, id', chat.id);
   const followups = all("SELECT * FROM followups WHERE chat_id = ? AND status IN ('pending','approved') ORDER BY id", chat.id);
   return { chat: chatView(chat), messages, followups };
+}));
+/** Delete a chat from the dashboard: its messages, notes and waiting follow-ups. WhatsApp on the phone is not touched; if the person writes again, a new chat starts. */
+app.delete('/api/chats/:id', wrap((req) => {
+  need(get('SELECT id FROM chats WHERE id = ?', Number(req.params.id)), 'Chat');
+  return deleteChat(Number(req.params.id));
 }));
 app.patch('/api/chats/:id', wrap((req) => {
   const chat = need(get('SELECT * FROM chats WHERE id = ?', Number(req.params.id)), 'Chat');

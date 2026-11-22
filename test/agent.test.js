@@ -1848,3 +1848,14 @@ test('a task sends the owner\'s exact message, and campaign members get replies 
   assert.equal(eligibility({ ...old, campaign_id: t.id }, account)[0], false);
   (await import('../src/agent/tasks.js')).controlTask(t.id, 'remove');
 });
+
+test('a chat can be deleted from the dashboard with its messages and waiting follow-ups', async () => {
+  const id = Number(run("INSERT INTO chats (account_id, jid, phone, name, stage, created_at, last_msg_at) VALUES (1, '923000000777@s.whatsapp.net', '923000000777', 'Delete Me', 'new', ?, ?)", now(), now()).lastInsertRowid);
+  run('INSERT INTO messages (chat_id, wa_id, from_me, by, type, text, ts) VALUES (?,?,?,?,?,?,?)', id, 'del-1', 0, 'customer', 'text', 'hello', now());
+  run("INSERT INTO followups (chat_id, kind, text, status, due_at, created_at) VALUES (?, 'auto', 'hi again', 'approved', ?, ?)", id, now() + 60_000, now());
+  const { deleteChat } = await import('../src/agent/pipeline.js');
+  assert.equal(deleteChat(id).ok, true);
+  assert.equal(get('SELECT COUNT(*) n FROM chats WHERE id = ?', id).n, 0);
+  assert.equal(get('SELECT COUNT(*) n FROM messages WHERE chat_id = ?', id).n, 0);
+  assert.equal(get('SELECT COUNT(*) n FROM followups WHERE chat_id = ?', id).n, 0);
+});

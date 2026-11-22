@@ -46,6 +46,21 @@ export function scheduleNextFollowup(chatId, hoursOverride = null) {
   update('chats', chatId, { next_followup_at: due }, ['next_followup_at']);
 }
 
+/** Delete a chat from the dashboard: its messages and waiting follow-ups. WhatsApp on the phone keeps it. */
+export function deleteChat(chatId) {
+  const chat = get('SELECT * FROM chats WHERE id = ?', chatId);
+  if (!chat) return { ok: false };
+  clearTimeout(timers.get(chatId));
+  run('DELETE FROM followups WHERE chat_id = ?', chatId);
+  run('DELETE FROM messages WHERE chat_id = ?', chatId);
+  run('UPDATE task_events SET chat_id = NULL WHERE chat_id = ?', chatId);
+  run('DELETE FROM chats WHERE id = ?', chatId);
+  log('info', 'inbox', `Chat with ${chat.name || chat.phone || chat.jid} deleted from the dashboard`);
+  emit('chat', { chatId, deleted: true });
+  emit('followups');
+  return { ok: true };
+}
+
 /** Called for every live customer message. */
 export function onCustomer(chatId) {
   assignCampaign(chatId); // a new lead joins the campaign its ad, words or number point to

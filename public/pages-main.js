@@ -1,4 +1,4 @@
-import { h, set, ico, autosize, GET, POST, PATCH, PUT, act, toast, modal, field, select, rel, clock, dayLabel, num, STAGES, stagePill, leadPill, PROVIDER_STATUS, copyText, avatar } from './ui.js';
+import { h, set, ico, autosize, GET, POST, PATCH, PUT, DEL, act, toast, modal, field, select, rel, clock, dayLabel, num, STAGES, stagePill, leadPill, PROVIDER_STATUS, copyText, avatar } from './ui.js';
 import { S, live } from './state.js';
 
 const ACCOUNT_STATE = { connected: ['Connected', 'ok'], connecting: ['Connecting', 'warn'], qr: ['Scan QR', 'hot'], pairing: ['Enter code', 'hot'], logged_out: ['Logged out', 'bad'], error: ['Error', 'bad'], disconnected: ['Offline', ''] };
@@ -53,6 +53,17 @@ export function inbox(openId) {
     drawList();
   }
 
+  /** Delete one chat from the dashboard, after asking. */
+  function removeChat(chat) {
+    if (!confirm(`Delete the chat with ${chat.title}?\n\nIts messages, notes and waiting follow-ups are removed from this dashboard. WhatsApp on the phone keeps the chat. If they write again, a new chat starts.`)) return;
+    act(null, async () => {
+      await DEL(`/api/chats/${chat.id}`);
+      st.id = null; st.reply = null;
+      el.classList.remove('open', 'showside');
+      history.replaceState(null, '', location.hash.replace(/\/\d+$/, '') || '#/inbox');
+      await loadList(); loadThread();
+    }, 'Chat deleted');
+  }
   function open(id) {
     if (st.id !== id) st.reply = null;
     st.id = id;
@@ -139,6 +150,7 @@ export function inbox(openId) {
         h('div.grow.th-name', {}, h('h2', {}, chat.title), h('div.muted', {}, chat.phone ? `+${chat.phone} · ` : '', chat.accountName)),
         h('div.th-pills', {}, leadPill(chat.lead), stagePill(chat.stage),
           h(`span.pill${chat.auto ? '.hot' : ''}`, { title: chat.autoReason || 'The agent answers this chat on its own' }, chat.auto ? 'Agent on' : 'Agent off')),
+        h('button.iconbtn.dark', { title: 'Delete this chat', 'aria-label': 'Delete this chat', onclick: () => removeChat(chat) }, ico('trash-2', 'sm')),
         h('button.iconbtn.dark.th-info', { title: 'Customer details', 'aria-label': 'Customer details', onclick: () => el.classList.toggle('showside') }, ico('panel-right'))),
       chat.needs_human ? h('div.banner.bad', {}, h('div.grow', {}, h('b', {}, 'Needs you. '), chat.handoff_reason || 'The agent asked for help.'), h('button.btn.sm', { onclick: () => patch({ resume: true }, 'Agent resumed') }, 'Hand back to agent')) : null,
       // Why the agent is quiet in this chat, with the one click that changes it.
@@ -165,11 +177,12 @@ export function inbox(openId) {
         h('div.kv', {}, 'Lead type', h('b', {}, chat.is_new ? 'New (after linking)' : 'Existing contact')),
         h('div.kv', {}, 'Last from them', h('b', {}, rel(chat.last_in_at))),
         h('div.kv', {}, 'Follow-ups sent', h('b', {}, chat.followup_count)),
-        h('div.kv', {}, 'Next follow-up', h('b', {}, chat.next_followup_at ? rel(chat.next_followup_at) : 'None'))));
+        h('div.kv', {}, 'Next follow-up', h('b', {}, chat.next_followup_at ? rel(chat.next_followup_at) : 'None'))),
+      h('section', {}, h('button.btn.ghost.danger', { onclick: () => removeChat(chat) }, ico('trash-2', 'sm'), 'Delete this chat'), h('div.muted', { style: 'font-size:12px' }, 'Removes it from this dashboard only. WhatsApp on the phone keeps it.')));
   }
 
   let lt;
-  live.on('chat', ({ chatId }) => { clearTimeout(lt); lt = setTimeout(loadList, 300); if (chatId === st.id) loadThread(); });
+  live.on('chat', ({ chatId, deleted }) => { clearTimeout(lt); lt = setTimeout(loadList, 300); if (chatId === st.id) { if (deleted) { st.id = null; el.classList.remove('open', 'showside'); } loadThread(); } });
   live.on('history', () => { clearTimeout(lt); lt = setTimeout(loadList, 800); });
   live.on('followups', () => st.id && loadThread());
   drawHead();
