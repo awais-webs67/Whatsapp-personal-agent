@@ -216,7 +216,11 @@ function campaignPage(id) {
       m.error ? h('div.muted', { style: 'font-size:12px' }, m.error) : null))) : h('div.cempty', {}, h('b', {}, 'No messages yet'), h('p', {}, 'Messages this campaign writes show up here before and after they go out.')));
   }
 
-  function settingsTab() { set(body, t.kind === 'email' ? emailSettings(t, () => load()) : settingsForm(t, () => load())); }
+  async function settingsTab() {
+    if (t.kind === 'email') return set(body, emailSettings(t, () => load()));
+    const acc = await GET('/api/settings');
+    set(body, settingsForm(t, acc, () => load()));
+  }
 
   /** What the campaign is doing right now, and its latest steps as they happen. */
   async function drawLive(box) {
@@ -294,26 +298,43 @@ function campaignPage(id) {
   return el;
 }
 
-// ---------- settings of one campaign (both kinds) ----------
-function settingsForm(t, done) {
+// ---------- settings of one campaign: everything about it, in one place (like an ad campaign) ----------
+const SPEED = { instant: 'Instant', fast: 'Fast', natural: 'Natural (slowest, most human)' };
+function settingsForm(t, acc, done) {
   const auto = t.kind === 'auto';
-  const c = auto ? t.config || {} : { ...(t.params || {}), approval: (t.params || {}).autoApprove === false, night: !!t.ignore_quiet };
-  const files = (t.params || {}).files || [];
+  const p = t.params || {};
+  const c = auto ? t.config || {} : { ...p, approval: p.autoApprove === false, night: !!t.ignore_quiet };
+  const files = p.files || [];
   const inp = (v, attrs = {}) => h('input', { type: 'text', value: v ?? '', ...attrs });
   const area = (v, rows, ph) => h('textarea', { rows, dir: 'auto', value: v || '', placeholder: ph });
+  const sel = (opts, v) => h('select', {}, opts.map(([k, l]) => h('option', { value: k, selected: String(v ?? '') === k }, l)));
+  const tri = (v, def, onText, offText) => sel([['', `Account default (${def ? onText : offText})`], ['on', onText], ['off', offText]], v === true ? 'on' : v === false ? 'off' : '');
+  const check = (on) => h('input', { type: 'checkbox', checked: !!on });
   const gap = Array.isArray(c.intervalMinutes) ? c.intervalMinutes : [c.gapMin ?? c.intervalMinutes ?? 5, c.gapMax ?? c.intervalMinutes ?? 10];
+  const ownQuiet = c.quietStart != null && c.quietEnd != null;
+  const dateOf = (ts) => (ts ? new Date(ts - new Date(ts).getTimezoneOffset() * 60_000).toISOString().slice(0, 10) : '');
   const f = {
-    name: inp(t.title),
+    name: inp(t.title), endsAt: inp(dateOf(c.endsAt), { type: 'date' }), priority: inp(c.priority ?? 100, { type: 'number' }),
+    keywords: inp((c.keywords || []).join(', ')), adText: inp((c.adText || []).join(', ')), adIds: inp((c.adIds || []).join(', ')), labels: inp((c.labels || []).join(', ')),
     message: auto ? null : area(t.instruction, 3, 'What each message should say'),
-    instructions: area(c.instructions, 4, 'Business rules for this campaign: the offer, prices to mention, what to push, what never to say'),
+    offer: area(c.offer, 5, 'What this campaign sells: products, packages, prices, the offer and until when.\nFor example:\nPremium plan, 1 year: Rs 2,500 (offer price, until 31 December)\nDelivery: within 1 hour after payment'),
+    prices: sel([['', `Account default (${acc.business.prices === 'link' ? 'send the link' : 'say prices'})`], ['quote', 'Say the prices written here'], ['link', 'Never say a price, send the link']], c.prices),
+    shopLink: inp(c.shopLink, { placeholder: acc.business.shopLink || 'https://…' }), links: area(c.links, 2, 'Links this campaign may send, one per line'),
+    instructions: area(c.instructions, 4, 'Rules for this campaign: what to push, what to ask, what never to say'),
     format: area(c.format, 4, 'One rule per line, e.g.\nGreeting on its own line\nLink on its own line at the end'),
     followupStyle: area(c.followupStyle, 3, 'An example message in your words. Use ___ for the product and {name} for their name.'),
+    autoReply: check(c.autoReply !== false), replySpeed: sel([['', `Account default (${SPEED[Object.keys(SPEED).find((k) => acc.human.debounceMin === { instant: 1, fast: 2, natural: 4 }[k])] || 'custom'})`], ...Object.entries(SPEED)], c.replySpeed),
+    voice: tri(c.voice, acc.voice?.transcribe !== false, 'Listen', 'Ignore'), images: tri(c.images, acc.images?.read === true, 'Look at them', 'Ignore'),
+    followups: check(c.followups !== false), steps: auto ? inp((c.steps || []).join(', ')) : null,
     gapMin: inp(Math.round(gap[0]), { type: 'number', min: 0 }), gapMax: inp(Math.round(gap[1]), { type: 'number', min: 0 }),
-    steps: auto ? inp((c.steps || []).join(', ')) : null,
-    keywords: inp((c.keywords || []).join(', ')), adText: inp((c.adText || []).join(', ')), adIds: inp((c.adIds || []).join(', ')), labels: inp((c.labels || []).join(', ')),
-    label: inp(c.label || ''), priority: inp(c.priority ?? 100, { type: 'number' }),
-    templateFallback: h('input', { type: 'checkbox', checked: c.templateFallback !== false }),
+    approval: sel([['send', 'Send by itself'], ['ask', 'Wait for my OK (Approvals page)']], c.approval ? 'ask' : 'send'), night: check(c.night),
+    ownQuiet: check(ownQuiet), quietStart: inp(c.quietStart ?? acc.followup.quietStart, { type: 'number', min: 0, max: 23 }), quietEnd: inp(c.quietEnd ?? acc.followup.quietEnd, { type: 'number', min: 0, max: 23 }),
+    dailyCap: inp(c.dailyCap || '', { type: 'number', min: 0, placeholder: 'No own limit' }),
+    templateFallback: check(c.templateFallback !== false), label: inp(c.label || ''),
   };
+  const quietBox = h('div.grid2', {}, field('From (hour, 0–23)', f.quietStart), field('Until (hour)', f.quietEnd));
+  const syncQuiet = () => { quietBox.style.display = f.ownQuiet.checked ? '' : 'none'; };
+  f.ownQuiet.onchange = syncQuiet; syncQuiet();
   const numbers = h('div.checks', {}, S.accounts.length ? S.accounts.map((a) => h('label', {}, h('input', { type: 'checkbox', value: a.id, checked: (c.accountIds || []).includes(a.id) }), a.name)) : h('span.muted', {}, 'No number linked yet.'));
   const fileList = h('div.cfiles', {}, files.length ? files.map((x) => h('div.cfile', {}, h('span', {}, ico('file-text', 'sm'), ' ', h('b', {}, x.name), h('span.muted', {}, ` · ${num(x.text.length)} characters`)),
     h('button.btn.sm.ghost.danger', { onclick: (e) => act(e.target, async () => { await DEL(`/api/campaigns/${t.id}/files/${encodeURIComponent(x.name)}`); done(); }, 'File removed') }, 'Remove'))) : h('div.muted', {}, 'No files yet.'));
@@ -325,35 +346,63 @@ function settingsForm(t, done) {
     }
     done();
   }, 'Files added. Every message of this campaign uses them.') });
-  const sec = (title, hint, ...kids) => h('div.card.csec', {}, h('header', {}, h('div', {}, h('h2', {}, title), hint ? h('p.muted', {}, hint) : null)), h('div.pad.stack', {}, kids));
+  const toggleRow = (box, title, hint) => h('label.cswitch', {}, h('div', {}, h('b', {}, title), h('span', {}, hint)), box);
+
+  const SECTIONS = [
+    ['basics', 'flag', 'Campaign', 'Name, numbers and how long it runs.', [
+      field('Campaign name', f.name),
+      auto && !c.isDefault ? field('Numbers', numbers, 'None ticked = all your numbers.') : null,
+      h('div.grid2', {}, field('Ends on', f.endsAt, 'Pauses by itself after this day. Empty = runs until you pause it.'), auto && !c.isDefault ? field('Priority', f.priority, 'When two campaigns match a lead, the lower number wins.') : h('div'))]],
+    auto ? ['audience', 'users', 'Audience', 'Who joins this campaign.', c.isDefault ? [h('div.note', {}, 'This is the default campaign: every new lead that no other campaign takes joins it.')] : [
+      h('div.note', {}, 'Any one of these is enough. Leave all empty to take every new lead on the numbers above.'),
+      h('div.grid2', {}, field('Words in their first message', f.keywords, 'Give each ad its own pre-filled message and use a word from it.'), field('Words in the ad title', f.adText)),
+      h('div.grid2', {}, field('Meta ad IDs', f.adIds), field('Chat already has the WhatsApp label', f.labels))]] : null,
+    ['content', 'package', 'Offer and content', 'What the agent says in this campaign. Your shared Knowledge is used too; what you write here comes first.', [
+      auto ? null : field('What each message should say', f.message, 'Changing it rewrites the messages not sent yet.'),
+      field('Offer, products and prices of this campaign', f.offer),
+      h('div.grid2', {}, field('Prices', f.prices), field('Link when a product has none', f.shopLink)),
+      field('Links it may send', f.links),
+      field('Instructions', f.instructions),
+      h('label.f', {}, 'Files with details (.md, .txt, .docx)', h('div.row', {}, h('button.btn', { type: 'button', onclick: () => picker.click() }, ico('upload', 'sm'), 'Upload files'), picker), fileList),
+      field('Message layout', f.format, 'Empty = the layout from Knowledge.'),
+      field('Example message in your words', f.followupStyle)]],
+    auto ? ['replies', 'message-circle', 'Replies', 'How the agent answers this campaign’s leads.', [
+      h('div.cswitches.wide', { style: 'border:1px solid var(--line);border-radius:10px' }, toggleRow(f.autoReply, 'Auto reply', 'Off: you answer these leads yourself; follow-ups can still run.')),
+      h('div.grid3', {}, field('Reply speed', f.replySpeed, 'How long it waits and “types” before answering.'), field('Voice notes', f.voice, 'Turned into text (small cost).'), field('Pictures', f.images, 'Payment proofs, screenshots (one AI call each).'))]] : null,
+    ['sending', 'send', auto ? 'Follow-ups and sending' : 'Sending', auto ? 'When quiet leads get a follow-up, and how fast messages go out.' : 'How fast its messages go out.', [
+      auto ? h('div.cswitches.wide', { style: 'border:1px solid var(--line);border-radius:10px' }, toggleRow(f.followups, 'Follow-ups', 'Off: replies only, no follow-ups.')) : null,
+      auto ? field('Follow up after (hours of silence)', f.steps, 'One number per follow-up, e.g. 2, 24, 72') : null,
+      h('div.grid3', {}, field('Gap between messages, from (min)', f.gapMin), field('to (min)', f.gapMax), field('Before sending', f.approval)),
+      h('div.grid2', {}, field('Most messages per day', f.dailyCap, `Only for this campaign. The number's own limit (${acc.followup.dailyCap} a day) always applies too.`), h('div')),
+      h('div.cswitches.wide', { style: 'border:1px solid var(--line);border-radius:10px' },
+        toggleRow(f.night, 'Send at night', 'On: ignores quiet hours.'),
+        toggleRow(f.ownQuiet, 'Own quiet hours', `Off: account quiet hours (${acc.followup.quietStart}:00 to ${acc.followup.quietEnd}:00).`)),
+      quietBox,
+      auto ? h('label.row', {}, f.templateFallback, h('span', {}, 'When no AI model can write, send the example message (name and product filled in)')) : null]],
+    auto ? ['labels', 'tag', 'Labels', 'WhatsApp Business labels for this campaign.', [field('Put this WhatsApp label on each lead', f.label, 'QR-linked WhatsApp Business. Made on the phone if missing; your own labels are never removed.')]] : null,
+  ].filter(Boolean);
+
   const save = h('button.btn.primary', { onclick: () => act(save, async () => {
-    const body = { name: f.name.value, instructions: f.instructions.value, format: f.format.value, followupStyle: f.followupStyle.value, gapMin: Number(f.gapMin.value), gapMax: Number(f.gapMax.value) };
+    const body = {
+      name: f.name.value, offer: f.offer.value, prices: f.prices.value, shopLink: f.shopLink.value, links: f.links.value, instructions: f.instructions.value, format: f.format.value, followupStyle: f.followupStyle.value,
+      gapMin: Number(f.gapMin.value), gapMax: Number(f.gapMax.value), approval: f.approval.value === 'ask', night: f.night.checked, dailyCap: Number(f.dailyCap.value) || 0,
+      quietStart: f.ownQuiet.checked ? Number(f.quietStart.value) : '', quietEnd: f.ownQuiet.checked ? Number(f.quietEnd.value) : '',
+      endsAt: f.endsAt.value ? new Date(`${f.endsAt.value}T23:59:00`).getTime() : '',
+    };
     if (auto) {
-      Object.assign(body, { steps: f.steps.value, label: f.label.value, templateFallback: f.templateFallback.checked });
+      Object.assign(body, { steps: f.steps.value, label: f.label.value, templateFallback: f.templateFallback.checked, autoReply: f.autoReply.checked, followups: f.followups.checked,
+        replySpeed: f.replySpeed.value, voice: f.voice.value === '' ? null : f.voice.value === 'on', images: f.images.value === '' ? null : f.images.value === 'on' });
       if (!c.isDefault) Object.assign(body, { keywords: f.keywords.value, adText: f.adText.value, adIds: f.adIds.value, labels: f.labels.value, priority: Number(f.priority.value), accountIds: [...numbers.querySelectorAll('input:checked')].map((i) => Number(i.value)) });
     } else body.instruction = f.message.value;
     const r = await PATCH(`/api/campaigns/${t.id}`, body);
-    toast(r.changed?.length ? `Saved: ${r.changed.join('; ')}` : 'Nothing changed');
+    toast(r.changed?.length ? `Saved: ${r.changed.join('; ')}`.slice(0, 220) : 'Nothing changed');
     done();
   }) }, 'Save changes');
-  return h('div.stack', {},
-    sec('Name', null, field('Campaign name', f.name)),
-    auto && !c.isDefault ? sec('Who joins', 'Any one of these is enough. Leave all empty to take every new lead on the chosen numbers.',
-      field('Numbers', numbers, 'None ticked = all numbers.'),
-      h('div.grid2', {}, field('Words in their first message', f.keywords, 'Give each ad its own pre-filled message and use a word from it.'), field('Words in the ad title', f.adText)),
-      h('div.grid2', {}, field('Meta ad IDs', f.adIds), field('Chat already has the WhatsApp label', f.labels)),
-      field('Priority', f.priority, 'Lower wins when two campaigns match.')) : auto ? sec('Who joins', null, h('div.note', {}, 'Default campaign: every new lead that no other campaign takes.')) : null,
-    sec('Instructions and files', 'Used in every reply and message of this campaign, on top of your Knowledge. The AI reads them each time, so it never forgets them.',
-      auto ? null : field('What each message should say', f.message, 'Changing it rewrites the messages not sent yet.'),
-      field('Campaign instructions', f.instructions),
-      h('label.f', {}, 'Files with business instructions (.md, .txt, .docx)', h('div.row', {}, h('button.btn', { type: 'button', onclick: () => picker.click() }, 'Upload files'), picker), fileList)),
-    sec('Message format', 'How this campaign’s messages are laid out. Empty = your general format from Knowledge.',
-      field('Layout rules', f.format), field('Example message', f.followupStyle), auto ? h('label.row', {}, f.templateFallback, h('span', {}, 'When no AI model can write, send this example (name and product filled in)')) : null),
-    sec('Timing', null,
-      auto ? field('Follow up after (hours)', f.steps, 'One number per follow-up, e.g. 2, 24, 72') : null,
-      h('div.grid2', {}, field('Gap between messages, min (minutes)', f.gapMin), field('Gap max (minutes)', f.gapMax))),
-    auto ? sec('Labels', null, field('Put this WhatsApp label on each lead', f.label, 'WhatsApp Business (QR-linked). Made on the phone if missing; your own labels are never removed.')) : null,
-    h('div.csave', {}, save, h('span.muted', {}, 'Every change is kept in Log & history.')));
+  const nav = h('nav.csnav', { 'aria-label': 'Campaign settings sections' }, SECTIONS.map(([id, icon, title]) => h('a', { href: `#cs-${id}`, onclick: (e) => { e.preventDefault(); document.getElementById(`cs-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); } }, ico(icon, 'sm'), title)));
+  return h('div.csettings', {}, nav,
+    h('div.stack', {}, SECTIONS.map(([id, icon, title, hint, kids], i) => h('div.card.csec', { id: `cs-${id}` },
+      h('header', {}, h('div.csec-h', {}, h('span.csec-n', {}, i + 1), h('div', {}, h('h2', {}, title), h('p.muted', {}, hint)))), h('div.pad.stack', {}, kids))),
+    h('div.csave', {}, save, h('span.muted', {}, 'Only this campaign changes. Every change is kept in Log & history.'))));
 }
 
 function emailSettings(t, done) {

@@ -84,7 +84,7 @@ function compare() {
 
 // ============================== Knowledge ==============================
 export function knowledge() {
-  const el = h('div.page', {}, h('div.head', {}, h('div', {}, h('h1', {}, 'Knowledge'), h('p', {}, 'Everything the agent knows about your business comes from this page. It will not quote a price or policy that is not written here; it hands the chat to you instead.'))));
+  const el = h('div.page', {}, h('div.head', {}, h('div', {}, h('h1', {}, 'Knowledge'), h('p', {}, 'Shared business info that every campaign uses: who you are, all products, FAQs, policies and the default layout. A campaign can add its own offer, prices and rules in its Settings → Offer and content; those come first. The agent never quotes a price or policy that is not written here or in the campaign.'))));
   GET('/api/settings').then((s) => {
     const b = s.business;
     const f = {};
@@ -198,21 +198,24 @@ function learnCard(f, b) {
 
 // ============================== Settings ==============================
 export function settings() {
-  const el = h('div.page', {}, h('div.head', {}, h('div', {}, h('h1', {}, 'Settings'), h('p', {}, 'Rules for the whole agent: what it may do, how human it looks, and the limits that keep your numbers safe.'))),
+  const el = h('div.page', {}, h('div.head', {}, h('div', {}, h('h1', {}, 'Account'), h('p', {}, 'Master switches, safety limits and defaults for your whole account. Everything about one campaign is set inside that campaign.'))),
     h('div.scope', {},
-      h('div', {}, h('div.scope-t', {}, ico('sliders-horizontal'), h('b', {}, 'Settings: the whole agent')), h('span', {}, 'Switches, reply speed, number safety, quiet hours, time zone. Apply to every number and every campaign.')),
-      h('div', {}, h('div.scope-t', {}, ico('megaphone'), h('b', {}, 'Campaign settings: one campaign')), h('span', {}, 'Its instructions, files, follow-up timing, labels and who joins. Open the campaign on the ', h('a', { href: '#/campaigns' }, 'Campaigns'), ' page.')),
-      h('div', {}, h('div.scope-t', {}, ico('book-open'), h('b', {}, 'Knowledge: what it says')), h('span', {}, 'Your products, prices, message format and follow-up style, on the ', h('a', { href: '#/knowledge' }, 'Knowledge'), ' page.'))));
+      h('div', {}, h('div.scope-t', {}, ico('shield-check'), h('b', {}, 'Account (this page)')), h('span', {}, 'Master switches, number safety limits, time zone, and the defaults a campaign uses until you change them in it.')),
+      h('div', {}, h('div.scope-t', {}, ico('megaphone'), h('b', {}, 'Campaign → Settings')), h('span', {}, 'Everything about one campaign: audience, offer and prices, replies, voice and pictures, follow-ups, quiet hours, daily limit, labels, end date. Open it on ', h('a', { href: '#/campaigns' }, 'Campaigns'), '.')),
+      h('div', {}, h('div.scope-t', {}, ico('book-open'), h('b', {}, 'Knowledge')), h('span', {}, 'Shared business info every campaign can use: about you, all products, FAQs, policies, default layout. ', h('a', { href: '#/knowledge' }, 'Open Knowledge'), '.'))));
   Promise.all([GET('/api/settings'), GET('/api/settings/media').catch(() => ({}))]).then(([s, media]) => {
     // The switches save at once; each says whether it spends AI tokens.
     const sw = (on, label, hint, cost, patchOf) => h('label.cswitch', {}, h('div', {}, h('b', {}, label, ' ', h(`span.cost.${cost[0]}`, {}, cost[1])), h('span', {}, hint)),
       toggle(on, (v) => act(null, () => PUT('/api/settings', patchOf(v)), `${label}: ${v ? 'on' : 'off'}`), label));
-    el.append(h('div.card', { style: 'margin-bottom:16px' }, h('header', {}, h('h2', {}, 'What the agent does')), h('div.cswitches.wide', {},
-      sw(s.autopilot, 'Auto reply to customers', 'Off: the agent sends nothing by itself. You answer from the Inbox; follow-ups stop too.', ['mid', 'Tokens per reply'], (v) => ({ autopilot: v })),
-      sw(s.reading?.auto !== false, 'Read chats in the background', 'Keeps each customer’s stage, summary and profile up to date. Off saves the most tokens; replies still work.', ['high', 'Most tokens'], (v) => ({ reading: { auto: v } })),
-      sw(s.voice?.transcribe !== false, 'Listen to voice notes', media.voice ? `Turned into text with ${media.voice}.` : 'Needs a Groq or OpenAI key on the AI models page (Groq is free).', ['low', 'Small'], (v) => ({ voice: { transcribe: v } })),
-      sw(s.images?.read === true, 'Look at pictures', media.images ? `Payment proofs, screenshots and product photos are described with ${media.images}. Each picture is one extra AI call.` : 'Needs a Gemini, Groq, OpenAI or OpenRouter key on the AI models page.', ['mid', 'One call per picture'], (v) => ({ images: { read: v } })),
-      sw(s.llm.tokenSaver !== false, 'Token saver', 'With a long product list, only the products this customer asks about are sent in full.', ['save', 'Saves tokens'], (v) => ({ llm: { tokenSaver: v } })))));
+    const head = (title, hint) => h('header', {}, h('div', {}, h('h2', {}, title), h('p.muted', { style: 'margin:3px 0 0;font-size:12.5px;text-transform:none;letter-spacing:0' }, hint)));
+    el.append(
+      h('div.card', { style: 'margin-bottom:16px' }, head('Master switches', 'For the whole account. Off here stops it in every campaign.'), h('div.cswitches.wide', {},
+        sw(s.autopilot, 'Agent on (master switch)', 'Off: nothing is sent by itself in any campaign: no replies, no follow-ups. Each campaign also has its own switches.', ['mid', 'Tokens per reply'], (v) => ({ autopilot: v })),
+        sw(s.reading?.auto !== false, 'Read chats in the background', 'Keeps each customer’s stage, summary and profile up to date. Off saves the most tokens; replies still work.', ['high', 'Most tokens'], (v) => ({ reading: { auto: v } })),
+        sw(s.llm.tokenSaver !== false, 'Token saver', 'With a long product list, only the products this customer asks about are sent in full.', ['save', 'Saves tokens'], (v) => ({ llm: { tokenSaver: v } })))),
+      h('div.card', { style: 'margin-bottom:16px' }, head('Defaults for campaigns', 'A campaign uses these until you choose otherwise in its Settings → Replies.'), h('div.cswitches.wide', {},
+        sw(s.voice?.transcribe !== false, 'Voice notes: listen', media.voice ? `Turned into text with ${media.voice}.` : 'Needs a Groq or OpenAI key on the AI models page (Groq is free).', ['low', 'Small'], (v) => ({ voice: { transcribe: v } })),
+        sw(s.images?.read === true, 'Pictures: look at them', media.images ? `Payment proofs, screenshots and product photos are described with ${media.images}. Each picture is one extra AI call.` : 'Needs a Gemini, Groq, OpenAI or OpenRouter key on the AI models page.', ['mid', 'One call per picture'], (v) => ({ images: { read: v } })))));
     const inputs = [];
     const n = (group, key, label, hint, step = 1) => { const i = h('input', { type: 'number', step, min: 0, value: s[group][key] }); inputs.push([group, key, i]); return field(label, i, hint); };
     const pair = (group, a, b, label, hint) => {
@@ -233,7 +236,7 @@ export function settings() {
     }, 'Settings saved') }, 'Save settings');
     const cur = h('input', { type: 'password', autocomplete: 'current-password' }), next = h('input', { type: 'password', autocomplete: 'new-password' });
     el.append(h('div.stack', {},
-      h('div.card', {}, h('header', {}, h('h2', {}, 'Reply pacing'), h('div.row', {}, h('span.muted', {}, 'Preset'), [['instant', 'Instant'], ['fast', 'Fast'], ['natural', 'Natural']].map(([id, label]) =>
+      h('div.card', {}, h('header', {}, h('h2', {}, 'Reply speed: default'), h('div.row', {}, h('span.muted', {}, 'Preset'), [['instant', 'Instant'], ['fast', 'Fast'], ['natural', 'Natural']].map(([id, label]) =>
         h('button.btn.sm', { title: { instant: 'Answers as soon as the model does', fast: 'A few seconds, still looks typed', natural: 'Slowest, most human-looking' }[id], onclick: (e) => act(e.target, async () => { const p = (await GET('/api/pacing'))[id]; for (const [g, k, i] of inputs) if (g === 'human' && k in p) i.value = p[k]; }, `${label} pacing filled in. Save to apply.`) }, label)))), h('div.pad.stack', {},
         h('div.grid3', {},
           pair('human', 'debounceMin', 'debounceMax', 'Wait for them to finish (sec)', 'Several quick messages get one answer.'),
@@ -244,10 +247,10 @@ export function settings() {
           pair('human', 'gapMin', 'gapMax', 'Pause between bubbles (sec)'),
           n('human', 'maxRepliesPerHour', 'Max AI replies per hour, per number', 'A safety brake. Past this, chats wait for you.')),
         h('div.grid3', {}, n('human', 'handoffMinutes', 'Stay quiet after I reply (min)', 'When you answer from your phone, the agent steps back.')))),
-      h('div.card', {}, h('header', {}, h('h2', {}, 'Number safety (every campaign)')), h('div.pad.stack', {},
-        h('div.note', {}, 'When and how often follow-ups go out is set per campaign on the ', h('a', { href: '#/campaigns' }, 'Campaigns'), ' page. These limits protect each number and apply to every campaign and task.'),
+      h('div.card', {}, h('header', {}, h('h2', {}, 'Number safety: limits for every campaign')), h('div.pad.stack', {},
+        h('div.note', {}, 'Each campaign sets its own follow-up times, gap, quiet hours and daily limit in its Settings → Sending. These limits protect each WhatsApp number and always apply on top.'),
         h('div.grid3', {}, n('followup', 'dailyCap', 'Max proactive messages per day, per number'), n('followup', 'repeatGuardHours', 'One batch message per person per (hours)', 'A new batch skips people messaged this recently.'), field('Time zone', tz, 'e.g. Asia/Karachi')),
-        h('div.grid3', {}, pair('followup', 'quietStart', 'quietEnd', 'Quiet hours (24h clock)', 'Nothing proactive goes out between these hours, unless a campaign or task is allowed to send at night.')))),
+        h('div.grid3', {}, pair('followup', 'quietStart', 'quietEnd', 'Default quiet hours (24h clock)', 'Used by campaigns that have no quiet hours of their own.')))),
       h('div.card', {}, h('header', {}, h('h2', {}, 'Agent updates')), h('div.pad.stack', {},
         h('div.row', {}, notifyWa, h('div.grow', {}, h('b', { style: 'color:var(--ink)' }, 'Also send updates to my WhatsApp'), h('div.muted', {}, 'Task progress, customers who need you, sales and the daily summary go to your “Message yourself” chat (write anything there once so the agent knows it). They always appear on the Command page.'))),
         h('div.grid3', {}, field('Daily summary at (hour, 0–23; -1 = off)', digest, 'Uses the time zone below.')))),

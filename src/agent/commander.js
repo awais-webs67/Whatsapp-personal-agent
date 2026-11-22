@@ -150,13 +150,20 @@ const TOOLS = {
     },
   },
   update_task: {
-    doc: 'update_task {"id": 7, "instruction": "the new full instruction for the messages", "interval_minutes": 10 or [6, 25], "steps_hours": [2, 24, 72], "keywords": ["canva"], "ad_ids": ["1234"], "ad_text": ["eid"], "followup_style": "example message", "format": "message layout rules for this campaign, one per line", "campaign_instructions": "extra business instructions for this campaign", "name": "Eid Canva", "start_in_minutes": 30, "send": true, "ignore_quiet_hours": true, "every_minutes": 30, "daily_at": "10:00", "at": "18:30", "pause": false, "resume": false} - CHANGE a campaign or task that already exists instead of starting a new one (campaign and task mean the same thing). For an automatic campaign: interval_minutes = gap between its follow-ups, steps_hours = when to follow up after the last message, instruction = how to answer and follow up with its leads, keywords / ad_ids / ad_text = who joins it. Use it whenever the owner talks about the running or last task ("is task mein", "isko", "ab se", "message mein yeh bhi likho", "gap 10 minute kar do", "raat ko bhi bhejo"). Leave out "id" to change the latest task of this conversation. Send only what changes; "instruction" replaces the old one, so include what should stay. Messages written but not sent yet are rewritten for a new instruction and spaced again for a new interval.',
+    doc: 'update_task {"id": 7, "instruction": "the new full instruction for the messages", "interval_minutes": 10 or [6, 25], "steps_hours": [2, 24, 72], "keywords": ["canva"], "ad_ids": ["1234"], "ad_text": ["eid"], "followup_style": "example message", "format": "message layout rules for this campaign, one per line", "campaign_instructions": "extra business instructions for this campaign", "name": "Eid Canva", "start_in_minutes": 30, "send": true, "ignore_quiet_hours": true, "every_minutes": 30, "daily_at": "10:00", "at": "18:30", "pause": false, "resume": false, "offer": "products, prices and the offer of this campaign", "price_mode": "quote|link", "links": "links it may send", "reply_speed": "instant|fast|natural", "voice": true, "images": false, "quiet_hours": [22, 9], "daily_cap": 30, "ends_on": "2026-12-31"} - CHANGE a campaign or task that already exists instead of starting a new one (campaign and task mean the same thing). For an automatic campaign: interval_minutes = gap between its follow-ups, steps_hours = when to follow up after the last message, instruction = how to answer and follow up with its leads, keywords / ad_ids / ad_text = who joins it. Use it whenever the owner talks about the running or last task ("is task mein", "isko", "ab se", "message mein yeh bhi likho", "gap 10 minute kar do", "raat ko bhi bhejo"). Leave out "id" to change the latest task of this conversation. Send only what changes; "instruction" replaces the old one, so include what should stay. Messages written but not sent yet are rewritten for a new instruction and spaced again for a new interval.',
     run: async (a) => {
       const t = findTask(a.id, activeThread);
       if (!t) return { error: 'No running campaign or task to change. Start one first.' };
       const out = { task_id: t.id, title: t.title, changed: [] };
-      if (t.kind !== 'auto' && (a.format || a.campaign_instructions || a.followup_style)) {
-        out.changed.push(...(await updateCampaign(t.id, { format: a.format, instructions: a.campaign_instructions, followupStyle: a.followup_style }, 'command')).changed);
+      // The campaign's own offer, prices, links, speed, media, quiet hours, daily limit and end date.
+      const q = nums(a.quiet_hours);
+      const own = {
+        ...(a.offer ? { offer: a.offer } : {}), ...(a.price_mode ? { prices: a.price_mode } : {}), ...(a.links ? { links: a.links } : {}),
+        ...(a.reply_speed ? { replySpeed: a.reply_speed } : {}), ...(typeof a.voice === 'boolean' ? { voice: a.voice } : {}), ...(typeof a.images === 'boolean' ? { images: a.images } : {}),
+        ...(q.length === 2 ? { quietStart: q[0], quietEnd: q[1] } : {}), ...(a.daily_cap != null ? { dailyCap: Number(a.daily_cap) } : {}), ...(a.ends_on ? { endsAt: Date.parse(a.ends_on) } : {}),
+      };
+      if (t.kind !== 'auto' && (a.format || a.campaign_instructions || a.followup_style || Object.keys(own).length)) {
+        out.changed.push(...(await updateCampaign(t.id, { format: a.format, instructions: a.campaign_instructions, followupStyle: a.followup_style, ...own }, 'command')).changed);
       }
       if (t.kind === 'auto') {
         const range = nums(a.interval_minutes).filter((n) => n > 0);
@@ -173,6 +180,7 @@ const TOOLS = {
           ...(a.ad_ids ? { adIds: a.ad_ids } : {}),
           ...(a.ad_text ? { adText: a.ad_text } : {}),
           ...(a.name ? { name: a.name } : {}),
+          ...own,
         };
         out.changed.push(...updateAuto(t.id, patch, 'command').changed);
         if (a.pause && t.status === 'active') { controlTask(t.id, 'pause'); out.changed.push('paused'); }

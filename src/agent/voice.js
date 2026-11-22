@@ -5,6 +5,9 @@
 import { all, get, run } from '../db.js';
 import { getSettings, log, emit } from '../core.js';
 import { hydrate } from '../llm/router.js';
+import { mediaFor } from './campaigns.js';
+
+const chatOf = (chatId) => get('SELECT * FROM chats WHERE id = ?', chatId);
 
 const pending = new Map(); // chatId -> Promise (transcriptions still running)
 const MODELS = { groq: 'whisper-large-v3-turbo', openai: 'whisper-1' };
@@ -62,7 +65,7 @@ export async function describeImage(buffer, mime = 'image/jpeg') {
 
 /** Describe one stored picture so the agent knows what it shows; the chat's next reply waits for it. */
 export function queueImage(chatId, waId, fetchImage, mime) {
-  if (getSettings().images?.read !== true || !fetchImage) return;
+  if (!fetchImage || !mediaFor(chatOf(chatId)).images) return;
   track(chatId, (async () => {
     try {
       const img = await fetchImage();
@@ -80,7 +83,7 @@ export function queueImage(chatId, waId, fetchImage, mime) {
 
 /** Start turning one stored voice note into text; the chat's next reply waits for it (up to 25 s). */
 export function queueVoice(chatId, waId, fetchAudio, mime) {
-  if (getSettings().voice?.transcribe === false || !fetchAudio) return;
+  if (!fetchAudio || !mediaFor(chatOf(chatId)).voice) return;
   const job = (async () => {
     try {
       const audio = await fetchAudio();

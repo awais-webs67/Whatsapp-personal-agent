@@ -3,7 +3,7 @@ import { all, get, run } from '../db.js';
 import { getSettings } from '../core.js';
 import { complete } from '../llm/router.js';
 import { focus, trimProse } from './knowledge.js';
-import { campaignOf, campaignContext } from './campaigns.js';
+import { campaignOf, campaignContext, withCampaign } from './campaigns.js';
 
 export const STAGES = ['new', 'engaged', 'interested', 'negotiating', 'purchased', 'not_interested', 'opted_out'];
 export const CLOSED = ['purchased', 'not_interested', 'opted_out'];
@@ -69,6 +69,9 @@ function ago(ts) {
 }
 
 export function buildSystem(settings, chat, mode, query = '', { campaignId = null } = {}) {
+  // The campaign this message is for: the one writing it (a one-time campaign), else the lead's own campaign.
+  const camp = chat?.id ? campaignOf(chat) : null;
+  settings = withCampaign(settings, campaignId || camp?.task.id);
   // Token saver: long lists (products, Q&A) are cut to what this conversation is about.
   const b = settings.business;
   const fit = (text) => {
@@ -88,12 +91,11 @@ export function buildSystem(settings, chat, mode, query = '', { campaignId = nul
   out.push(section('Learned from the owner\'s own past chats (how they answer, what they quote; if this conflicts with a section above, the section above wins)', fit(b.learned)));
   out.push(section('From the business website, WhatsApp profile and saved files', settings.llm.tokenSaver === false ? fit(b.learnedWeb) : trimProse(fit(b.learnedWeb), query, settings.llm.knowledgeChars || 6000)));
   out.push(section('Standing instructions from the owner (always follow)', b.memory));
-  // The campaign this lead belongs to (which ad or offer brought them) can add its own instructions.
-  const camp = chat?.id ? campaignOf(chat) : null;
-  // The campaign this message is for: the one writing it (a one-time campaign), else the lead's own campaign.
+  // The campaign this lead belongs to (which ad or offer brought them) adds its own offer and instructions.
   const cx = campaignContext(campaignId || camp?.task.id);
   if (cx) {
     const head = cx.isDefault ? 'Instructions for new leads (from the owner)' : `This message is part of the campaign "${cx.title}"${chat?.ad_title ? ` (the lead came from the ad "${chat.ad_title}")` : ''}. Follow its instructions exactly`;
+    out.push(section(`Offer, products and prices of ${cx.isDefault ? 'this campaign' : `the campaign "${cx.title}"`} (these come first; if they differ from the general list above, these win)`, fit(cx.offer)));
     out.push(section(head, cx.instructions));
     if (cx.files.length) out.push(section(`Campaign notes from the owner's files (${cx.files.map((f) => f.name).join(', ')})`, settings.llm.tokenSaver === false ? cx.files.map((f) => f.text).join('\n\n') : trimProse(cx.files.map((f) => `Source: ${f.name}\n${f.text}`).join('\n\n'), query, 5000)));
   }
@@ -264,9 +266,10 @@ Return ONLY a JSON object:
 }
 
 export async function decide(chatId, mode = 'reply', { turns = null, chatOverride = null, instruction = '', lean = false, audience = 'all', history = null, campaignId = null } = {}) {
-  const settings = getSettings();
   const chat = chatOverride || get('SELECT * FROM chats WHERE id = ?', chatId);
   if (!chat) throw new Error('Chat not found');
+  // The campaign's own price mode and links apply to everything written for it.
+  const settings = withCampaign(getSettings(), campaignId || (chat.id ? campaignOf(chat).task.id : null));
   const messages = turns || buildTurns(chatId, history || (mode === 'analyze' ? Math.max(40, settings.llm.historyMessages) : settings.llm.historyMessages));
   if (mode !== 'reply') {
     messages.push({ role: 'user', content: `[Instruction from the business owner, not from the customer] ${mode === 'followup' ? `The customer has been quiet since ${ago(chat.last_in_at)}. This would be follow-up number ${(chat.followup_count || 0) + 1}.` : 'Review the conversation above.'}${instruction ? ` For this batch the owner asked: "${instruction}". This is an order from the owner: set should_followup to true and write the message for everyone the request applies to. ${audience === 'buyers' ? 'The owner wants ONLY people who actually bought (paid, confirmed an order, received the product). Read the conversation: if this person bought what the request is about, write the reminder; if they never bought it, set should_followup to false and say so in reason. Do not try to sell to them again unless the request says so.' : 'Set it to false only if this person already bought, refused, asked not to be contacted, or clearly does not fit the request.'} Keep every hard rule.` : ''} Respond with the JSON object described in your instructions.` });

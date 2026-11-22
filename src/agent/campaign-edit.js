@@ -3,7 +3,7 @@
 // the messages it has not sent yet.
 import { get, run } from '../db.js';
 import { emit } from '../core.js';
-import { updateAuto, recordChange } from './campaigns.js';
+import { updateAuto, recordChange, CAMPAIGN_CLEAN } from './campaigns.js';
 import { changeBatch } from './followups.js';
 import { editTask } from './tasks.js';
 import { taskEvent } from './task-log.js';
@@ -28,6 +28,16 @@ export async function updateCampaign(id, patch = {}, source = 'dashboard') {
     history[k] = [p[k] || '', v];
     p[k] = v;
     changed.push(k === 'instructions' ? 'campaign instructions' : k === 'format' ? 'message format' : 'example message');
+  }
+  // Its own offer, price mode, links, quiet hours, daily limit and end date.
+  const LABEL = { offer: 'offer and prices', prices: 'price mode', links: 'links', shopLink: 'shop link', quietStart: 'quiet hours', quietEnd: 'quiet hours', dailyCap: 'daily limit', endsAt: 'end date' };
+  for (const k of Object.keys(LABEL)) {
+    if (patch[k] === undefined) continue;
+    const v = CAMPAIGN_CLEAN[k](patch[k]);
+    if (JSON.stringify(v) === JSON.stringify(p[k] ?? (k === 'dailyCap' ? 0 : ['offer', 'prices', 'links', 'shopLink'].includes(k) ? '' : null))) continue;
+    history[k] = [p[k] ?? null, v];
+    p[k] = v;
+    if (!changed.includes(LABEL[k])) changed.push(LABEL[k]);
   }
   if (Object.keys(history).length) run('UPDATE tasks SET params = ? WHERE id = ?', JSON.stringify(p), t.id);
   if (patch.name && text(patch.name, 120) !== t.title) { history.name = [t.title, text(patch.name, 120)]; editTask(t, { title: history.name[1] }); changed.push('name'); }

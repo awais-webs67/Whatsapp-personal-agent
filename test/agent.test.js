@@ -1613,3 +1613,32 @@ test('commands inside a campaign change only that campaign, without a model', as
   assert.ok(get('SELECT COUNT(*) n FROM commands WHERE thread_id = ?', thread).n >= 10, 'the conversation is saved with the campaign');
   tasks.controlTask(t.id, 'remove'); tasks.controlTask(other.id, 'remove');
 });
+
+test('each campaign has its own offer, price mode, reply speed, media, quiet hours, daily limit and end date', async () => {
+  const camps = await import('../src/agent/campaigns.js');
+  const tasks = await import('../src/agent/tasks.js');
+  const { buildSystem } = await import('../src/agent/brain.js');
+  const { getSettings, PACING } = await import('../src/core.js');
+  const t = camps.createAuto({ name: 'Own everything', keywords: ['owneverything'] }, 'test');
+  camps.updateAuto(t.id, { offer: 'Gold plan: Rs 999 this week only', prices: 'link', shopLink: 'https://shop.example/gold', replySpeed: 'natural', voice: false, images: true, quietStart: 20, quietEnd: 10, dailyCap: 7, endsAt: Date.now() - 1000 }, 'test');
+  const cfg = camps.configOf(get('SELECT * FROM tasks WHERE id = ?', t.id));
+  assert.equal(cfg.replySpeed, 'natural');
+  assert.equal(cfg.voice, false);
+  assert.equal(cfg.images, true);
+  const chat = { id: 999999, campaign_id: t.id, name: 'X', stage: 'new', account_id: 1 };
+  assert.deepEqual(camps.mediaFor(chat), { voice: false, images: true });
+  assert.equal(camps.humanFor(chat).debounceMin, PACING.natural.debounceMin);
+  const d = camps.deliveryOf(t.id);
+  assert.deepEqual([d.quietStart, d.quietEnd, d.dailyCap, d.own], [20, 10, 7, true]);
+  const sys = buildSystem(getSettings(), chat, 'reply', '', { campaignId: t.id });
+  assert.match(sys, /Gold plan/);
+  assert.match(sys, /never write a price|Never write a price/i, 'the campaign is in link mode even when the account quotes prices');
+  assert.match(sys, /shop\.example\/gold/);
+  // Back to the account default.
+  camps.updateAuto(t.id, { voice: '', replySpeed: '' }, 'test');
+  assert.equal(camps.configOf(get('SELECT * FROM tasks WHERE id = ?', t.id)).voice, null);
+  // The end date has passed: it pauses by itself.
+  camps.endCampaigns();
+  assert.equal(get('SELECT status FROM tasks WHERE id = ?', t.id).status, 'paused');
+  tasks.controlTask(t.id, 'remove');
+});

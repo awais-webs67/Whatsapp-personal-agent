@@ -9,7 +9,7 @@
 //
 // Campaigns live in the tasks table (kind = campaign type); an auto campaign keeps its settings in `params`.
 import { all, get, run, now, update } from '../db.js';
-import { getSettings, saveSettings, emit, log } from '../core.js';
+import { getSettings, saveSettings, emit, log, PACING } from '../core.js';
 import { taskEvent } from './task-log.js';
 
 const DEFAULT_NAME = 'New leads (automatic)';
@@ -37,7 +37,21 @@ export const AUTO_FIELDS = {
   templateFallback: 'true = when no AI model can write, send the example follow-up with name and product filled in',
   label: 'WhatsApp Business label put on every lead that joins (made if it does not exist)',
   labels: 'join when the chat already has one of these WhatsApp labels',
+  // Everything below can differ per campaign; empty (null) = the account default from Settings.
+  replySpeed: 'instant | fast | natural; empty = the account default',
+  voice: 'true/false = listen to voice notes in this campaign; null = account default',
+  images: 'true/false = look at pictures in this campaign; null = account default',
+  quietStart: 'hour (0-23) after which this campaign sends no follow-ups; null = account quiet hours',
+  quietEnd: 'hour (0-23) when this campaign may send again',
+  dailyCap: 'most follow-ups this campaign sends per day (0 = only the number\'s limit)',
+  offer: 'the products, prices and offer for this campaign (used before the shared Knowledge)',
+  prices: 'quote | link: say prices, or never say a price and send the link; empty = account default',
+  links: 'links this campaign may send (one per line)',
+  shopLink: 'the link sent when a product has no link of its own',
+  endsAt: 'timestamp when this campaign pauses by itself (null = runs until you pause it)',
 };
+/** Fields of the default campaign that are its own (its timings come from Settings). */
+const OWN_DEFAULT = ['format', 'instructions', 'followupStyle', 'night', 'templateFallback', 'autoReply', 'followups', 'replySpeed', 'voice', 'images', 'quietStart', 'quietEnd', 'dailyCap', 'offer', 'prices', 'links', 'shopLink', 'endsAt'];
 
 const parseParams = (t) => { try { return JSON.parse(t?.params || '{}') || {}; } catch { return {}; } };
 const list = (v) => (Array.isArray(v) ? v : String(v ?? '').split(/[,\n]/)).map((x) => String(x).trim()).filter(Boolean);
@@ -61,8 +75,9 @@ export function ensureDefaultCampaign() {
 export function configOf(t) {
   const p = parseParams(t);
   const f = getSettings().followup;
-  const base = { steps: f.stepsHours, gapMin: f.gapMinSec / 60, gapMax: f.gapMaxSec / 60, approval: f.approval, night: false, templateFallback: true, autoReply: true, followups: true, instructions: '', followupStyle: '' };
-  const own = p.isDefault ? { format: p.format, instructions: p.instructions, followupStyle: p.followupStyle, night: p.night, templateFallback: p.templateFallback, autoReply: p.autoReply, followups: p.followups } : p;
+  const base = { steps: f.stepsHours, gapMin: f.gapMinSec / 60, gapMax: f.gapMaxSec / 60, approval: f.approval, night: false, templateFallback: true, autoReply: true, followups: true, instructions: '', followupStyle: '',
+    replySpeed: '', voice: null, images: null, quietStart: null, quietEnd: null, dailyCap: 0, offer: '', prices: '', links: '', shopLink: '', endsAt: null };
+  const own = p.isDefault ? Object.fromEntries(OWN_DEFAULT.map((k) => [k, p[k]])) : p;
   const c = { ...base };
   for (const [k, v] of Object.entries(own)) if (v !== undefined && v !== null && k in AUTO_FIELDS) c[k] = v;
   return { ...c, isDefault: !!p.isDefault, label: p.label || '', labels: list(p.labels), keywords: list(p.keywords), adIds: list(p.adIds), adText: list(p.adText), accountIds: list(p.accountIds).map(Number), priority: Number(p.priority ?? 100) };
@@ -81,7 +96,53 @@ export function campaignContext(taskId) {
   const p = parseParams(t);
   const c = t.kind === 'auto' ? configOf(t) : p;
   return { id: t.id, title: t.title, kind: t.kind, isDefault: !!p.isDefault, instructions: String(c.instructions || '').trim(), format: String(c.format || '').trim(),
-    followupStyle: String(c.followupStyle || '').trim(), files: Array.isArray(p.files) ? p.files : [] };
+    followupStyle: String(c.followupStyle || '').trim(), files: Array.isArray(p.files) ? p.files : [],
+    offer: String(c.offer || '').trim(), prices: c.prices || '', links: String(c.links || '').trim(), shopLink: String(c.shopLink || '').trim() };
+}
+
+/** The settings a message of this campaign is written with: the account settings plus the campaign's own price mode and links. */
+export function withCampaign(settings, taskId) {
+  const cx = campaignContext(taskId);
+  if (!cx) return settings;
+  const b = { ...settings.business };
+  if (cx.prices) b.prices = cx.prices;
+  if (cx.links) b.links = cx.links;
+  if (cx.shopLink) b.shopLink = cx.shopLink;
+  return { ...settings, business: b };
+}
+
+/** How human replies look in this chat's campaign (its reply speed, else the account pacing). */
+export function humanFor(chat) {
+  const h = getSettings().human;
+  const speed = chat ? campaignOf(chat).config.replySpeed : '';
+  return speed && PACING[speed] ? { ...h, ...PACING[speed] } : h;
+}
+
+/** Whether this chat's voice notes / pictures are read: the campaign's choice, else the account default. */
+export function mediaFor(chat) {
+  const s = getSettings();
+  const c = chat ? campaignOf(chat).config : {};
+  return { voice: c.voice ?? s.voice?.transcribe !== false, images: c.images ?? s.images?.read === true };
+}
+
+/** A campaign's own quiet hours and daily limit, else the account ones. */
+export function deliveryOf(taskId) {
+  const s = getSettings().followup;
+  const t = taskId && get('SELECT * FROM tasks WHERE id = ?', taskId);
+  if (!t) return { quietStart: s.quietStart, quietEnd: s.quietEnd, dailyCap: 0, night: false, own: false };
+  const c = t.kind === 'auto' ? configOf(t) : parseParams(t);
+  const own = c.quietStart != null && c.quietEnd != null;
+  return { quietStart: own ? Number(c.quietStart) : s.quietStart, quietEnd: own ? Number(c.quietEnd) : s.quietEnd, dailyCap: Number(c.dailyCap) || 0, night: !!t.ignore_quiet, own };
+}
+
+/** Campaigns with an end date pause themselves when it passes. */
+export function endCampaigns() {
+  for (const t of all("SELECT * FROM tasks WHERE kind IN ('auto','batch','email') AND status = 'active' AND json_extract(params, '$.endsAt') IS NOT NULL AND json_extract(params, '$.endsAt') <= ?", now())) {
+    update('tasks', t.id, { status: 'paused' }, ['status']);
+    taskEvent(t.id, 'Paused by itself: its end date was reached. Change the end date or press Resume to run it longer.', { kind: 'paused' });
+    log('info', 'campaigns', `Campaign #${t.id} reached its end date and paused`);
+    emit('tasks');
+  }
 }
 
 const MAX_FILES_CHARS = 120_000;
@@ -179,7 +240,22 @@ const clean = {
   labels: (v) => list(v).slice(0, 30),
   accountIds: (v) => list(v).map(Number).filter((n) => n > 0),
   priority: (v) => Math.round(Number(v) || 100),
+  replySpeed: (v) => (['instant', 'fast', 'natural'].includes(v) ? v : ''),
+  voice: (v) => tri(v),
+  images: (v) => tri(v),
+  quietStart: (v) => hour(v),
+  quietEnd: (v) => hour(v),
+  dailyCap: (v) => Math.max(0, Math.min(1000, Math.round(Number(v) || 0))),
+  offer: (v) => String(v || '').trim().slice(0, 4000),
+  prices: (v) => (['quote', 'link'].includes(v) ? v : ''),
+  links: (v) => String(v || '').trim().slice(0, 1000),
+  shopLink: (v) => String(v || '').trim().slice(0, 300),
+  endsAt: (v) => { const n = typeof v === 'number' ? v : Date.parse(v); return v && Number.isFinite(n) ? n : null; },
 };
+/** On, off, or empty = use the account default. */
+function tri(v) { return v === null || v === undefined || v === '' || v === 'default' ? null : v === true || v === 'on' || v === 'true' || v === 1; }
+function hour(v) { if (v === null || v === undefined || v === '') return null; const n = Math.round(Number(v)); return Number.isFinite(n) && n >= 0 && n <= 24 ? n % 24 : null; }
+export const CAMPAIGN_CLEAN = clean;
 
 /** Change an auto campaign's settings. The default campaign's timings are stored in Settings (one source). */
 export function updateAuto(taskId, patch, source = 'dashboard') {
@@ -193,7 +269,7 @@ export function updateAuto(taskId, patch, source = 'dashboard') {
   for (const [k, raw] of Object.entries(patch || {})) {
     if (!(k in clean)) continue;
     const v = clean[k](raw);
-    if (JSON.stringify(v) === JSON.stringify(before[k])) continue;
+    if (JSON.stringify(v) === JSON.stringify(before[k] ?? (typeof v === 'string' ? '' : before[k]))) continue; // empty = unset
     changes[k] = [before[k], v];
     if (p.isDefault && k === 'steps') toSettings.stepsHours = v;
     else if (p.isDefault && k === 'gapMin') toSettings.gapMinSec = Math.round(v * 60);

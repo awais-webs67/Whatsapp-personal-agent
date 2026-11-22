@@ -6,6 +6,7 @@ import * as wa from '../wa/manager.js';
 import { nextReadyAt, chainFor, blockedReason } from '../llm/router.js';
 import { notify } from './updates.js';
 import { hasTranscriber } from './voice.js';
+import { endCampaigns } from './campaigns.js';
 
 const downSince = new Map(); // accountId -> when it stopped being connected
 let modelsDownSince = null;
@@ -56,6 +57,7 @@ export function health() {
 }
 
 function check() {
+  try { endCampaigns(); } catch (e) { log('error', 'campaigns', e.message); }
   let list;
   try { list = health(); } catch (e) { return log('error', 'watchdog', e.message); }
   // Tell the owner about each new problem once (and again every 3 hours while it lasts).

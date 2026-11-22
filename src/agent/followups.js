@@ -10,7 +10,7 @@ import { eligibility, humanSend, scheduleNextFollowup } from './pipeline.js';
 import { hasAnyTag } from './tags.js';
 import { nextReadyAt, outOfModels } from '../llm/router.js';
 import { taskEvent } from './task-log.js';
-import { campaignOf, configOf } from './campaigns.js';
+import { campaignOf, configOf, deliveryOf } from './campaigns.js';
 
 /** Read before, and nothing new said since: its stored stage and summary are current. */
 export const isFresh = (c) => !!c.analyzed_at && c.analyzed_at >= (c.last_msg_at || 0);
@@ -285,7 +285,16 @@ async function sendApproved() {
     const s = getSettings().followup;
     // In quiet hours only tasks the owner explicitly allowed to run at night may send.
     // A reminder the owner scheduled for an exact time is always sent on time.
-    const quietOk = isQuiet(hourIn(s.timezone), s.quietStart, s.quietEnd) ? " AND (f.kind = 'reminder' OR f.task_id IN (SELECT id FROM tasks WHERE ignore_quiet = 1))" : '';
+    // Each campaign has its own quiet hours and daily limit (else the account ones); a campaign that may not send
+    // right now is left out, so it never holds up the others on the same number.
+    const hour = hourIn(s.timezone);
+    const held = all("SELECT DISTINCT task_id id FROM followups WHERE status = 'approved' AND due_at <= ? AND task_id IS NOT NULL", now()).map((r) => r.id).filter((id) => {
+      const d = deliveryOf(id);
+      if (!d.night && isQuiet(hour, d.quietStart, d.quietEnd)) return true;
+      return d.dailyCap > 0 && get("SELECT COUNT(*) n FROM followups WHERE task_id = ? AND status = 'sent' AND sent_at > ?", id, now() - 86_400_000).n >= d.dailyCap;
+    });
+    const globalQuiet = isQuiet(hour, s.quietStart, s.quietEnd);
+    const quietOk = ` AND (f.kind = 'reminder' OR (f.task_id IS NULL AND ${globalQuiet ? 0 : 1}) OR (f.task_id IS NOT NULL AND f.task_id NOT IN (${held.map(Number).join(',') || '-1'})))`;
     const accounts = all(`SELECT DISTINCT c.account_id id FROM followups f JOIN chats c ON c.id = f.chat_id WHERE f.status = 'approved' AND f.due_at <= ? AND ${TASK_ACTIVE}${quietOk}`, now());
     for (const { id: accountId } of accounts) {
       if ((burstSlot.get(accountId) || 0) > now()) continue;
@@ -372,9 +381,13 @@ export function whyNotSending(taskId = null) {
     const sentToday = get("SELECT COUNT(*) n FROM followups f JOIN chats c ON c.id = f.chat_id WHERE c.account_id = ? AND f.status = 'sent' AND f.sent_at > ?", accountId, now() - 86_400_000).n;
     if (sentToday >= s.dailyCap) return `The daily limit of ${s.dailyCap} follow-ups per number is reached. Raise it in Settings or wait.`;
   }
-  const ignore = taskId && get('SELECT ignore_quiet FROM tasks WHERE id = ?', taskId)?.ignore_quiet;
-  if (!ignore && isQuiet(hourIn(s.timezone), s.quietStart, s.quietEnd)) {
-    return `Quiet hours (${s.quietStart}:00 to ${s.quietEnd}:00, ${s.timezone}): sending starts at ${s.quietEnd}:00. Change the hours in Settings, or tell the agent to send at night anyway.`;
+  const d = deliveryOf(taskId);
+  if (taskId && d.dailyCap > 0) {
+    const sent = get("SELECT COUNT(*) n FROM followups WHERE task_id = ? AND status = 'sent' AND sent_at > ?", taskId, now() - 86_400_000).n;
+    if (sent >= d.dailyCap) return `This campaign's own daily limit of ${d.dailyCap} messages is reached. Raise it in the campaign's Settings → Sending, or wait.`;
+  }
+  if (!d.night && isQuiet(hourIn(s.timezone), d.quietStart, d.quietEnd)) {
+    return `Quiet hours (${d.quietStart}:00 to ${d.quietEnd}:00, ${s.timezone}): sending starts at ${d.quietEnd}:00. Change them in ${d.own ? 'this campaign\'s Settings → Sending' : 'the campaign\'s Settings → Sending (or the account default)'}, or switch on "Send at night".`;
   }
   const next = Math.min(...queued.map((q) => q.due_at));
   return next > now() ? null : null;
@@ -383,7 +396,7 @@ export function whyNotSending(taskId = null) {
 export async function runCampaign({ accountId = null, sinceDays = 90, limit = 200, reanalyze = false, instruction = '', autoApprove = false, intervalMinutes = 0, stages = null, taskId = null, analyzeOnly = false, audience = 'all', tags = [], skipChatIds = null, startAt = null, accountIds = [], keywords = [] } = {}) {
   if (campaign.running) throw new Error('Another batch is still reading chats. Wait for it to finish, or remove it on the Tasks page.');
   // Saved with the task, so the work carries on by itself after a restart (see resumeBatch).
-  if (taskId) run('UPDATE tasks SET params = ? WHERE id = ?', JSON.stringify({ accountId, sinceDays, limit, reanalyze, instruction, autoApprove, intervalMinutes, stages, analyzeOnly, audience, tags, accountIds, keywords, readDone: false }), taskId);
+  if (taskId) run('UPDATE tasks SET params = ? WHERE id = ?', JSON.stringify({ ...JSON.parse(get('SELECT params FROM tasks WHERE id = ?', taskId)?.params || '{}'), accountId, sinceDays, limit, reanalyze, instruction, autoApprove, intervalMinutes, stages, analyzeOnly, audience, tags, accountIds, keywords, readDone: false }), taskId);
   const since = now() - sinceDays * 86_400_000;
   // Analysis reads every customer chat in the period (buyers included); it sends nothing.
   const tagged = tags?.length > 0;

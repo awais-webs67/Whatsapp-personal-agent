@@ -24,7 +24,7 @@ const ROUTES = [
   ['knowledge', 'Knowledge', 'book-open-text', knowledge, 'Setup'],
   ['models', 'AI models', 'cpu', models, 'Setup'],
   ['playground', 'Live test', 'flask-conical', playground, 'Setup'],
-  ['settings', 'Settings', 'settings-2', settings, 'Setup'],
+  ['settings', 'Account', 'settings-2', settings, 'Setup'],
   ['reports', 'Reports', 'chart-column', reports, 'Insights'],
   ['activity', 'Activity', 'activity', activity, 'Insights'],
 ];
@@ -39,12 +39,12 @@ function shell(me) {
   const pilot = toggle(S.autopilot, async (on) => {
     await act(null, () => PUT('/api/settings', { autopilot: on }), on ? 'Autopilot on: the agent replies by itself' : 'Autopilot off: nothing is sent automatically');
     S.autopilot = on;
-  }, 'Autopilot');
+  }, 'Agent on');
   const reader = toggle(true, async (on) => {
     await act(null, () => PUT('/api/settings', { reading: { auto: on } }), on ? 'The agent keeps reading chats that change' : 'Reading new chats is off');
   }, 'Read new chats');
   const foot = h('div.foot', {},
-    h('div.pilot', {}, h('span', {}, 'Autopilot', h('small', {}, 'Agent replies on its own')), pilot),
+    h('div.pilot', {}, h('span', {}, 'Agent on', h('small', {}, 'Master switch for all campaigns')), pilot),
     h('div.pilot', {}, h('span', {}, 'Read chats', h('small', {}, 'Keeps notes on chats that change')), reader),
     who,
     h('button.linkbtn', { onclick: () => POST('/api/auth/logout').then(() => location.reload()) }, 'Sign out'));

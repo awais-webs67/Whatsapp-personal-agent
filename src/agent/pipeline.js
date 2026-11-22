@@ -5,7 +5,7 @@ import * as wa from '../wa/manager.js';
 import { decide, CLOSED, saveProfile } from './brain.js';
 import { notify, who } from './updates.js';
 import { parseChatCommand, runChatCommand } from './chat-commands.js';
-import { assignCampaign, campaignOf } from './campaigns.js';
+import { assignCampaign, campaignOf, humanFor } from './campaigns.js';
 import { queueVoice, queueImage, voiceReady } from './voice.js';
 
 const timers = new Map(); // chatId -> debounce timer
@@ -64,7 +64,7 @@ export function onCustomer(chatId) {
     return;
   }
   if (busy.has(chatId)) return void again.add(chatId);
-  const h = getSettings().human;
+  const h = humanFor(chat);
   clearTimeout(timers.get(chatId));
   timers.set(chatId, setTimeout(() => { timers.delete(chatId); answer(chatId); }, rand(h.debounceMin, h.debounceMax) * 1000));
 }
@@ -83,7 +83,7 @@ const lastCustomerId = (chatId) => get('SELECT MAX(id) id FROM messages WHERE ch
 
 /** Send bubbles with read receipt, typing indicator and natural gaps. `spentMs` = thinking time already elapsed. */
 export async function humanSend(chat, messages, by, spentMs = 0) {
-  const h = getSettings().human;
+  const h = humanFor(chat);
   for (let i = 0; i < messages.length; i++) {
     const text = messages[i];
     const typeMs = Math.min(h.typingMaxSec, Math.max(1.2, text.length / rand(h.typingCpsMin, h.typingCpsMax))) * 1000;
