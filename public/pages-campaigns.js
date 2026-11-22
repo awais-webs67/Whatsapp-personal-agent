@@ -258,9 +258,13 @@ function campaignPage(id) {
     }[t.kind] || ['status'];
     let waiting = false;
     const draw = (rows) => {
-      set(feed, rows.length ? rows.map((r) => r.role === 'owner'
+      const asking = (r, i) => i === rows.length - 1 && r.role !== 'owner' && r.steps?.some((s) => s.result?.confirm);
+      const answer = (word) => { input.value = word; send.click(); };
+      set(feed, rows.length ? rows.map((r, i) => r.role === 'owner'
         ? h('div.msg.me', { dir: 'auto' }, r.text, h('small', {}, clock(r.ts)))
-        : h('div.msg', { dir: 'auto', style: 'white-space:pre-wrap' }, r.text, h('small', {}, clock(r.ts))))
+        : h('div.msg', { dir: 'auto', style: 'white-space:pre-wrap' }, r.text,
+          asking(r, i) ? h('div.confirm', {}, h('button.btn.sm.primary', { onclick: () => answer('Haan') }, 'Haan, kar do'), h('button.btn.sm', { onclick: () => answer('Nahi') }, 'Nahi')) : null,
+          h('small', {}, clock(r.ts))))
         : h('div.cempty', { style: 'border:0;margin:auto' }, h('b', {}, 'Talk to this campaign'), h('p', {}, `Whatever you write here is about campaign #${t.id} only. Short orders like pause, resume, gap and status work at once, without using AI.`)),
       waiting ? h('div.msg', { style: 'opacity:.7' }, 'Working on it…') : null);
       feed.scrollTop = feed.scrollHeight;

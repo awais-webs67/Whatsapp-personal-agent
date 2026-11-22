@@ -38,10 +38,13 @@ export function command() {
   function drawThread() {
     const t = st.threads.find((x) => x.id === st.current);
     set(title, t ? t.title : 'New chat');
-    set(thread, st.rows.length ? st.rows.map((r) => r.role === 'owner'
+    const asking = (r, i) => i === st.rows.length - 1 && r.role !== 'owner' && r.steps?.some((s) => s.result?.confirm);
+    const answer = (word) => { input.value = word; send.click(); };
+    set(thread, st.rows.length ? st.rows.map((r, i) => r.role === 'owner'
       ? h('div.msg.me', { dir: 'auto' }, r.text, h('small', {}, clock(r.ts)))
       : h('div.msg', { dir: 'auto' }, r.text,
-        r.steps?.length ? h('div.steps', {}, r.steps.map((s) => h(`div.step${s.result?.error ? '.bad' : ''}`, { title: JSON.stringify(s.args) }, h(`i.dia${s.result?.error ? '.bad' : '.ok'}`), STEP[s.action] || s.action, s.result?.error ? `: ${s.result.error}` : ''))) : null,
+        asking(r, i) ? h('div.confirm', {}, h('button.btn.sm.primary', { onclick: () => answer('Haan') }, 'Haan, kar do'), h('button.btn.sm', { onclick: () => answer('Nahi') }, 'Nahi')) : null,
+        r.steps?.length && !asking(r, i) ? h('div.steps', {}, r.steps.map((s) => h(`div.step${s.result?.error ? '.bad' : ''}`, { title: JSON.stringify(s.args) }, h(`i.dia${s.result?.error ? '.bad' : '.ok'}`), STEP[s.action] || s.action, s.result?.error ? `: ${s.result.error}` : ''))) : null,
         h('small', {}, clock(r.ts))))
       : h('div.empty', { style: 'margin:auto;max-width:560px' }, h('b', {}, 'Give the agent a job'),
         'It can read chats, report numbers, run follow-ups on a schedule, message a customer, remember offers and learn from your site. Everything here is saved, and the agent remembers what you said earlier in this chat.',

@@ -674,7 +674,7 @@ export function start(port = Number(process.env.PORT) || 3000) {
   migrateSettings();
   syncSharedAI();
   ensureDefaultCampaign();
-  setLabeler(wa.applyLabel);
+  setLabeler((chat, name) => wa.applyLabel(chat, name, { create: true })); // a campaign's own label is made if missing
   // Started by the hub: stop together with it, and tell it when requests can be forwarded.
   if (process.send) process.on('disconnect', () => process.exit(0));
   // Once on upgrade: re-read saved shop files so an existing install also picks up the price mode they imply.

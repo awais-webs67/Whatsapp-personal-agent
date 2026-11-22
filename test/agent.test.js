@@ -1331,7 +1331,7 @@ test('WhatsApp Business labels: labels on the phone become tags; a campaign puts
     removeChatLabel: async (jid, id) => applied.push(['remove', jid, id]),
     createLabel: async (id, name) => applied.push(['create', id, name]),
   });
-  camps.setLabeler(wa.applyLabel);
+  camps.setLabeler((c, name) => wa.applyLabel(c, name, { create: true })); // as the server does
   // The phone tells us its labels and that one chat has "Paid Customer".
   wa.onLabel(1, { id: '1', name: 'Paid Customer', color: 3 });
   const chat = get("SELECT * FROM chats WHERE jid = '444@s.whatsapp.net'");
@@ -1490,10 +1490,22 @@ test('every campaign carries its own instructions, message format and files into
   tasks.controlTask(id, 'remove');
 
   // "Jo Eid wali ad se aaye unhein 'Canva Ad' label do"
-  const out = TOOLS_FOR_TEST.label_chats.run({ label: 'Eid Lead', ad_text: ['eid'] });
+  // A label that does not exist is not made unless the owner asks for a new one.
+  const missing = TOOLS_FOR_TEST.label_chats.run({ label: 'Eid Lead', ad_text: ['eid'] });
+  assert.match(missing.error, /no label called "Eid Lead"/);
+  // The existing one is found whatever the case or word order ("lead eid" = "Eid Lead").
+  wa.onLabel(1, { id: '7', name: 'Eid Lead', color: 1 });
+  const out = TOOLS_FOR_TEST.label_chats.run({ label: 'lead eid', ad_text: ['eid'] });
+  assert.equal(out.label, 'Eid Lead');
+  assert.equal(out.existing, true);
   assert.ok(out.chats >= 1);
   assert.match(get("SELECT tags FROM chats WHERE jid = '923331110002@s.whatsapp.net'").tags, /,eid-lead,/);
   assert.doesNotMatch(get("SELECT tags FROM chats WHERE jid = '923331110003@s.whatsapp.net'").tags || '', /eid-lead/, 'only the ad leads');
+  // And it can be taken off again.
+  const off = TOOLS_FOR_TEST.remove_label.run({ label: 'EID LEAD' });
+  assert.ok(off.chats >= 1);
+  assert.doesNotMatch(get("SELECT tags FROM chats WHERE jid = '923331110002@s.whatsapp.net'").tags || '', /eid-lead/);
+  assert.ok(TOOLS_FOR_TEST.list_labels.run().labels.some((l) => l.name === 'Eid Lead'));
 });
 
 test('email campaigns: import a list, write each email, send through SMTP with unsubscribe and footer, bounce, stop on reply, never mail an unsubscribed address again', async () => {
@@ -1641,4 +1653,38 @@ test('each campaign has its own offer, price mode, reply speed, media, quiet hou
   camps.endCampaigns();
   assert.equal(get('SELECT status FROM tasks WHERE id = ?', t.id).status, 'paused');
   tasks.controlTask(t.id, 'remove');
+});
+
+test('big or permanent changes ask "Kar dun? Haan / Nahi" first, and only run on yes', async () => {
+  const { handleCommand, newThread } = await import('../src/agent/commander.js');
+  const camps = await import('../src/agent/campaigns.js');
+  wa.onLabel(1, { id: '8', name: 'Flow Google', color: 2 });
+  const chat = get("SELECT * FROM chats WHERE jid = '444@s.whatsapp.net'");
+  wa.onLabelChat(1, chat.jid, '8', 'add');
+  const th = newThread();
+  // Remove: asks first, nothing changes yet.
+  cmdReplies = [JSON.stringify({ action: 'remove_label', args: { label: 'google flow' } })];
+  let r = await handleCommand('google flow label hata do', { threadId: th });
+  assert.equal(r.confirm, true);
+  assert.match(r.reply, /Kar dun\? Haan \/ Nahi/);
+  assert.match(r.reply, /"Flow Google"/, 'found the existing label whatever the word order');
+  assert.match(get('SELECT tags FROM chats WHERE id = ?', chat.id).tags, /,flow-google,/, 'not removed before yes');
+  r = await handleCommand('nahi', { threadId: th });
+  assert.match(r.reply, /kuch nahi kiya/);
+  assert.match(get('SELECT tags FROM chats WHERE id = ?', chat.id).tags, /,flow-google,/);
+  // Ask again and say yes.
+  cmdReplies = [JSON.stringify({ action: 'remove_label', args: { label: 'google flow' } })];
+  await handleCommand('google flow label hata do', { threadId: th });
+  r = await handleCommand('haan', { threadId: th });
+  assert.match(r.reply, /Ho gaya/);
+  assert.doesNotMatch(get('SELECT tags FROM chats WHERE id = ?', chat.id).tags || '', /flow-google/);
+  // Deleting a campaign asks too.
+  const t = camps.createAuto({ name: 'Do not delete me', keywords: ['dontdelete'] }, 'test');
+  cmdReplies = [JSON.stringify({ action: 'remove_task', args: { id: t.id } })];
+  r = await handleCommand('undo kar do', { threadId: th });
+  assert.equal(r.confirm, true);
+  assert.equal(get('SELECT status FROM tasks WHERE id = ?', t.id).status, 'active');
+  r = await handleCommand('no', { threadId: th });
+  assert.equal(get('SELECT status FROM tasks WHERE id = ?', t.id).status, 'active');
+  (await import('../src/agent/tasks.js')).controlTask(t.id, 'remove');
 });

@@ -225,21 +225,45 @@ export function onLabelChat(accountId, jid, labelId, type) {
   emit('chat', { chatId: chat.id });
 }
 
+/** "Flow Google", "google flow", "Google-Flow" are the same label: case, punctuation and word order do not matter. */
+export const labelKey = (name) => String(name || '').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean).sort().join(' ');
+/** The labels of one number whose name means `name` (several when the phone has duplicates). */
+export const findLabels = (accountId, name) => all('SELECT * FROM wa_labels WHERE account_id = ? AND deleted = 0 ORDER BY CAST(label_id AS INTEGER)', accountId).filter((l) => labelKey(l.name) === labelKey(name));
+/** Every label on every number, with how many chats carry it. */
+export function labelsList() {
+  return all('SELECT l.*, a.name account FROM wa_labels l JOIN accounts a ON a.id = l.account_id WHERE l.deleted = 0 ORDER BY a.id, l.name').map((l) => ({
+    account: l.account, accountId: l.account_id, id: l.label_id, name: l.name,
+    chats: get('SELECT COUNT(*) n FROM chats WHERE account_id = ? AND tags LIKE ?', l.account_id, `%,${labelTag(l.name)},%`).n,
+  }));
+}
+const making = new Map(); // accountId -> promise: one label is made at a time, so two orders never make two copies
+
 /**
- * Put a label on a customer's chat on the phone (WhatsApp Business, QR-linked). Labels the owner set stay as
- * they are; a label that does not exist yet is made. Returns false when this number cannot have labels.
+ * Put a label on a customer's chat on the phone (WhatsApp Business, QR-linked). An existing label with the same
+ * name (any case or word order) is used; a new one is made only with { create: true }. Returns false when it
+ * could not be put on.
  */
-export async function applyLabel(chat, name) {
+export async function applyLabel(chat, name, { create = false } = {}) {
   const conn = connectors.get(chat.account_id);
   if (!conn?.addChatLabel || !name) return false;
-  let label = get('SELECT * FROM wa_labels WHERE account_id = ? AND deleted = 0 AND lower(name) = lower(?)', chat.account_id, name);
   try {
+    let label = findLabels(chat.account_id, name)[0];
     if (!label) {
-      const max = get("SELECT MAX(CAST(label_id AS INTEGER)) m FROM wa_labels WHERE account_id = ?", chat.account_id).m || 0;
-      const id = String(Number(max) + 1);
-      await conn.createLabel(id, name);
-      onLabel(chat.account_id, { id, name, color: 0 });
-      label = get('SELECT * FROM wa_labels WHERE account_id = ? AND label_id = ?', chat.account_id, id);
+      if (!create) return false;
+      const prev = making.get(chat.account_id) || Promise.resolve();
+      const job = prev.then(async () => {
+        const again = findLabels(chat.account_id, name)[0];
+        if (again) return again;
+        // Only on a number whose labels have synced: otherwise a new id could overwrite a label we do not know about.
+        if (!get('SELECT 1 x FROM wa_labels WHERE account_id = ? LIMIT 1', chat.account_id)) throw new Error('the labels of this number have not synced yet');
+        const max = get('SELECT MAX(CAST(label_id AS INTEGER)) m FROM wa_labels WHERE account_id = ?', chat.account_id).m || 0;
+        const id = String(Number(max) + 1);
+        await conn.createLabel(id, name);
+        onLabel(chat.account_id, { id, name, color: 0 });
+        return get('SELECT * FROM wa_labels WHERE account_id = ? AND label_id = ?', chat.account_id, id);
+      });
+      making.set(chat.account_id, job.catch(() => {}));
+      label = await job;
     }
     await conn.addChatLabel(chat.jid, label.label_id);
     onLabelChat(chat.account_id, chat.jid, label.label_id, 'add');
@@ -248,6 +272,29 @@ export async function applyLabel(chat, name) {
     log('warn', 'whatsapp', `Could not put the label "${name}" on ${chat.name || chat.jid}: ${e.message}`);
     return false;
   }
+}
+
+/** Take one label off one chat on the phone. */
+export async function removeLabel(chat, label) {
+  const conn = connectors.get(chat.account_id);
+  if (!conn?.removeChatLabel) return false;
+  try {
+    await conn.removeChatLabel(chat.jid, label.label_id);
+    onLabelChat(chat.account_id, chat.jid, label.label_id, 'remove');
+    return true;
+  } catch (e) {
+    log('warn', 'whatsapp', `Could not take the label "${label.name}" off ${chat.name || chat.jid}: ${e.message}`);
+    return false;
+  }
+}
+
+/** Delete a label on the phone; WhatsApp takes it off every chat. */
+export async function deleteLabel(accountId, label) {
+  const conn = connectors.get(accountId);
+  if (!conn?.deleteLabel) return false;
+  await conn.deleteLabel(label.label_id, label.name, label.color || 0);
+  onLabel(accountId, { id: label.label_id, name: label.name, color: label.color, deleted: true });
+  return true;
 }
 
 export const typing = (chat, on) => connectors.get(chat.account_id)?.typing(chat.jid, on) ?? Promise.resolve();

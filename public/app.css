@@ -558,3 +558,4 @@ ol.clive-feed li.failed .ico { color: var(--danger); }
   .csnav { position: static; display: flex; overflow-x: auto; padding: 6px; }
   .csnav a { white-space: nowrap; }
 }
+.msg .confirm { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }

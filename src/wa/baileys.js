@@ -208,6 +208,8 @@ export class QrConnector {
   async removeChatLabel(jid, labelId) { await this.#need().removeChatLabel(jid, String(labelId)); }
   /** Make a new label on the phone. */
   async createLabel(id, name, color = 0) { await this.#need().addLabel('', { id: String(id), name, color, deleted: false }); }
+  /** Delete a label on the phone (WhatsApp takes it off every chat). */
+  async deleteLabel(id, name, color = 0) { await this.#need().addLabel('', { id: String(id), name, color, deleted: true }); }
 
   async sendText(jid, text) {
     const sent = await this.#need().sendMessage(jid, { text });

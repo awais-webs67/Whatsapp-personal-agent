@@ -2,7 +2,7 @@
 // The model picks one tool at a time, sees the result, and continues until it can answer.
 // Works with any provider: tools are requested as plain JSON, no vendor tool-calling API needed.
 import { all, get, run, now, update } from '../db.js';
-import { getSettings, saveSettings, emit, log, DEFAULT_SETTINGS } from '../core.js';
+import { getSettings, saveSettings, emit, log, DEFAULT_SETTINGS, kvGet, kvSet } from '../core.js';
 import { complete } from '../llm/router.js';
 import { toolCallToJson } from '../llm/client.js';
 import * as wa from '../wa/manager.js';
@@ -12,7 +12,7 @@ import { createTask, listTasks, taskView, controlTask, setTaskRunner, setCampaig
 import { quickIntent, ASKS_PERMISSION, TIMING_ONLY, startDelay, parseInterval, randomMinutes } from './intent.js';
 import { shortcut } from './shortcuts.js';
 import { updateAuto, createAuto, setAllAuto, ensureDefaultCampaign } from './campaigns.js';
-import { labelChats } from './labeling.js';
+import { labelChats, previewLabel, unlabelChats, previewUnlabel } from './labeling.js';
 import { updateCampaign } from './campaign-edit.js';
 import { normTags, hasAnyTag } from './tags.js';
 import { humanSend } from './pipeline.js';
@@ -37,6 +37,7 @@ function targets({ days: d, stages, includePurchased = false, tags = [] }) {
               ORDER BY c.last_in_at DESC LIMIT 5000`, now() - days(d) * DAY, ...st).filter((c) => hasAnyTag(c, tg)).slice(0, 500);
 }
 
+const labelFilters = (a) => ({ adText: a.ad_text, keywords: a.keywords, campaignId: a.campaign_id, days: a.days, hours: a.hours, tags: a.tags, stage: a.stage });
 const TOOLS = {
   stats: {
     doc: 'stats {"days": 7} - numbers for the period: new chats, messages, replies, stages.',
@@ -111,7 +112,12 @@ const TOOLS = {
   },
   pause_task: { doc: 'pause_task {"id": 3}', run: ({ id }) => ({ status: controlTask(id, 'pause').status }) },
   resume_task: { doc: 'resume_task {"id": 3}', run: ({ id }) => ({ status: controlTask(id, 'resume').status }) },
-  remove_task: { doc: 'remove_task {"id": 3} - stop it and cancel its queued messages.', run: ({ id }) => ({ status: controlTask(id, 'remove').status }) },
+  remove_task: {
+    doc: 'remove_task {"id": 3} - DELETE a campaign or task for good and cancel its queued messages. Only when the owner clearly asks to delete or remove it. "Undo" or "wapis karo" never means this: change it back with update_task, or remove_label for labels.',
+    preview: ({ id }) => { const t = findTask(id, activeThread); return t ? { id: t.id, title: t.title } : { error: 'No such campaign or task' }; },
+    confirm: (p) => p.error ? null : `Campaign #${p.id} "${p.title}" hamesha ke liye DELETE ho jayega, aur us ke na gaye messages cancel ho jayenge.`,
+    run: ({ id }) => ({ status: controlTask(id, 'remove').status }),
+  },
   remind: {
     doc: 'remind {"customer": "name or phone number", "text": "the exact message to send", "at": "18:30" | "2026-12-01T10:00" | "in 2 hours"} - send one customer a message at a set time (a reminder). Leave "at" out to send it now.',
     run: ({ customer, text, at }) => {
@@ -221,9 +227,21 @@ const TOOLS = {
       return { campaign_id: t.id, name: t.title };
     },
   },
+  list_labels: {
+    doc: 'list_labels {} - the WhatsApp Business labels that really exist on each number, with how many chats have each. Use it whenever the owner asks about labels, and before naming a label.',
+    run: () => ({ labels: wa.labelsList().map((l) => ({ name: l.name, number: l.account, chats: l.chats })) }),
+  },
   label_chats: {
-    doc: 'label_chats {"label": "Canva Ad", "ad_text": ["eid"], "keywords": [], "campaign_id": null, "days": 0, "tags": [], "stage": ""} - put a WhatsApp Business label (and the same tag) on every chat that matches: came from an ad whose title has these words, talked about these words, belongs to a campaign, in the last N days, has a tag or stage. Use for "jo is ad se aaye unhein X label do".',
-    run: (a) => labelChats(a.label, { adText: a.ad_text, keywords: a.keywords, campaignId: a.campaign_id, days: a.days, tags: a.tags, stage: a.stage }),
+    doc: 'label_chats {"label": "Flow Google", "create_new": false, "ad_text": ["eid"], "keywords": [], "campaign_id": null, "hours": 0, "days": 0, "tags": [], "stage": ""} - put a WhatsApp Business label on every matching chat that does not have it yet: came from an ad whose title has these words, talked about these words, belongs to a campaign, came in the last N hours or days, has a tag or stage. It always uses the EXISTING label with that name (any case or word order: "google flow" finds "Flow Google"). Set "create_new": true ONLY when the owner clearly asks to make a new label. "last 5 hours" = "hours": 5.',
+    preview: (a) => previewLabel(a.label, labelFilters(a), { create: !!a.create_new }),
+    confirm: (p) => p.error ? null : `"${p.label}" label ${p.chats} chat${p.chats === 1 ? '' : 's'} par lagega${p.examples.length ? ` (${p.examples.join(', ')}${p.chats > 5 ? '…' : ''})` : ''}. ${p.exists ? 'Ye label WhatsApp par pehle se hai, wahi use hoga.' : 'Ye NAYA label banega.'}${p.duplicates ? ` Note: is naam ke ${p.duplicates} labels hain.` : ''}`,
+    run: (a) => labelChats(a.label, labelFilters(a), { create: !!a.create_new }),
+  },
+  remove_label: {
+    doc: 'remove_label {"label": "Google Flow", "delete_label": false, "ad_text": [], "keywords": [], "campaign_id": null, "hours": 0, "days": 0, "tags": [], "stage": ""} - take a WhatsApp label OFF chats: those matching the filters, or every chat that has it when no filter is given. "delete_label": true (with no filters) deletes the label itself on WhatsApp, every copy of that name. Use for "label hata do", "remove the label", "ye label delete karo", and to undo a label_chats.',
+    preview: (a) => previewUnlabel(a.label, labelFilters(a), { deleteLabel: !!a.delete_label }),
+    confirm: (p) => p.error ? null : p.delete ? `"${p.label}" label WhatsApp se poora DELETE ho jayega${p.copies > 1 ? ` (is naam ke ${p.copies} labels, sab)` : ''}. Ye ${p.chats} chats se hat jayega.` : `"${p.label}" label ${p.chats} chat${p.chats === 1 ? '' : 's'} se hatega${p.examples.length ? ` (${p.examples.join(', ')}${p.chats > 5 ? '…' : ''})` : ''}. Label khud rahega.`,
+    run: (a) => unlabelChats(a.label, labelFilters(a), { deleteLabel: !!a.delete_label }),
   },
   help: {
     doc: 'help {} - list what the owner can say in Command.',
@@ -239,6 +257,8 @@ const TOOLS = {
   },
   stop_followups: {
     doc: 'stop_followups {} - stop the running batch and cancel everything queued to send.',
+    preview: () => ({ queued: get("SELECT COUNT(*) n FROM followups WHERE status = 'approved'").n }),
+    confirm: (p) => `Chalta hua batch ruk jayega aur ${p.queued} line mein lage message cancel ho jayenge.`,
     run: () => {
       campaign.cancel = true;
       const { changes } = run("UPDATE followups SET status = 'skipped', error = 'Cancelled by owner' WHERE status = 'approved'");
@@ -362,6 +382,9 @@ You get the result back and can then take another action or reply. At most ${MAX
 - Batches skip people who bought or opted out unless the owner asks for a stage by name; people who asked not to be contacted are never messaged.
 - "Every N minutes" means interval_minutes N. Only use the actions listed above.
 - If the owner is talking about a task that already exists (this one, the running one, "is task mein", "isko", "ab se"), change it with update_task. Never start a new task for a change.${runningTasks()}
+- Be honest about results. Say only what the action results show: if a result says 0 chats, an error or "nothing was done", say exactly that. Never say you removed, deleted, moved or changed something unless a result shows it happened. Never invent labels, numbers or names: use list_labels, stats or find_chats to know them.
+- To undo something, do the opposite action (a label you put on: remove_label; a setting: update_task back to the old value). There is no general undo, and undo never means deleting a campaign. If you are not sure what to undo, ask.
+- Labels: always use the owner's existing WhatsApp label (check list_labels). Make a new label only when the owner asks for a new one.
 - Talk to the owner in plain words. Never mention action names, arguments or JSON in your reply; say what you did or what you need instead ("I could not open the site: …", not "use the remember tool").${campaignId ? campaignBrief(campaignId) : ''}`;
 }
 
@@ -421,7 +444,9 @@ function facts(steps) {
     if (s.action === 'analyse_chats' && !r.started && r.reason) out.push(`ℹ️ ${r.reason[0].toUpperCase()}${r.reason.slice(1)}.`);
     if (s.action === 'update_task' && !r.error) out.push(r.changed?.length ? `✏️ Task #${r.task_id} changed: ${r.changed.join('; ')}.${r.rewriting ? ` Rewriting the ${r.rewriting} message${r.rewriting === 1 ? '' : 's'} not sent yet.` : ''} No new task was made.${nextLine(r.task_id)}` : `⚠️ Task #${r.task_id}: nothing to change.`);
     if (s.action === 'help') out.push(r.help);
-    if (s.action === 'label_chats' && !r.error) out.push(`🏷️ "${r.label}" goes on ${r.chats} chat${r.chats === 1 ? '' : 's'}${r.examples?.length ? ` (${r.examples.join(', ')}${r.chats > 5 ? '…' : ''})` : ''}. Labels are added one by one; the tag "${r.tag}" is on them now.`);
+    if (s.action === 'label_chats' && !r.error && !r.confirm) out.push(`🏷️ "${r.label}" ${r.existing ? '(existing label)' : r.made ? '(new label)' : ''} goes on ${r.chats} chat${r.chats === 1 ? '' : 's'}${r.examples?.length ? ` (${r.examples.join(', ')}${r.chats > 5 ? '…' : ''})` : ''}, one by one on WhatsApp.`);
+    if (s.action === 'remove_label' && !r.error && !r.confirm) out.push(r.deleted ? `🗑️ "${r.label}" label deleted on WhatsApp; it is off ${r.chats} chats.` : `🏷️ "${r.label}" comes off ${r.chats} chat${r.chats === 1 ? '' : 's'}, one by one on WhatsApp.`);
+    if (['label_chats', 'remove_label'].includes(s.action) && r.error) out.push(`⚠️ ${r.error}`);
     if (s.action === 'create_campaign' && !r.error) out.push(`📣 Campaign #${r.campaign_id} "${r.name}" is on. New leads that match join it. See it on the Campaigns page.`);
     if (s.action === 'show_format') out.push(`📝 Message format:\n${r.format}`);
     if (s.action === 'change_settings') out.push(r.changed?.length ? `⚙️ Changed: ${r.changed.join('; ')}.` : '⚠️ Nothing was changed.');
@@ -463,7 +488,10 @@ export async function runCommand(text, history = [], { scheduled = false, campai
   const quick = campaignId ? null : quickIntent(text, { scheduled });
   if (quick && TOOLS[quick.action]) {
     let result;
-    try { result = await TOOLS[quick.action].run(quick.args); } catch (e) { result = { error: e.message }; }
+    const g = await gate(quick.action, quick.args, scheduled);
+    if (g?.ask) return { reply: g.reply, steps: g.steps, confirm: true };
+    if (g?.result) result = g.result;
+    else try { result = await TOOLS[quick.action].run(quick.args); } catch (e) { result = { error: e.message }; }
     log('info', 'command', `${quick.action} ${JSON.stringify(quick.args).slice(0, 200)}`);
     const steps = [{ action: quick.action, args: quick.args, result }];
     const ok = !result?.error && result?.started !== false;
@@ -511,10 +539,15 @@ export async function runCommand(text, history = [], { scheduled = false, campai
     }
     const tool = TOOLS[obj.action];
     let result;
-    try {
-      result = tool ? await tool.run(obj.args || {}) : { error: `Unknown tool "${obj.action}"` };
-    } catch (e) {
-      result = { error: e.message };
+    const g = await gate(obj.action, obj.args || {}, scheduled);
+    if (g?.ask) return { reply: g.reply, steps: [...steps, ...g.steps], confirm: true };
+    if (g?.result) result = g.result;
+    else {
+      try {
+        result = tool ? await tool.run(obj.args || {}) : { error: `Unknown tool "${obj.action}"` };
+      } catch (e) {
+        result = { error: e.message };
+      }
     }
     steps.push({ action: obj.action, args: obj.args || {}, result });
     log('info', 'command', `${obj.action} ${JSON.stringify(obj.args || {}).slice(0, 200)}`);
@@ -522,6 +555,22 @@ export async function runCommand(text, history = [], { scheduled = false, campai
     messages.push({ role: 'user', content: `[result of ${obj.action}] ${JSON.stringify(result).slice(0, 2000)}${i === MAX_STEPS - 1 ? '\nThat was the last tool you may use. Reply to the owner now.' : ''}` });
   }
   return { reply: withFacts('I used every step I am allowed for one request. Here is what actually happened:', steps), steps };
+}
+
+// Actions that change a lot or cannot be undone wait for "Haan" first; the preview says exactly what will happen.
+const YES = /^\s*(haan|han|ha|hn|yes|y|ok|okay|okk|kar\s*do|krdo|kardo|g|ji|jee|confirm|theek(\s*hai)?|sure|done)\b/i;
+const NO = /^\s*(nahi|nhi|nai|no|na|cancel|mat|ruk|rehne\s*do|chhoro|choro)\b/i;
+async function gate(action, args, scheduled) {
+  const tool = TOOLS[action];
+  if (scheduled || !tool?.confirm || !activeThread) return null;
+  let p;
+  try { p = await tool.preview(args); } catch (e) { return { result: { error: e.message } }; }
+  if (p?.error) return { result: p };
+  if (p && p.chats === 0) return { result: { ...p, nothing: 'No chat needs this change, so nothing was done.' } };
+  const ask = tool.confirm(p);
+  if (!ask) return null;
+  kvSet(`pending:${activeThread}`, { action, args, at: now() });
+  return { ask: true, reply: `${ask}\n\nKar dun? Haan / Nahi`, steps: [{ action, args, result: { confirm: true, ...p } }] };
 }
 
 let queue = Promise.resolve();
@@ -585,7 +634,20 @@ export function handleCommand(text, { chatId = null, scheduled = false, label = 
     emit('command', { thread });
     let out;
     activeThread = scheduled ? null : thread;
-    try {
+    // An answer to "Kar dun? Haan / Nahi".
+    const pend = scheduled ? null : kvGet(`pending:${thread}`);
+    if (pend) kvSet(`pending:${thread}`, null);
+    if (pend && now() - pend.at < 15 * 60_000 && (YES.test(text) || NO.test(text)) && text.length < 40) {
+      if (NO.test(text)) out = { reply: 'Theek hai, kuch nahi kiya.', steps: [] };
+      else {
+        let result;
+        try { result = await TOOLS[pend.action].run(pend.args); } catch (e) { result = { error: e.message }; }
+        log('info', 'command', `${pend.action} (confirmed) ${JSON.stringify(pend.args).slice(0, 200)}`);
+        const steps = [{ action: pend.action, args: pend.args, result }];
+        out = { reply: withFacts(result?.error ? 'Ye nahi ho saka.' : 'Ho gaya.', steps), steps };
+      }
+    }
+    if (!out) try {
       out = (campaignId && await campaignQuick(campaignId, text)) || await runCommand(text, history, { scheduled, campaignId });
     } catch (e) {
       out = { reply: `I could not do that: ${e.message}`, steps: [] };
