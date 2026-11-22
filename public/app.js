@@ -1,8 +1,8 @@
 import { h, set, svg, ico, GET, POST, PUT, act, toggle, field, toast } from './ui.js';
 import { S, subs } from './state.js';
-import { overview, inbox } from './pages-main.js';
+import { inbox } from './pages-main.js';
 import { followups, numbers, models } from './pages-ops.js';
-import { playground, knowledge, settings, activity } from './pages-config.js';
+import { playground, settings, activity } from './pages-config.js';
 import { command } from './pages-command.js';
 import { clients, viewingBanner } from './pages-hub.js';
 import { reports } from './pages-reports.js';
@@ -10,24 +10,23 @@ import { campaigns } from './pages-campaigns.js';
 import { emailPage } from './pages-email.js';
 
 const root = document.getElementById('root');
-const PRIMARY = ['overview', 'campaigns', 'inbox', 'command']; // in the phone's bottom bar
+const PRIMARY = ['campaigns', 'inbox', 'numbers', 'command']; // in the phone's bottom bar
 
 // Sidebar sections: work every day, setup once, see results.
 const ROUTES = [
-  ['overview', 'Home', 'house', overview, 'Work'],
-  ['campaigns', 'Campaigns', 'megaphone', campaigns, 'Work'],
-  ['inbox', 'Inbox', 'message-square-text', inbox, 'Work'],
-  ['email', 'Email', 'mail', emailPage, 'Work'],
-  ['command', 'Command', 'terminal', command, 'Work'],
-  ['followups', 'Approvals', 'circle-check-big', followups, 'Work'],
-  ['numbers', 'Numbers', 'smartphone', numbers, 'Setup'],
-  ['knowledge', 'Knowledge', 'book-open-text', knowledge, 'Setup'],
-  ['models', 'AI models', 'cpu', models, 'Setup'],
-  ['playground', 'Live test', 'flask-conical', playground, 'Setup'],
-  ['settings', 'Account', 'settings-2', settings, 'Setup'],
+  ['campaigns', 'Campaigns', 'megaphone', campaigns, 'Manage'],
+  ['inbox', 'Inbox', 'message-square-text', inbox, 'Manage'],
+  ['numbers', 'Numbers', 'smartphone', numbers, 'Manage'],
+  ['command', 'Command', 'terminal', command, 'Manage'],
+  ['followups', 'Approvals', 'circle-check-big', followups, 'Manage'],
+  ['email', 'Email', 'mail', emailPage, 'Assets'],
+  ['models', 'AI models', 'cpu', models, 'Assets'],
   ['reports', 'Reports', 'chart-column', reports, 'Insights'],
   ['activity', 'Activity', 'activity', activity, 'Insights'],
+  ['settings', 'Account', 'settings-2', settings, 'Account'],
 ];
+// Pages reached from inside another page, not from the menu.
+const HIDDEN = { playground: ['models', 'Compare models', 'flask-conical', playground] };
 
 function shell(me) {
   const navLinks = {};
@@ -67,7 +66,7 @@ function shell(me) {
   }
   // Problems that need the owner (number disconnected, no model can answer, daily cap): always on top.
   const healthBox = h('div.health');
-  const drawHealth = (list) => set(healthBox, (list || []).map((p) => h(`a.banner.${p.level === 'warn' ? 'warn' : 'bad'}`, { href: p.link || '#/overview', style: 'text-decoration:none' }, h('b', {}, '⚠ '), h('span', {}, p.text))));
+  const drawHealth = (list) => set(healthBox, (list || []).map((p) => h(`a.banner.${p.level === 'warn' ? 'warn' : 'bad'}`, { href: p.link || '#/campaigns', style: 'text-decoration:none' }, h('b', {}, '⚠ '), h('span', {}, p.text))));
   GET('/api/health').then(drawHealth).catch(() => {});
   const el = h('div.shell', {},
     aside,
@@ -91,13 +90,16 @@ function shell(me) {
 
   function route() {
     if (location.hash.startsWith('#/command')) { updatesUnseen = 0; badge('command', 0); }
-    let [, id = 'overview', arg] = location.hash.split('/');
-    if (id === 'tasks') id = 'campaigns'; // the old task list is now Campaigns
-    const r = ROUTES.find((x) => x[0] === id) || ROUTES[0];
+    let [, id = 'campaigns', arg, sub] = location.hash.split('/');
+    // Old addresses: everything about a campaign now lives inside the campaign.
+    if (id === 'tasks' || id === 'overview' || id === '') id = 'campaigns';
+    if (id === 'knowledge') { location.replace('#/campaigns/default/knowledge'); return; }
+    const hidden = HIDDEN[id];
+    const r = hidden ? [hidden[0], hidden[1], hidden[2], hidden[3]] : ROUTES.find((x) => x[0] === id) || ROUTES[0];
     subs.clear();
     for (const [key, a] of Object.entries(navLinks)) { a.classList.toggle('on', key === r[0]); a.toggleAttribute('aria-current', key === r[0]); }
     more.classList.toggle('on', !PRIMARY.includes(r[0]));
-    set(outlet, r[3](arg));
+    set(outlet, r[3](arg, sub));
     document.title = `${r[1]} · AivraSol Agent Desk`;
   }
   addEventListener('hashchange', route);

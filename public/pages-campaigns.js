@@ -1,7 +1,7 @@
 // Campaigns: the centre of the dashboard. Campaign cards, a step-by-step "new campaign" wizard, and a page per
 // campaign: hero header, how it works, switches, people, messages, full settings (instructions, files, format),
 // log and history. Everything here can also be done from Command ("campaign 5 ...").
-import { h, set, ico, GET, POST, PATCH, DEL, act, toast, modal, field, toggle, select, rel, num, clock, stagePill, leadPill } from './ui.js';
+import { h, set, ico, GET, POST, PATCH, PUT, DEL, act, toast, modal, field, toggle, select, rel, num, clock, stagePill, leadPill } from './ui.js';
 import { S, live } from './state.js';
 import { emailWizardData } from './pages-email.js';
 
@@ -37,48 +37,75 @@ function stateOf(t) {
   return { metrics: [[t.last_run_at ? `${rel(t.last_run_at)} ago` : 'Not yet', 'Last run'], [t.status === 'active' && t.next_run_at ? when(t.next_run_at) : '—', 'Next run']], pct: null, line: t.scheduleText };
 }
 
-// ============================== list ==============================
-export function campaigns(arg) {
-  if (arg && /^\d+$/.test(arg)) return campaignPage(Number(arg));
+// ============================== list (like an ads manager) ==============================
+/** The numbers in one row of the table, whatever the campaign type. */
+function rowNums(t) {
+  const p = t.progress || {};
+  const s = t.stats || {};
+  if (t.kind === 'auto') return { people: s.members, sent: s.sent, replied: s.replied, bought: s.bought };
+  if (t.kind === 'email') return { people: s.members, sent: s.sent, replied: s.replied, bought: null };
+  if (t.kind === 'batch') return { people: (p.sent || 0) + (p.queued || 0) + (p.drafts || 0), sent: p.sent || 0, replied: null, bought: null };
+  return { people: null, sent: null, replied: null, bought: null };
+}
+
+export function campaigns(arg, sub) {
+  if (arg && (/^\d+$/.test(arg) || arg === 'default')) return campaignPage(arg, sub);
+  const kpis = h('div.kpis');
   const box = h('div');
   const filterBar = h('div.cfilter');
+  const search = h('input.csearch', { type: 'search', placeholder: 'Search campaigns', 'aria-label': 'Search campaigns', oninput: () => draw(last) });
   let filter = 'all';
   let last = [];
-  const el = h('div.page', {},
-    h('div.head', {}, h('div', {}, h('h1', {}, 'Campaigns'), h('p', {}, 'Every campaign has its own numbers, people, instructions, files, switches and results. Open one to manage it.')),
-      h('button.btn.primary', { onclick: () => wizard() }, '+ New campaign')),
-    filterBar, box);
+  const el = h('div.page.wide', {},
+    h('div.head', {}, h('div', {}, h('h1', {}, 'Campaigns'), h('p', {}, 'Each campaign is its own agent: its numbers, knowledge, settings, people and results. Click one to open it.')),
+      h('button.btn.primary', { onclick: () => wizard() }, ico('plus', 'sm'), 'Create campaign')),
+    kpis, h('div.ctoolbar', {}, filterBar, search), box);
+
+  GET('/api/overview').then((o) => set(kpis, [
+    ['user-plus', 'New leads', o.stats.newLeads24h, 'last 24 hours'],
+    ['message-square-text', 'Messages in', o.stats.inbound24h, 'last 24 hours'],
+    ['bot', 'AI replies', o.stats.aiReplies24h, 'last 24 hours'],
+    ['hand', 'Need you', o.stats.needsHuman, 'open the Inbox', '#/inbox'],
+    ['badge-check', 'Sales', o.stats.purchased, 'all time'],
+  ].map(([i, l, n, hint, href]) => h(href ? 'a.kpi' : 'div.kpi', href ? { href } : {}, h('span.kpi-i', {}, ico(i)), h('div', {}, h('b', {}, num(n || 0)), h('span', {}, l), h('small', {}, hint)))))).catch(() => {});
 
   const draw = (list) => {
     last = list;
+    const q = search.value.trim().toLowerCase();
     const shown = list.filter((t) => ['active', 'paused', 'done', 'failed'].includes(t.status));
     const counts = { all: shown.length, running: shown.filter((t) => t.status === 'active').length, auto: shown.filter((t) => t.kind === 'auto').length, batch: shown.filter((t) => t.kind === 'batch').length, email: shown.filter((t) => t.kind === 'email').length, done: shown.filter((t) => ['done', 'failed'].includes(t.status)).length };
     set(filterBar, [['all', 'All'], ['running', 'Running'], ['auto', 'Always on'], ['batch', 'One-time'], ['email', 'Email'], ['done', 'Finished']].map(([k, l]) =>
       h(`button${filter === k ? '.on' : ''}`, { onclick: () => { filter = k; draw(last); } }, l, h('span', {}, counts[k]))));
-    const pick = shown.filter((t) => filter === 'all' || (filter === 'running' ? t.status === 'active' : filter === 'done' ? ['done', 'failed'].includes(t.status) : t.kind === filter && !['done', 'failed'].includes(t.status)));
+    const pick = shown.filter((t) => (filter === 'all' || (filter === 'running' ? t.status === 'active' : filter === 'done' ? ['done', 'failed'].includes(t.status) : t.kind === filter && !['done', 'failed'].includes(t.status)))
+      && (!q || `${t.title} #${t.id}`.toLowerCase().includes(q)));
     if (!pick.length) {
-      return set(box, h('div.cempty', {}, badge('auto', true), h('b', {}, shown.length ? 'Nothing here' : 'Start your first campaign'),
-        h('p', {}, 'An always-on campaign for your ad leads, or a one-time message to people already in your chats.'), h('button.btn.primary', { onclick: () => wizard() }, '+ New campaign')));
+      return set(box, h('div.cempty', {}, badge('auto', true), h('b', {}, shown.length ? 'Nothing here' : 'Create your first campaign'),
+        h('p', {}, 'An always-on campaign for your ad leads, a one-time message to people already in your chats, or a cold email campaign.'), h('button.btn.primary', { onclick: () => wizard() }, ico('plus', 'sm'), 'Create campaign')));
     }
     const order = (t) => (t.status === 'active' ? 0 : t.status === 'paused' ? 1 : 2) * 10 + (t.kind === 'auto' ? 0 : 1);
-    set(box, h('div.camp-grid', {}, pick.sort((a, b) => order(a) - order(b) || b.id - a.id).map(card)));
+    const cell = (v) => (v == null ? h('span.muted', {}, '—') : num(v));
+    set(box, h('div.card.ctable-wrap', {}, h('table.ctable', {},
+      h('thead', {}, h('tr', {}, ['', 'Campaign', 'Delivery', 'Numbers', 'People', 'Sent', 'Replied', 'Bought', 'Reply rate'].map((x, i) => h(`th${i > 3 ? '.n' : ''}`, {}, x)))),
+      h('tbody', {}, pick.sort((a, b) => order(a) - order(b) || b.id - a.id).map((t) => {
+        const ty = typeOf(t);
+        const c = t.config || {};
+        let pp = {};
+        try { pp = typeof t.params === 'string' ? JSON.parse(t.params || '{}') || {} : t.params || {}; } catch { /* none */ }
+        const n = rowNums(t);
+        const st = stateOf(t);
+        const where = t.kind === 'email' ? (pp.lists || []).join(', ') || 'Email list' : (c.accountIds?.length ? c.accountIds : pp.accountIds || []).map(accountName).join(', ') || 'All numbers';
+        const canSwitch = ['active', 'paused'].includes(t.status);
+        const sw = canSwitch ? toggle(t.status === 'active', (on) => act(null, async () => { await PATCH(`/api/tasks/${t.id}`, { action: on ? 'resume' : 'pause' }); load(); }, on ? `#${t.id} on` : `#${t.id} paused`), `Campaign ${t.id} on or off`) : h('span');
+        const open = () => { location.hash = `#/campaigns/${t.id}`; };
+        return h(`tr.${t.status}`, { onclick: (e) => { if (!e.target.closest('.switch, input, a, button')) open(); } },
+          h('td.csw', {}, sw),
+          h('td.cname', {}, h('div.cname-in', {}, badge(t.kind), h('div', {}, h('a', { href: `#/campaigns/${t.id}`, dir: 'auto' }, t.title), h('small', {}, `${ty.label}${c.isDefault ? ' · default' : ''} · #${t.id}`)))),
+          h('td.cdel', {}, pill(t), h('small', { dir: 'auto' }, st.line), st.pct != null ? h('div.cprog.thin', {}, h('i', { style: `width:${Math.round(st.pct)}%` })) : null),
+          h('td.cnum', {}, h('span', {}, ico(t.kind === 'email' ? 'mail' : 'smartphone', 'sm'), where)),
+          h('td.n', {}, cell(n.people)), h('td.n', {}, cell(n.sent)), h('td.n', {}, cell(n.replied)), h('td.n', {}, cell(n.bought)),
+          h('td.n', {}, n.sent ? `${Math.round(((n.replied || 0) / n.sent) * 100)}%` : h('span.muted', {}, '—')));
+      })))));
   };
-
-  function card(t) {
-    const ty = typeOf(t);
-    const st = stateOf(t);
-    const c = t.config || {};
-    let pp = {};
-    try { pp = typeof t.params === 'string' ? JSON.parse(t.params || '{}') || {} : t.params || {}; } catch { /* none */ }
-    const nums_ = t.kind === 'email' ? `${(pp.lists || []).join(', ') || 'Email'} · ${(pp.steps || []).length} email${(pp.steps || []).length === 1 ? '' : 's'}` : c.accountIds?.length ? c.accountIds.map(accountName).join(', ') : (pp.accountIds || []).length ? pp.accountIds.map(accountName).join(', ') : 'All numbers';
-    return h(`a.ccard.${ty.tone}`, { href: `#/campaigns/${t.id}` },
-      h('div.ccard-top', {}, badge(t.kind), h('div.grow', {}, h('div.ctype', {}, `${ty.label}${c.isDefault ? ' · default' : ''}`), h('div.cid', {}, `#${t.id}`)), pill(t)),
-      h('b.ccard-title', { dir: 'auto', title: t.title }, t.title),
-      h('div.ccard-meta', {}, h('span', {}, ico(t.kind === 'email' ? 'mail' : 'smartphone', 'sm'), nums_), c.label ? h('span', {}, ico('tag', 'sm'), c.label) : null),
-      h('div.cmetrics', {}, st.metrics.map(([n, l]) => metric(n, l))),
-      st.pct != null ? h('div.cprog', {}, h('i', { style: `width:${Math.round(st.pct)}%` })) : null,
-      h('div.ccard-foot', {}, h('span', {}, st.line), h('span.copen', {}, 'Open →')));
-  }
 
   const load = () => GET('/api/tasks').then(draw).catch((e) => toast(e.message, true));
   for (const ty of ['tasks', 'followups', 'campaign']) live.on(ty, load);
@@ -87,12 +114,12 @@ export function campaigns(arg) {
 }
 
 // ============================== one campaign ==============================
-function campaignPage(id) {
+function campaignPage(id, startTab) {
   const hero = h('div');
   const tabsBar = h('div.ctabs', { role: 'tablist' });
   const body = h('div.cbody');
   const el = h('div.page', {}, h('a.cback', { href: '#/campaigns' }, '← All campaigns'), hero, tabsBar, body);
-  let tab = 'overview';
+  let tab = startTab || 'overview';
   let t = null;
 
   async function load(redrawBody = true) {
@@ -109,9 +136,11 @@ function campaignPage(id) {
           t.kind === 'scheduled' ? ctl('run', 'Run now') : null, c.isDefault ? null : ctl('remove', 'Remove', '.ghost.danger'))),
       h('div.chero-stats', {}, st.metrics.map(([n, l]) => metric(n, l)), t.stats && ['auto', 'batch'].includes(t.kind) ? metric(t.stats.replied ?? 0, 'Replied') : null, t.kind === 'email' && t.stats ? metric(t.stats.bounced ?? 0, 'Bounced') : null),
       st.pct != null ? h('div.chero-prog', {}, h('div.cprog', {}, h('i', { style: `width:${Math.round(st.pct)}%` })), h('span', {}, `${st.line} · ${Math.round(st.pct)}%`)) : h('div.chero-prog', {}, h('span', {}, st.line))));
-    const TABS = [['overview', 'Overview'], ['command', 'Command'], ['people', 'People'], ['messages', 'Messages'], ['settings', 'Settings'], ['log', 'Log & history']];
-    set(tabsBar, TABS.filter(([k]) => ['overview', 'command', 'log'].includes(k) || ['auto', 'batch', 'email'].includes(t.kind)).map(([k, label]) => h(`button${tab === k ? '.on' : ''}`, { role: 'tab', 'aria-selected': tab === k, onclick: () => { tab = k; load(); } }, label)));
-    if (redrawBody) ({ overview, command: commandTab, people, messages, settings: settingsTab, log: logTab }[tab])();
+    const TABS = [['overview', 'Overview', 'layout-dashboard'], ['knowledge', 'Knowledge', 'book-open-text'], ['settings', 'Settings', 'sliders-horizontal'], ['people', 'People', 'users'], ['messages', 'Messages', 'messages-square'], ['test', 'Test', 'flask-conical'], ['command', 'Command', 'terminal'], ['log', 'Log', 'history']];
+    const has = (k) => ['overview', 'command', 'log'].includes(k) || (['knowledge', 'test'].includes(k) ? ['auto', 'batch'].includes(t.kind) : ['auto', 'batch', 'email'].includes(t.kind));
+    if (!has(tab)) tab = 'overview';
+    set(tabsBar, TABS.filter(([k]) => has(k)).map(([k, label, icon]) => h(`button${tab === k ? '.on' : ''}`, { role: 'tab', 'aria-selected': tab === k, onclick: () => { tab = k; history.replaceState(null, '', `#/campaigns/${t.id}/${k}`); load(); } }, ico(icon, 'sm'), label)));
+    if (redrawBody) ({ overview, knowledge: knowledgeTab, command: commandTab, people, messages, settings: settingsTab, test: testTab, log: logTab }[tab])();
   }
 
   function overview() {
@@ -243,6 +272,113 @@ function campaignPage(id) {
         : h('div.muted', { style: 'padding:12px 18px' }, 'Steps appear here as they happen.'));
   }
 
+  /** This campaign's own knowledge: everything the agent knows and says in it. */
+  async function knowledgeTab() {
+    set(body, h('div.muted', { style: 'padding:20px' }, 'Loading…'));
+    const [k, all_] = await Promise.all([GET(`/api/campaigns/${t.id}/knowledge`), GET('/api/tasks').catch(() => [])]);
+    const v = k.values;
+    const area = (key, rows, ph) => h('textarea', { rows, dir: 'auto', value: v[key] || '', placeholder: ph, 'data-k': key });
+    const inp = (key, ph) => h('input', { type: 'text', value: v[key] || '', placeholder: ph, 'data-k': key });
+    const sel = (key, opts) => h('select', { 'data-k': key }, opts.map(([x, l]) => h('option', { value: x, selected: (v[key] || '') === x }, l)));
+    const learnBox = h('div.stack');
+    const others = all_.filter((x) => x.id !== t.id && ['auto', 'batch', 'email'].includes(x.kind) && x.status !== 'removed');
+    const copyFrom = h('select', {}, [h('option', { value: '' }, 'Copy knowledge from…'), ...others.map((x) => h('option', { value: x.id }, `#${x.id} ${x.title}`))]);
+    const files = (t.params || {}).files || [];
+    const picker = h('input', { type: 'file', multiple: true, accept: '.md,.txt,.docx', style: 'display:none', onchange: () => act(null, async () => {
+      for (const file of picker.files) {
+        const res = await fetch(`/api/campaigns/${t.id}/files`, { method: 'POST', headers: { 'content-type': 'application/octet-stream', 'x-file-name': encodeURIComponent(file.name) }, body: file });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(`${file.name}: ${j.error || res.status}`);
+      }
+      await load(false); knowledgeTab();
+    }, 'Files added to this campaign') });
+    const site = h('input', { type: 'url', placeholder: 'https://yourshop.com' });
+    const SECTIONS = [
+      ['brand', 'badge', 'Brand', 'Who is talking and why.', [
+        h('div.grid2', {}, field('Brand name', inp('brand', 'Your shop or brand')), field('Who the agent is', inp('persona', 'e.g. Sana from the sales team'))),
+        field('Goal of the chats', area('goal', 2, 'e.g. Answer questions and help them order the right plan, without pressure.'))]],
+      ['offer', 'package', 'Products and prices', 'What this campaign sells. The agent never quotes a price that is not here.', [
+        field('Products, services and prices', area('offer', 9, 'One per line, e.g.\nPremium plan, 1 year: Rs 2,500\nStandard plan, 6 months: Rs 1,400\nDelivery: within 1 hour after payment')),
+        h('div.grid2', {}, field('Prices', sel('prices', [['', 'Say the prices written here'], ['quote', 'Say the prices written here'], ['link', 'Never say a price, send the link']].slice(1))), field('Link when a product has none', inp('shopLink', 'https://…')))]],
+      ['answers', 'circle-help', 'Answers and policies', 'What customers usually ask, and your terms.', [
+        field('About the business', area('about', 3, 'What you do and for whom, in 2–3 sentences')),
+        field('Questions and answers', area('faqs', 6, 'Q: Is it an original account?\nA: Yes, activated on your own email.')),
+        field('Delivery, payment, refunds', area('policies', 4, 'Payment: bank transfer or wallet\nRefund: within 3 days if it does not work'))]],
+      ['rules', 'list-checks', 'Rules', 'Always followed in this campaign.', [
+        field('Rules for this campaign', area('instructions', 4, 'What to push, what to ask, what never to say')),
+        field('Things you told it to remember', area('memory', 3, 'Added when you say “yaad rakho …” in this campaign’s Command')),
+        field('What counts as a sale', inp('purchaseSignal', 'e.g. They share a payment screenshot or confirm the order'))]],
+      ['writing', 'pen-line', 'How it writes', 'Tone, language and the layout of every message.', [
+        h('div.grid2', {}, field('Tone', area('tone', 2, 'Short, warm, natural WhatsApp messages')), field('Language', area('language', 2, 'Reply in the customer’s language and script'))),
+        field('Message layout (one rule per line)', area('format', 5, 'Greeting on its own line\nOne idea per line\nLink on its own line')),
+        field('Example replies in your voice', area('examples', 4, 'Customer: price?\nYou: Assalam o alaikum Sir! …')),
+        field('Example follow-up', area('followupStyle', 3, 'Use ___ for the product and {name} for their name')),
+        h('div.grid2', {}, field('Links it may send (one per line)', area('links', 2, 'Website, channel…')), field('Unrelated questions', sel('offTopic', [['redirect', 'Politely bring the chat back'], ['brief', 'Answer briefly, then bring it back']])))]],
+      ['learned', 'sparkles', 'Learned', 'From this campaign’s chats, your website and WhatsApp profile. You can edit it.', [
+        learnBox,
+        h('div.row.wrap', {}, h('button.btn', { type: 'button', onclick: (e) => act(e.target, async () => { await POST(`/api/campaigns/${t.id}/learn`, {}); }, 'Learning from this campaign’s chats; it shows here when done.') }, ico('message-square-text', 'sm'), 'Learn from its chats'),
+          site, h('button.btn', { type: 'button', onclick: (e) => act(e.target, async () => { const r = await POST(`/api/campaigns/${t.id}/learn/website`, { url: site.value }); toast(`${r.site}: ${r.products} products, ${r.pages} pages read`); knowledgeTab(); }) }, ico('globe', 'sm'), 'Read website'),
+          h('button.btn', { type: 'button', onclick: (e) => act(e.target, async () => { await POST(`/api/campaigns/${t.id}/learn/profile`, {}); knowledgeTab(); }, 'WhatsApp profile read') }, ico('smartphone', 'sm'), 'Read WhatsApp profile')),
+        field('Learned from your chats', area('learned', 6, 'Empty: press “Learn from its chats”')),
+        field('From your website and WhatsApp profile', area('learnedWeb', 6, 'Empty: read a website or your WhatsApp profile'))]],
+      ['files', 'file-text', 'Files', 'Price lists, scripts, policies (.md, .txt, .docx). Read with every message of this campaign.', [
+        h('div.cfiles', {}, files.length ? files.map((x) => h('div.cfile', {}, h('span', {}, ico('file-text', 'sm'), ' ', h('b', {}, x.name), h('span.muted', {}, ` · ${num(x.text.length)} characters`)),
+          h('button.btn.sm.ghost.danger', { onclick: (e) => act(e.target, async () => { await DEL(`/api/campaigns/${t.id}/files/${encodeURIComponent(x.name)}`); await load(false); knowledgeTab(); }, 'File removed') }, 'Remove'))) : h('div.muted', {}, 'No files yet.')),
+        h('div', {}, h('button.btn', { type: 'button', onclick: () => picker.click() }, ico('upload', 'sm'), 'Upload files'), picker)]],
+    ];
+    const drawLearn = (l) => set(learnBox, l?.running ? h('div.note', {}, `Learning from ${l.chats} chats: step ${l.done} of ${l.total}…`) : l?.error ? h('div.note.bad', {}, l.error) : null);
+    GET('/api/learn').then(drawLearn).catch(() => {});
+    live.on('learning', (l) => { drawLearn(l); if (!l.running && tab === 'knowledge') knowledgeTab(); });
+    const form = h('div.stack');
+    const save = h('button.btn.primary', { onclick: () => act(save, async () => {
+      const patch = Object.fromEntries([...form.querySelectorAll('[data-k]')].map((i) => [i.dataset.k, i.value]));
+      const r = await PUT(`/api/campaigns/${t.id}/knowledge`, patch);
+      toast(r.changed?.length ? `Saved: ${r.changed.join(', ')}` : 'Nothing changed');
+    }) }, 'Save knowledge');
+    const nav = h('nav.csnav', { 'aria-label': 'Knowledge sections' }, SECTIONS.map(([sid, icon, title]) => h('a', { href: `#k-${sid}`, onclick: (e) => { e.preventDefault(); document.getElementById(`k-${sid}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); } }, ico(icon, 'sm'), title)));
+    set(form, SECTIONS.map(([sid, , title, hint, kids], i) => h('div.card.csec', { id: `k-${sid}` },
+      h('header', {}, h('div.csec-h', {}, h('span.csec-n', {}, i + 1), h('div', {}, h('h2', {}, title), h('p.muted', {}, hint)))), h('div.pad.stack', {}, kids))));
+    set(body, h('div.stack', {},
+      h('div.note', {}, h('b', {}, 'Only this campaign uses this knowledge. '), k.isDefault ? 'This is the default campaign: new campaigns start with a copy of it, then each is its own.' : 'It started as a copy; change anything here and only this campaign changes. Empty fields use the default campaign’s.',
+        h('div.row', { style: 'margin-top:8px' }, copyFrom, h('button.btn.sm', { onclick: (e) => copyFrom.value && confirm('Replace this campaign’s knowledge with a copy of the other campaign’s?') && act(e.target, async () => { await POST(`/api/campaigns/${t.id}/knowledge/copy`, { from: Number(copyFrom.value) }); knowledgeTab(); }, 'Knowledge copied') }, 'Copy'))),
+      h('div.csettings', {}, nav, h('div.stack', {}, form, h('div.csave', {}, save, h('span.muted', {}, 'Every change is kept in Log & history. In Command: “is campaign ki price list mein … add karo”.'))))));
+  }
+
+  /** Talk to this campaign as a new lead would. Nothing is sent or saved. */
+  function testTab() {
+    const turns = [];
+    let stage = 'new';
+    const feed = h('div.thread.ccmd-feed');
+    const input = h('textarea', { dir: 'auto', rows: 2, placeholder: 'Write as a customer would, e.g. “price kya hai?”', onkeydown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send.click(); } } });
+    const info = h('div.muted', { style: 'font-size:12.5px;padding:0 16px 8px' });
+    const draw = (thinking) => {
+      set(feed, turns.length ? turns.map((m) => h(`div.msg${m.role === 'user' ? '.me' : ''}`, { dir: 'auto', style: 'white-space:pre-wrap' }, m.content))
+        : h('div.cempty', { style: 'border:0;margin:auto' }, h('b', {}, `Test “${t.title}”`), h('p', {}, 'You are a new lead of this campaign. The agent answers with this campaign’s knowledge and settings. Nothing is sent to WhatsApp.')),
+      thinking ? h('div.msg', { style: 'opacity:.7' }, 'typing…') : null);
+      feed.scrollTop = feed.scrollHeight;
+    };
+    const ask = async (mode) => {
+      draw(true);
+      try {
+        const d = await POST(`/api/campaigns/${t.id}/test`, { messages: turns, stage, mode });
+        const out = d.messages || (d.message ? [d.message] : []);
+        for (const m of out) turns.push({ role: 'assistant', content: m });
+        stage = d.stage || stage;
+        set(info, `Stage: ${stage}${d.handoff ? ' · would hand the chat to you' : ''}${d.provider ? ` · ${d.provider}` : ''}${d.latencyMs ? ` · ${(d.latencyMs / 1000).toFixed(1)} s` : ''}${mode === 'followup' && !out.length ? ' · no follow-up needed' : ''}`);
+      } catch (e) { toast(e.message, true); }
+      draw(false);
+    };
+    const send = h('button.btn.primary', { onclick: () => { const x = input.value.trim(); if (!x) return; input.value = ''; turns.push({ role: 'user', content: x }); ask('reply'); } }, ico('send', 'sm'), 'Send');
+    set(body, h('div.card.ccmd', {}, feed, info,
+      h('div.chips', { style: 'padding:0 14px 10px' },
+        h('button.chip', { onclick: () => turns.length && ask('followup') }, 'Write the follow-up it would send'),
+        h('button.chip', { onclick: () => act(null, async () => { const { system } = await GET(`/api/campaigns/${t.id}/prompt`); modal('What this campaign’s agent is told', h('pre.out', { style: 'max-height:60vh;overflow:auto;white-space:pre-wrap' }, system)); }) }, 'See its instructions'),
+        h('button.chip', { onclick: () => { turns.length = 0; stage = 'new'; set(info, ''); draw(); } }, 'Start over')),
+      h('div.composer', {}, input, send)));
+    draw();
+    input.focus();
+  }
+
   let cmdReload = null;
   /** Commands inside the campaign: everything said here is about this campaign. */
   async function commandTab() {
@@ -308,11 +444,10 @@ function settingsForm(t, acc, done) {
   const auto = t.kind === 'auto';
   const p = t.params || {};
   const c = auto ? t.config || {} : { ...p, approval: p.autoApprove === false, night: !!t.ignore_quiet };
-  const files = p.files || [];
   const inp = (v, attrs = {}) => h('input', { type: 'text', value: v ?? '', ...attrs });
   const area = (v, rows, ph) => h('textarea', { rows, dir: 'auto', value: v || '', placeholder: ph });
   const sel = (opts, v) => h('select', {}, opts.map(([k, l]) => h('option', { value: k, selected: String(v ?? '') === k }, l)));
-  const tri = (v, def, onText, offText) => sel([['', `Account default (${def ? onText : offText})`], ['on', onText], ['off', offText]], v === true ? 'on' : v === false ? 'off' : '');
+  const tri = (v, def, onText, offText) => sel([['', `Standard (${def ? onText : offText})`], ['on', onText], ['off', offText]], v === true ? 'on' : v === false ? 'off' : '');
   const check = (on) => h('input', { type: 'checkbox', checked: !!on });
   const gap = Array.isArray(c.intervalMinutes) ? c.intervalMinutes : [c.gapMin ?? c.intervalMinutes ?? 5, c.gapMax ?? c.intervalMinutes ?? 10];
   const ownQuiet = c.quietStart != null && c.quietEnd != null;
@@ -321,13 +456,7 @@ function settingsForm(t, acc, done) {
     name: inp(t.title), endsAt: inp(dateOf(c.endsAt), { type: 'date' }), priority: inp(c.priority ?? 100, { type: 'number' }),
     keywords: inp((c.keywords || []).join(', ')), adText: inp((c.adText || []).join(', ')), adIds: inp((c.adIds || []).join(', ')), labels: inp((c.labels || []).join(', ')),
     message: auto ? null : area(t.instruction, 3, 'What each message should say'),
-    offer: area(c.offer, 5, 'What this campaign sells: products, packages, prices, the offer and until when.\nFor example:\nPremium plan, 1 year: Rs 2,500 (offer price, until 31 December)\nDelivery: within 1 hour after payment'),
-    prices: sel([['', `Account default (${acc.business.prices === 'link' ? 'send the link' : 'say prices'})`], ['quote', 'Say the prices written here'], ['link', 'Never say a price, send the link']], c.prices),
-    shopLink: inp(c.shopLink, { placeholder: acc.business.shopLink || 'https://…' }), links: area(c.links, 2, 'Links this campaign may send, one per line'),
-    instructions: area(c.instructions, 4, 'Rules for this campaign: what to push, what to ask, what never to say'),
-    format: area(c.format, 4, 'One rule per line, e.g.\nGreeting on its own line\nLink on its own line at the end'),
-    followupStyle: area(c.followupStyle, 3, 'An example message in your words. Use ___ for the product and {name} for their name.'),
-    autoReply: check(c.autoReply !== false), replySpeed: sel([['', `Account default (${SPEED[Object.keys(SPEED).find((k) => acc.human.debounceMin === { instant: 1, fast: 2, natural: 4 }[k])] || 'custom'})`], ...Object.entries(SPEED)], c.replySpeed),
+    autoReply: check(c.autoReply !== false), replySpeed: sel([['', `Standard (${SPEED[Object.keys(SPEED).find((k) => acc.human.debounceMin === { instant: 1, fast: 2, natural: 4 }[k])] || 'custom'})`], ...Object.entries(SPEED)], c.replySpeed),
     voice: tri(c.voice, acc.voice?.transcribe !== false, 'Listen', 'Ignore'), images: tri(c.images, acc.images?.read === true, 'Look at them', 'Ignore'),
     followups: check(c.followups !== false), steps: auto ? inp((c.steps || []).join(', ')) : null,
     gapMin: inp(Math.round(gap[0]), { type: 'number', min: 0 }), gapMax: inp(Math.round(gap[1]), { type: 'number', min: 0 }),
@@ -340,20 +469,10 @@ function settingsForm(t, acc, done) {
   const syncQuiet = () => { quietBox.style.display = f.ownQuiet.checked ? '' : 'none'; };
   f.ownQuiet.onchange = syncQuiet; syncQuiet();
   const numbers = h('div.checks', {}, S.accounts.length ? S.accounts.map((a) => h('label', {}, h('input', { type: 'checkbox', value: a.id, checked: (c.accountIds || []).includes(a.id) }), a.name)) : h('span.muted', {}, 'No number linked yet.'));
-  const fileList = h('div.cfiles', {}, files.length ? files.map((x) => h('div.cfile', {}, h('span', {}, ico('file-text', 'sm'), ' ', h('b', {}, x.name), h('span.muted', {}, ` · ${num(x.text.length)} characters`)),
-    h('button.btn.sm.ghost.danger', { onclick: (e) => act(e.target, async () => { await DEL(`/api/campaigns/${t.id}/files/${encodeURIComponent(x.name)}`); done(); }, 'File removed') }, 'Remove'))) : h('div.muted', {}, 'No files yet.'));
-  const picker = h('input', { type: 'file', multiple: true, accept: '.md,.txt,.docx', style: 'display:none', onchange: () => act(null, async () => {
-    for (const file of picker.files) {
-      const res = await fetch(`/api/campaigns/${t.id}/files`, { method: 'POST', headers: { 'content-type': 'application/octet-stream', 'x-file-name': encodeURIComponent(file.name) }, body: file });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(`${file.name}: ${j.error || res.status}`);
-    }
-    done();
-  }, 'Files added. Every message of this campaign uses them.') });
   const toggleRow = (box, title, hint) => h('label.cswitch', {}, h('div', {}, h('b', {}, title), h('span', {}, hint)), box);
 
   const SECTIONS = [
-    ['basics', 'flag', 'Campaign', 'Name, numbers and how long it runs.', [
+    ['basics', 'flag', 'Campaign', 'Name, WhatsApp numbers and how long it runs.', [
       field('Campaign name', f.name),
       auto && !c.isDefault ? field('Numbers', numbers, 'None ticked = all your numbers.') : null,
       h('div.grid2', {}, field('Ends on', f.endsAt, 'Pauses by itself after this day. Empty = runs until you pause it.'), auto && !c.isDefault ? field('Priority', f.priority, 'When two campaigns match a lead, the lower number wins.') : h('div'))]],
@@ -361,15 +480,7 @@ function settingsForm(t, acc, done) {
       h('div.note', {}, 'Any one of these is enough. Leave all empty to take every new lead on the numbers above.'),
       h('div.grid2', {}, field('Words in their first message', f.keywords, 'Give each ad its own pre-filled message and use a word from it.'), field('Words in the ad title', f.adText)),
       h('div.grid2', {}, field('Meta ad IDs', f.adIds), field('Chat already has the WhatsApp label', f.labels))]] : null,
-    ['content', 'package', 'Offer and content', 'What the agent says in this campaign. Your shared Knowledge is used too; what you write here comes first.', [
-      auto ? null : field('What each message should say', f.message, 'Changing it rewrites the messages not sent yet.'),
-      field('Offer, products and prices of this campaign', f.offer),
-      h('div.grid2', {}, field('Prices', f.prices), field('Link when a product has none', f.shopLink)),
-      field('Links it may send', f.links),
-      field('Instructions', f.instructions),
-      h('label.f', {}, 'Files with details (.md, .txt, .docx)', h('div.row', {}, h('button.btn', { type: 'button', onclick: () => picker.click() }, ico('upload', 'sm'), 'Upload files'), picker), fileList),
-      field('Message layout', f.format, 'Empty = the layout from Knowledge.'),
-      field('Example message in your words', f.followupStyle)]],
+    auto ? null : ['message', 'message-square-text', 'Message', 'What each message of this campaign says. Products, prices and rules are in the Knowledge tab.', [field('What each message should say', f.message, 'Changing it rewrites the messages not sent yet.')]],
     auto ? ['replies', 'message-circle', 'Replies', 'How the agent answers this campaign’s leads.', [
       h('div.cswitches.wide', { style: 'border:1px solid var(--line);border-radius:10px' }, toggleRow(f.autoReply, 'Auto reply', 'Off: you answer these leads yourself; follow-ups can still run.')),
       h('div.grid3', {}, field('Reply speed', f.replySpeed, 'How long it waits and “types” before answering.'), field('Voice notes', f.voice, 'Turned into text (small cost).'), field('Pictures', f.images, 'Payment proofs, screenshots (one AI call each).'))]] : null,
@@ -388,7 +499,7 @@ function settingsForm(t, acc, done) {
 
   const save = h('button.btn.primary', { onclick: () => act(save, async () => {
     const body = {
-      name: f.name.value, offer: f.offer.value, prices: f.prices.value, shopLink: f.shopLink.value, links: f.links.value, instructions: f.instructions.value, format: f.format.value, followupStyle: f.followupStyle.value,
+      name: f.name.value,
       gapMin: Number(f.gapMin.value), gapMax: Number(f.gapMax.value), approval: f.approval.value === 'ask', night: f.night.checked, dailyCap: Number(f.dailyCap.value) || 0,
       quietStart: f.ownQuiet.checked ? Number(f.quietStart.value) : '', quietEnd: f.ownQuiet.checked ? Number(f.quietEnd.value) : '',
       endsAt: f.endsAt.value ? new Date(`${f.endsAt.value}T23:59:00`).getTime() : '',

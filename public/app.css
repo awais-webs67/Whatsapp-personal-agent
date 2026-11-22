@@ -100,7 +100,7 @@ input[type=text], input[type=password], input[type=number], input[type=search], 
   width: 100%; border: 1px solid var(--line-strong); border-radius: var(--r); background: var(--white); padding: 8px 10px; color: var(--ink); min-height: 36px; }
 textarea { resize: vertical; line-height: 1.5; }
 input:focus, select:focus, textarea:focus { outline: none; border-color: var(--orange); box-shadow: 0 0 0 3px var(--orange-tint-2); }
-.switch { position: relative; width: 38px; height: 22px; flex: none; }
+.switch { position: relative; display: inline-block; vertical-align: middle; width: 38px; height: 22px; flex: none; }
 .switch input { position: absolute; inset: 0; opacity: 0; cursor: pointer; margin: 0; z-index: 1; }
 .switch i { position: absolute; inset: 0; background: #8A9298; border-radius: 2px; transition: background .2s; }
 .switch i::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; background: #fff; border-radius: 1px; transition: transform .2s var(--ease); }
@@ -559,3 +559,60 @@ ol.clive-feed li.failed .ico { color: var(--danger); }
   .csnav a { white-space: nowrap; }
 }
 .msg .confirm { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+
+/* ===== Campaigns as an ads manager ===== */
+.page.wide { max-width: 1320px; }
+.kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
+.kpi { display: flex; gap: 12px; align-items: center; padding: 14px 16px; background: var(--white); border: 1px solid var(--line); border-radius: 14px; color: inherit; text-decoration: none; transition: border-color .15s, transform .15s, box-shadow .15s; }
+a.kpi:hover { border-color: color-mix(in srgb, var(--orange) 45%, var(--line)); transform: translateY(-1px); box-shadow: 0 6px 18px rgba(15, 23, 42, .06); }
+.kpi-i { display: grid; width: 38px; height: 38px; border-radius: 10px; display: grid; place-items: center; flex: none; background: color-mix(in srgb, var(--orange) 10%, transparent); color: var(--orange); }
+.kpi > div > b { display: block; font: 400 26px/1 var(--display); color: var(--ink); }
+.kpi > div > span { display: block; font-size: 12.5px; font-weight: 600; color: var(--ink); margin-top: 4px; }
+.kpi > div > small { display: block; font-size: 11px; color: var(--muted); }
+.ctoolbar { display: flex; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 12px; flex-wrap: wrap; }
+.ctoolbar .cfilter { margin: 0; }
+.csearch { max-width: 260px; }
+.ctable-wrap { overflow-x: auto; padding: 0; }
+table.ctable { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.ctable th { text-align: left; font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); padding: 12px 10px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--soft) 70%, var(--white)); white-space: nowrap; }
+.ctable th.n, .ctable td.n { text-align: right; font-variant-numeric: tabular-nums; }
+.ctable td { padding: 12px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.ctable tbody tr { cursor: pointer; transition: background .12s; }
+.ctable tbody tr:hover { background: color-mix(in srgb, var(--orange) 4%, transparent); }
+.ctable tbody tr:last-child td { border-bottom: 0; }
+.ctable tr.paused td:not(.csw) { opacity: .72; }
+.ctable tr.done td:not(.csw), .ctable tr.failed td:not(.csw) { opacity: .6; }
+.ctable td.csw { width: 56px; padding-left: 16px; }
+.cname-in { display: flex; gap: 12px; align-items: center; min-width: 200px; }
+.cname-in a { color: var(--ink); font-weight: 600; text-decoration: none; display: block; }
+.cname-in a:hover { color: var(--orange-text, var(--orange)); text-decoration: underline; }
+.cname-in small, .cdel small { display: block; font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+.cdel { min-width: 160px; }
+.cdel small { max-width: 200px !important; }
+.cdel small { max-width: 230px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cprog.thin { height: 4px; margin-top: 6px; max-width: 180px; }
+.cnum span { display: inline-flex; gap: 6px; align-items: center; color: var(--slate); white-space: nowrap; }
+.ctabs { overflow-x: auto; scrollbar-width: none; }
+.ctabs::-webkit-scrollbar { display: none; }
+.ctabs button { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.ctabs button .ico { opacity: .7; }
+.ctabs button.on .ico { opacity: 1; color: var(--orange); }
+a.numlink { color: inherit; text-decoration: none; }
+a.numlink:hover h3 { color: var(--orange-text, var(--orange)); text-decoration: underline; }
+@media (max-width: 1100px) { .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 760px) {
+  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .kpi { padding: 10px 12px; }
+  .kpi:last-child { grid-column: 1 / -1; }
+  .csearch { max-width: none; width: 100%; }
+  /* The table becomes a list of rows on a phone: name and delivery, numbers underneath. */
+  .ctable thead { display: none; }
+  .ctable, .ctable tbody { display: block; }
+  .ctable tr { display: grid; grid-template-columns: 52px 1fr; grid-template-areas: "sw name" "sw del" "sw nums"; padding: 12px 6px; border-bottom: 1px solid var(--line); }
+  .ctable td { border: 0; padding: 2px 8px; }
+  .ctable td.csw { grid-area: sw; }
+  .ctable td.cname { grid-area: name; }
+  .ctable td.cdel { grid-area: del; }
+  .ctable td.cnum, .ctable td.n { display: none; }
+  .cname-in { min-width: 0; }
+}

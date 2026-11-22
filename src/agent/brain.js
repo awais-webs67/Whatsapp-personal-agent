@@ -4,6 +4,7 @@ import { getSettings } from '../core.js';
 import { complete } from '../llm/router.js';
 import { focus, trimProse } from './knowledge.js';
 import { campaignOf, campaignContext, withCampaign } from './campaigns.js';
+import './campaign-knowledge.js'; // each campaign's own knowledge replaces the account's, field by field
 
 export const STAGES = ['new', 'engaged', 'interested', 'negotiating', 'purchased', 'not_interested', 'opted_out'];
 export const CLOSED = ['purchased', 'not_interested', 'opted_out'];
@@ -95,7 +96,6 @@ export function buildSystem(settings, chat, mode, query = '', { campaignId = nul
   const cx = campaignContext(campaignId || camp?.task.id);
   if (cx) {
     const head = cx.isDefault ? 'Instructions for new leads (from the owner)' : `This message is part of the campaign "${cx.title}"${chat?.ad_title ? ` (the lead came from the ad "${chat.ad_title}")` : ''}. Follow its instructions exactly`;
-    out.push(section(`Offer, products and prices of ${cx.isDefault ? 'this campaign' : `the campaign "${cx.title}"`} (these come first; if they differ from the general list above, these win)`, fit(cx.offer)));
     out.push(section(head, cx.instructions));
     if (cx.files.length) out.push(section(`Campaign notes from the owner's files (${cx.files.map((f) => f.name).join(', ')})`, settings.llm.tokenSaver === false ? cx.files.map((f) => f.text).join('\n\n') : trimProse(cx.files.map((f) => `Source: ${f.name}\n${f.text}`).join('\n\n'), query, 5000)));
   }

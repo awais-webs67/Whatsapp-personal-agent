@@ -1,8 +1,9 @@
 // "Learn from my chats": read conversations the owner handled by hand and distil how they
 // answer, what they offer and at what price. The result is plain text the owner can review
 // and edit; it is added to the agent's instructions. (No model is retrained.)
-import { all, now } from '../db.js';
+import { all, get, now } from '../db.js';
 import { getSettings, saveSettings, emit, log, sleep } from '../core.js';
+import { saveKnowledge, saveSourceBlock as saveBlock, isDefault } from './campaign-knowledge.js';
 import { complete } from '../llm/router.js';
 import { extractJson } from './brain.js';
 import { readSite, formatProducts } from './website.js';
@@ -25,13 +26,14 @@ Merge them into one clean set: remove duplicates, and when prices or rules confl
 Keep at most 40 offers, 30 faqs, 15 policies and 15 examples (prefer short, typical ones).
 Return ONLY a JSON object with the same keys: offers, faqs, policies, style, examples.`;
 
-function transcripts(accountId, maxChats) {
+function transcripts(accountId, maxChats, campaignId = null) {
   // Chats the owner personally replied in are the ones worth learning from.
   const chats = all(`SELECT c.id FROM chats c
       WHERE (?1 IS NULL OR c.account_id = ?1)
+        AND (?3 IS NULL OR c.campaign_id = ?3 OR EXISTS (SELECT 1 FROM followups f WHERE f.chat_id = c.id AND f.task_id = ?3))
         AND (SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.id AND m.by = 'owner') >= 2
         AND (SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.id AND m.from_me = 0) >= 1
-      ORDER BY c.last_msg_at DESC LIMIT ?2`, accountId, maxChats);
+      ORDER BY c.last_msg_at DESC LIMIT ?2`, accountId, maxChats, campaignId);
   return chats.map(({ id }) => {
     const rows = all('SELECT from_me, text FROM (SELECT * FROM messages WHERE chat_id = ? ORDER BY ts DESC, id DESC LIMIT 40) ORDER BY ts, id', id);
     return rows.map((r) => `${r.from_me ? 'Me' : 'Them'}: ${String(r.text || '').replace(/\s+/g, ' ').slice(0, 400)}`).join('\n').slice(0, 2500);
@@ -79,9 +81,10 @@ async function ask(system, content) {
   return normalise(json);
 }
 
-export async function learnFromChats({ accountId = null, maxChats = 150 } = {}) {
+export async function learnFromChats({ accountId = null, maxChats = 150, campaignId = null } = {}) {
   if (learning.running) throw new Error('Already learning');
-  const list = transcripts(accountId, maxChats);
+  const own = campaignId && !isDefault(get('SELECT * FROM tasks WHERE id = ?', campaignId)) ? campaignId : null;
+  const list = transcripts(accountId, maxChats, own);
   if (!list.length) throw new Error('No conversations with your own replies are stored yet. Link a number and let the history sync first.');
   const chunks = chunk(list);
   Object.assign(learning, { running: true, total: chunks.length + (chunks.length > 1 ? 1 : 0), done: 0, chats: list.length, error: null, finishedAt: null });
@@ -104,7 +107,8 @@ export async function learnFromChats({ accountId = null, maxChats = 150 } = {}) 
       }
       const text = formatLearned(final);
       if (!text) throw new Error('The conversations did not contain anything business-related to learn from');
-      saveSettings({ business: { learned: text, learnedAt: now() } });
+      if (own) saveKnowledge(own, { learned: text, learnedAt: now() }, 'learning');
+      else saveSettings({ business: { learned: text, learnedAt: now() } });
       log('info', 'learn', `Learned from ${list.length} conversations`);
     } catch (e) {
       learning.error = e.message;
@@ -131,13 +135,9 @@ export { htmlToText } from './website.js';
 export const webProgress = { running: false, done: 0, total: 0, site: '' };
 
 /** Replace this source's block in "learned from website/profile", keep the others. */
-function saveSourceBlock(key, block) {
-  const prev = getSettings().business.learnedWeb || '';
-  const kept = prev.split(/\n\n(?=Source: )/).filter((b) => b.trim() && !b.startsWith(`Source: ${key}`));
-  saveSettings({ business: { learnedWeb: [...kept, block].join('\n\n') } });
-}
+const saveSourceBlock = (key, block, campaignId = null) => saveBlock(campaignId, key, block);
 
-export async function learnFromWebsite(raw) {
+export async function learnFromWebsite(raw, { campaignId = null } = {}) {
   if (webProgress.running) throw new Error(`Already reading ${webProgress.site}`);
   Object.assign(webProgress, { running: true, done: 0, total: 0, site: String(raw) });
   emit('weblearn', webProgress);
@@ -168,7 +168,7 @@ export async function learnFromWebsite(raw) {
       part('Rules', summary.policies),
       part('Questions and answers', summary.faqs.map((f) => `Q: ${f.q} / A: ${f.a}`)),
     ].filter(Boolean).join('\n');
-    saveSourceBlock(host, block);
+    saveSourceBlock(host, block, campaignId);
     log('info', 'learn', `Read ${host}: ${site.products.length} products, ${site.pages.length} other pages${warning ? ` (${warning})` : ''}`);
     return { site: host, products: site.products.length, pages: site.pages.length, warning, text: block };
   } catch (e) {
@@ -181,10 +181,10 @@ export async function learnFromWebsite(raw) {
 }
 
 /** WhatsApp Business profile + catalogue of the linked numbers. */
-export async function learnFromProfile(profileText) {
+export async function learnFromProfile(profileText, { campaignId = null } = {}) {
   if (!profileText) throw new Error('No business profile found. This needs a connected WhatsApp Business number with a profile or catalogue filled in.');
   const block = `Source: WhatsApp business profile\n${profileText}`;
-  saveSourceBlock('WhatsApp business profile', block);
+  saveSourceBlock('WhatsApp business profile', block, campaignId);
   log('info', 'learn', 'Learned from the WhatsApp business profile');
   return { text: block };
 }

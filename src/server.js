@@ -24,6 +24,7 @@ import { updateCampaign } from './agent/campaign-edit.js';
 import { labelChats } from './agent/labeling.js';
 import { leadScore } from './agent/score.js';
 import { mediaStatus } from './agent/voice.js';
+import { knowledgeOf, saveKnowledge, copyKnowledge, KNOW } from './agent/campaign-knowledge.js';
 import * as email from './email/index.js';
 import { setEmailStats } from './agent/tasks.js';
 import { handleCommand, startCommander, listThreads, newThread, campaignThread } from './agent/commander.js';
@@ -251,7 +252,7 @@ const chatView = (c) => {
   return { ...c, lead: leadScore(c), tagList: tagsOf(c), title: c.name || (c.phone ? `+${c.phone}` : c.jid.split('@')[0]), accountName: account?.name, accountType: account?.type, auto, autoReason: reason };
 };
 app.get('/api/chats', wrap((req) => {
-  const { q = '', stage = '', account = '', filter = '', tag = '' } = req.query;
+  const { q = '', stage = '', account = '', filter = '', tag = '', campaign = '' } = req.query;
   const where = ['c.last_msg_at IS NOT NULL'];
   const params = [];
   const t = normTags(tag)[0];
@@ -259,6 +260,7 @@ app.get('/api/chats', wrap((req) => {
   if (q) { where.push('(c.name LIKE ? OR c.phone LIKE ? OR c.last_text LIKE ?)'); params.push(`%${q}%`, `%${q}%`, `%${q}%`); }
   if (STAGES.includes(stage)) { where.push('c.stage = ?'); params.push(stage); }
   if (account) { where.push('c.account_id = ?'); params.push(Number(account)); }
+  if (campaign) { where.push('(c.campaign_id = ? OR EXISTS (SELECT 1 FROM followups f WHERE f.chat_id = c.id AND f.task_id = ?))'); params.push(Number(campaign), Number(campaign)); }
   if (filter === 'needs_human') where.push('c.needs_human = 1');
   if (filter === 'unread') where.push('c.unread > 0');
   if (filter === 'hot') return all(`SELECT c.* FROM chats c WHERE ${where.join(' AND ')} ORDER BY c.last_msg_at DESC LIMIT 1000`, ...params).map(chatView).filter((c) => c.lead.label === 'hot').sort((a, b) => b.lead.score - a.lead.score).slice(0, 300);
@@ -452,7 +454,7 @@ app.get('/api/health', wrap(() => health()));
 app.get('/api/reports', wrap((req) => report(Number(req.query.days) || 30)));
 app.get('/api/labels', wrap(() => all('SELECT a.id account_id, a.name account, l.label_id id, l.name, l.color FROM wa_labels l JOIN accounts a ON a.id = l.account_id WHERE l.deleted = 0 ORDER BY a.id, l.name')));
 // One campaign's own dashboard: its numbers, people, messages.
-const campaignRow = (id) => need(get("SELECT * FROM tasks WHERE id = ? AND status != 'removed'", Number(id)), 'Campaign');
+const campaignRow = (id) => (id === 'default' ? ensureDefaultCampaign() : need(get("SELECT * FROM tasks WHERE id = ? AND status != 'removed'", Number(id)), 'Campaign'));
 app.get('/api/campaigns/:id/view', wrap((req) => {
   const t = campaignRow(req.params.id);
   let params = {};
@@ -486,6 +488,7 @@ app.post('/api/campaigns/once', wrap(async (req) => {
   const list = (v) => (Array.isArray(v) ? v : String(v ?? '').split(',')).map((x) => String(x).trim()).filter(Boolean);
   const lo = Math.max(1, Number(b.gapMin) || 5), hi = Math.max(lo, Number(b.gapMax) || lo);
   const id = createTask({ kind: 'batch', title: String(b.name || instruction).slice(0, 120), instruction, ignoreQuiet: !!b.night });
+  startKnowledge(id, b.knowledgeFrom);
   const c = await runCampaign({ taskId: id, sinceDays: Math.max(1, Number(b.days) || 7), limit: Math.min(500, Number(b.limit) || 200), reanalyze: true, instruction,
     autoApprove: b.send !== false, intervalMinutes: lo === hi ? lo : [lo, hi], stages: list(b.stages), audience: ['buyers', 'non_buyers'].includes(b.audience) ? b.audience : 'all',
     tags: normTags(b.tags), accountIds: list(b.accountIds).map(Number), keywords: list(b.keywords), startAt: Number(b.startInMinutes) > 0 ? now() + Number(b.startInMinutes) * 60_000 : null });
@@ -508,10 +511,32 @@ app.get('/api/email/lists/:list/export.csv', wrap((req, res) => {
   res.send(email.exportList(req.params.list));
 }));
 app.delete('/api/email/lists/:list', wrap((req) => email.deleteList(req.params.list)));
-app.post('/api/campaigns/email', wrap((req) => email.createEmailCampaign(req.body || {}, createTask)));
+app.post('/api/campaigns/email', wrap((req) => { const r = email.createEmailCampaign(req.body || {}, createTask); const id = r?.id || r?.taskId; if (id) startKnowledge(id, req.body?.knowledgeFrom); return r; }));
 
 app.get('/api/campaigns/fields', wrap(() => AUTO_FIELDS));
-app.post('/api/campaigns', wrap((req) => createAuto(req.body || {}, 'dashboard')));
+app.post('/api/campaigns', wrap((req) => { const t = createAuto(req.body || {}, 'dashboard'); startKnowledge(t.id, req.body?.knowledgeFrom); return t; }));
+// ---------- one campaign's own knowledge, learning and test chat ----------
+/** A new campaign starts with a copy of another campaign's knowledge (the default one unless told otherwise, or none). */
+function startKnowledge(id, from) {
+  if (from === 'none') return;
+  const src = Number(from) || ensureDefaultCampaign().id;
+  if (src !== Number(id)) { try { copyKnowledge(src, id, 'created'); } catch (e) { log('warn', 'campaigns', `Could not copy knowledge: ${e.message}`); } }
+}
+app.get('/api/campaigns/:id/knowledge', wrap((req) => ({ ...knowledgeOf(campaignRow(req.params.id).id), files: (JSON.parse(campaignRow(req.params.id).params || '{}').files || []).map((f) => ({ name: f.name, chars: f.text.length })) })));
+app.put('/api/campaigns/:id/knowledge', wrap((req) => saveKnowledge(campaignRow(req.params.id).id, req.body || {}, 'dashboard')));
+app.post('/api/campaigns/:id/knowledge/copy', wrap((req) => copyKnowledge(Number(req.body.from), campaignRow(req.params.id).id, 'dashboard')));
+app.post('/api/campaigns/:id/learn', wrap((req) => learnFromChats({ campaignId: campaignRow(req.params.id).id, maxChats: Math.min(1000, Math.max(1, Number(req.body.maxChats) || 150)) })));
+app.post('/api/campaigns/:id/learn/website', wrap(async (req) => learnFromWebsite(String(req.body.url || ''), { campaignId: campaignRow(req.params.id).id })));
+app.post('/api/campaigns/:id/learn/profile', wrap(async (req) => learnFromProfile(await wa.profiles(), { campaignId: campaignRow(req.params.id).id })));
+/** Chat with this campaign as if you were a new lead of it. Nothing is sent or saved. */
+app.post('/api/campaigns/:id/test', wrap(async (req) => {
+  const t = campaignRow(req.params.id);
+  const turns = (req.body.messages || []).filter((m) => m.content).map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content) }));
+  if (!turns.length) throw bad('Write a message first');
+  const fake = { id: 0, name: 'Test customer', stage: req.body.stage || 'new', summary: '', notes: '', last_in_at: now(), followup_count: 0, campaign_id: t.id };
+  return decide(0, req.body.mode === 'followup' ? 'followup' : 'reply', { turns, chatOverride: fake, campaignId: t.id });
+}));
+app.get('/api/campaigns/:id/prompt', wrap((req) => ({ system: buildSystem(getSettings(), { id: 0, name: 'Test customer', stage: 'new', summary: '', notes: '', last_in_at: now(), campaign_id: campaignRow(req.params.id).id }, 'reply', '', { campaignId: campaignRow(req.params.id).id }) })));
 app.patch('/api/campaigns/:id', wrap((req) => updateCampaign(Number(req.params.id), req.body || {}, 'dashboard')));
 // Files with business instructions for one campaign (.md, .txt, .docx): used in every message it writes.
 app.post('/api/campaigns/:id/files', express.raw({ type: () => true, limit: '15mb' }), wrap((req) => {
@@ -673,7 +698,17 @@ export function syncSharedAI(url = process.env.SHARED_AI_URL, key = process.env.
 export function start(port = Number(process.env.PORT) || 3000) {
   migrateSettings();
   syncSharedAI();
-  ensureDefaultCampaign();
+  const def = ensureDefaultCampaign();
+  // Once: every campaign gets its own knowledge (a copy of the default campaign's), so each can be changed alone.
+  if (!kvGet('knowledgeSplit2')) {
+    const base = knowledgeOf(def.id).values;
+    for (const t of all("SELECT id, params FROM tasks WHERE kind IN ('auto','batch') AND status != 'removed' AND id != ?", def.id)) {
+      const p = JSON.parse(t.params || '{}') || {};
+      const fill = Object.fromEntries(KNOW.filter(([k]) => !p[k] && base[k] && k !== 'instructions').map(([k]) => [k, base[k]]));
+      if (Object.keys(fill).length) { try { saveKnowledge(t.id, fill, 'split'); } catch (e) { log('warn', 'campaigns', e.message); } }
+    }
+    kvSet('knowledgeSplit2', true);
+  }
   setLabeler((chat, name) => wa.applyLabel(chat, name, { create: true })); // a campaign's own label is made if missing
   // Started by the hub: stop together with it, and tell it when requests can be forwarded.
   if (process.send) process.on('disconnect', () => process.exit(0));

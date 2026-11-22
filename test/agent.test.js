@@ -1692,3 +1692,35 @@ test('big or permanent changes ask "Kar dun? Haan / Nahi" first, and only run on
   assert.deepEqual(wa.findLabels(1, 'google flow').map((l) => l.label_id), ['9']);
   assert.deepEqual(wa.findLabels(1, 'Flow Google').map((l) => l.label_id), ['8']);
 });
+
+test('each campaign has its own knowledge: a copy at the start, then changed alone, by dashboard or command', async () => {
+  const camps = await import('../src/agent/campaigns.js');
+  const kn = await import('../src/agent/campaign-knowledge.js');
+  const { buildSystem } = await import('../src/agent/brain.js');
+  const { getSettings } = await import('../src/core.js');
+  const { TOOLS_FOR_TEST } = await import('../src/agent/commander.js');
+  const def = camps.ensureDefaultCampaign();
+  kn.saveKnowledge(def.id, { offer: 'Basic plan: Rs 500', faqs: 'Q: Original? A: Yes' }, 'test');
+  assert.equal(getSettings().business.catalog, 'Basic plan: Rs 500', 'the default campaign keeps its knowledge in the account');
+  const a = camps.createAuto({ name: 'Brand A', keywords: ['branda'] }, 'test');
+  const b = camps.createAuto({ name: 'Brand B', keywords: ['brandb'] }, 'test');
+  kn.copyKnowledge(def.id, a.id, 'test');
+  kn.copyKnowledge(def.id, b.id, 'test');
+  kn.saveKnowledge(a.id, { offer: 'Gold plan: Rs 3000', brand: 'Brand A Store' }, 'test');
+  const chatA = { id: 999991, campaign_id: a.id, name: 'X', stage: 'new' };
+  const chatB = { id: 999992, campaign_id: b.id, name: 'Y', stage: 'new' };
+  const sysA = buildSystem(getSettings(), chatA, 'reply', '', { campaignId: a.id });
+  const sysB = buildSystem(getSettings(), chatB, 'reply', '', { campaignId: b.id });
+  assert.match(sysA, /Gold plan: Rs 3000/);
+  assert.doesNotMatch(sysA, /Basic plan: Rs 500/, 'its own products replace the default ones');
+  assert.match(sysA, /Brand A Store/);
+  assert.match(sysB, /Basic plan: Rs 500/, 'the other campaign is untouched');
+  // By command, inside campaign B: add a line to its products.
+  TOOLS_FOR_TEST.edit_knowledge.run({ id: b.id, field: 'offer', text: 'Pro plan: Rs 1200', mode: 'add' });
+  assert.equal(kn.knowledgeOf(b.id).values.offer, 'Basic plan: Rs 500\nPro plan: Rs 1200');
+  assert.equal(kn.knowledgeOf(a.id).values.offer, 'Gold plan: Rs 3000');
+  assert.match(TOOLS_FOR_TEST.show_knowledge.run({ id: b.id, field: 'offer' }).text, /Pro plan/);
+  const tasks = await import('../src/agent/tasks.js');
+  tasks.controlTask(a.id, 'remove'); tasks.controlTask(b.id, 'remove');
+  kn.saveKnowledge(def.id, { offer: '', faqs: '' }, 'test');
+});

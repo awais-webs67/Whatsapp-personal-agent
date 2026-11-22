@@ -102,14 +102,11 @@ export function campaignContext(taskId) {
 
 /** The settings a message of this campaign is written with: the account settings plus the campaign's own price mode and links. */
 export function withCampaign(settings, taskId) {
-  const cx = campaignContext(taskId);
-  if (!cx) return settings;
-  const b = { ...settings.business };
-  if (cx.prices) b.prices = cx.prices;
-  if (cx.links) b.links = cx.links;
-  if (cx.shopLink) b.shopLink = cx.shopLink;
-  return { ...settings, business: b };
+  return knowledgeRef ? knowledgeRef(settings, taskId) : settings;
 }
+// Set by campaign-knowledge.js (which imports this module), so the two never import each other at load time.
+let knowledgeRef = null;
+export const setKnowledge = (fn) => { knowledgeRef = fn; };
 
 /** How human replies look in this chat's campaign (its reply speed, else the account pacing). */
 export function humanFor(chat) {

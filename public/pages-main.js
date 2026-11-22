@@ -4,99 +4,14 @@ import { S, live } from './state.js';
 const ACCOUNT_STATE = { connected: ['Connected', 'ok'], connecting: ['Connecting', 'warn'], qr: ['Scan QR', 'hot'], pairing: ['Enter code', 'hot'], logged_out: ['Logged out', 'bad'], error: ['Error', 'bad'], disconnected: ['Offline', ''] };
 export const accountPill = (a) => { const [label, tone] = ACCOUNT_STATE[a.status.state] || ACCOUNT_STATE.disconnected; return h(`span.pill${tone ? `.${tone}` : ''}`, {}, label); };
 
-/** The failover chain drawn as a line with stops; the first ready stop is the one serving now. */
-export function chainRail(providers) {
-  const enabled = providers.filter((p) => p.enabled);
-  if (!enabled.length) return h('div.empty', {}, h('b', {}, 'No AI model yet'), 'The agent needs at least one model to think with.', h('div', {}, h('a.btn.primary', { href: '#/models' }, 'Add a model')));
-  const active = enabled.find((p) => p.status === 'ready');
-  return h('div.rail', {}, enabled.map((p) => {
-    const down = p.status !== 'ready';
-    const [label] = PROVIDER_STATUS[p.status] || [p.status];
-    return h(`div.stop${p === active ? '.active' : ''}${down ? '.down' : ''}`, {},
-      h(`i.dia${p === active ? '.live' : down ? '.bad' : ''}`),
-      h('b', { title: p.name }, p.name), h('span', { title: p.model }, p.model),
-      h('em', {}, p === active ? 'Serving now' : down ? `${label}${p.cooldownUntil ? ` · back ${rel(p.cooldownUntil)}` : ''}` : 'Standby'));
-  }));
-}
-
-/** Leads who went quiet and when the agent will nudge them. */
-function followupCard(f) {
-  if (!f) return null;
-  const steps = f.steps.map((hrs) => (hrs % 24 ? `${hrs}h` : `${hrs / 24}d`)).join(', ');
-  const toggle = (patch, msg) => act(null, () => PUT('/api/settings', { followup: patch }), msg).then(() => location.reload());
-  return h('div.card', {},
-    h('header', {}, h('h2', {}, 'Follow-ups for quiet leads'),
-      h('div.row', {}, f.enabled ? h('span.pill.ok', {}, f.approval ? 'On · you approve each' : 'On · automatic') : h('span.pill.bad', {}, 'Off'),
-        h('button.btn.sm', { onclick: () => toggle({ enabled: !f.enabled }, f.enabled ? 'Follow-ups turned off' : 'Follow-ups turned on') }, f.enabled ? 'Turn off' : 'Turn on'),
-        f.enabled ? h('button.btn.sm', { onclick: () => toggle({ approval: !f.approval }, f.approval ? 'Follow-ups now go out on their own' : 'Follow-ups now wait for your approval') }, f.approval ? 'Send automatically' : 'Ask me first') : null)),
-    h('div.pad.stack', {},
-      h('div.muted', {}, `When a lead goes quiet after a reply (yours or the agent's), the agent writes them a short personal nudge after ${steps} of silence, then stops. It never messages people who bought, said no, or asked not to be contacted. At most ${f.dailyCap} a day per number, none between ${f.quietStart}:00 and ${f.quietEnd}:00.`),
-      h('div.grid3', {}, h('div.kv', {}, 'Leads waiting for a nudge', h('b', {}, num(f.scheduled))), h('div.kv', {}, 'Sent in the last 24h', h('b', {}, num(f.sentToday))), h('div.kv', {}, 'Replied after a nudge (7 days)', h('b', {}, num(f.repliedAfter)))),
-      f.drafts ? h('div.note.warn', {}, `${f.drafts} follow-up${f.drafts === 1 ? '' : 's'} wait for your approval. `, h('a', { href: '#/followups' }, 'Review')) : null,
-      f.why && f.queued ? h('div.note.warn', {}, h('b', {}, 'Not sending right now. '), f.why) : null,
-      f.next.length ? h('div', {}, h('div.muted', { style: 'font-size:12px;margin-bottom:4px' }, 'Next nudges'),
-        f.next.map((c) => h('a.kv', { href: `#/inbox/${c.id}`, style: 'text-decoration:none;color:inherit;padding:3px 0' }, h('span', {}, c.title, h('span.muted', {}, ` · nudge ${c.step}`)), h('b', {}, c.at <= Date.now() + 60_000 ? 'now' : rel(c.at))))) : null));
-}
-
-export function overview() {
-  const el = h('div.page');
-  // Running campaigns first: what is happening right now, one click from each campaign's own page.
-  const campStrip = h('div.card', {}, h('header', {}, h('h2', {}, 'Running campaigns'), h('a.btn.sm', { href: '#/campaigns' }, 'All campaigns')), h('div.pad.muted', {}, 'Loading…'));
-  GET('/api/tasks').then((list) => {
-    const live_ = list.filter((t) => t.status === 'active' || t.status === 'paused').slice(0, 6);
-    set(campStrip, h('header', {}, h('h2', {}, 'Running campaigns'), h('a.btn.sm', { href: '#/campaigns' }, 'All campaigns')),
-      live_.length ? h('div.camp-mini', {}, live_.map((t) => {
-        const st = t.stats || {}; const p = t.progress || {};
-        const line = t.kind === 'auto' ? `${st.members || 0} leads · ${st.sent || 0} sent · ${st.bought || 0} bought` : p.reading ? `Reading ${p.reading.done} of ${p.reading.total}` : `${p.sent || 0} sent · ${p.queued || 0} to go`;
-        return h('a', { href: `#/campaigns/${t.id}` }, h('b', { dir: 'auto' }, t.title), h('span', {}, `${t.status === 'paused' ? 'Paused · ' : ''}${line}`));
-      })) : h('div.pad', {}, h('span.muted', {}, 'No campaign is running. '), h('a', { href: '#/campaigns' }, 'Start one')));
-  }).catch(() => {});
-  let logs = [];
-  const draw = (o) => {
-    const s = o.stats;
-    const total = o.stages.reduce((n, x) => n + x.n, 0) || 1;
-    const needsSetup = !o.accounts.length || !o.providers.length;
-    set(el, 
-      h('div.head', {}, h('div', {}, h('h1', {}, 'Home'), h('p', {}, o.settings.autopilot ? 'The agent is answering new leads on its own.' : 'Autopilot is off. Messages are stored, nothing is sent automatically.')),
-        h('a.btn.primary', { href: '#/campaigns' }, 'Campaigns')),
-      h('div.stack', {},
-        campStrip,
-        needsSetup && h('div.card', {}, h('header', {}, h('h2', {}, 'Get started')),
-          h('div.pad.stack', {}, [
-            ['Add an AI model', 'Paste an API key from any provider. Add two or more and the agent switches when one runs out.', '#/models', o.providers.length > 0],
-            ['Teach it your business', 'Products, prices, FAQs and how you talk to customers.', '#/knowledge', false],
-            ['Link a WhatsApp number', 'Scan a QR code, or connect the official Business API.', '#/numbers', o.accounts.length > 0],
-          ].map(([t, d, href, done], i) => h('div.row', {}, h(`i.dia${done ? '.ok' : '.hot'}`), h('div.grow', {}, h('b', { style: 'color:var(--ink)' }, `${i + 1}. ${t}`), h('div.muted', {}, d)), h('a.btn.sm', { href }, done ? 'Review' : 'Open'))))),
-        h('div.tiles', {}, [
-          ['New leads', s.newLeads24h], ['Messages in', s.inbound24h], ['AI replies', s.aiReplies24h], ['Follow-ups', s.followups24h], ['Need you', s.needsHuman, true], ['Purchased', s.purchased],
-        ].map(([label, n, alert]) => h(`div.tile${alert && n ? '.alert' : ''}`, {}, h('b', {}, num(n)), h('span', {}, label, label === 'Purchased' || label === 'Need you' ? '' : ' · 24h')))),
-
-        h('div.card', {}, h('header', {}, h('h2', {}, 'Model chain'), h('a.btn.sm', { href: '#/models' }, 'Manage')), h('div', { id: 'rail' }, chainRail(o.providers))),
-        h('div.grid2', {},
-          h('div.card', {}, h('header', {}, h('h2', {}, 'Numbers'), h('a.btn.sm', { href: '#/numbers' }, 'Manage')),
-            o.accounts.length ? o.accounts.map((a) => h('div.acct', {}, h('div', {}, h('h3', {}, a.name), h('div.muted', {}, a.status.me ? `+${a.status.me}` : a.type === 'qr' ? 'WhatsApp app (QR)' : 'Business Cloud API', ` · ${num(a.chats)} chats`)), accountPill(a)))
-              : h('div.empty', {}, h('b', {}, 'No number linked'), 'Link one to start receiving chats.')),
-          h('div.card', {}, h('header', {}, h('h2', {}, 'Pipeline'), h('span.muted', {}, `${num(s.chats)} contacts`)),
-            h('div.pad', {},
-              h('div.stagebar', {}, o.stages.map((x) => h('i', { style: `width:${(x.n / total) * 100}%;background:${STAGES[x.stage]?.[1] || '#ccc'}`, title: `${STAGES[x.stage]?.[0]}: ${x.n}` }))),
-              h('div.legend', {}, Object.entries(STAGES).map(([k, [label, color]]) => h('span', {}, h('i.dia', { style: `background:${color}` }), label, h('b', {}, num(o.stages.find((x) => x.stage === k)?.n || 0)))))))),
-        h('div.card', {}, h('header', {}, h('h2', {}, 'Latest activity'), h('a.btn.sm', { href: '#/activity' }, 'All activity')),
-          logs.length ? h('div.logs', {}, logs.slice(0, 8).map(logRow)) : h('div.empty', {}, 'Nothing yet.'))));
-  };
-  const load = async () => { const [o, l] = await Promise.all([GET('/api/overview'), GET('/api/logs')]); logs = l; draw(o); };
-  load().catch((e) => toast(e.message, true));
-  let t;
-  const soon = () => { clearTimeout(t); t = setTimeout(() => load().catch(() => {}), 500); };
-  for (const type of ['chat', 'accounts', 'followups', 'settings', 'history']) live.on(type, soon);
-  live.on('providers', (p) => { const r = el.querySelector('#rail'); if (r) set(r, chainRail(p)); });
-  return el;
-}
-
 export const logRow = (l) => h('div', {}, h('time', {}, clock(l.ts)), h('span.sc', {}, l.scope), h(`span.${l.level}`, {}, l.msg));
 
 // ---------------------------------------------------------------------------------------------
 export function inbox(openId) {
-  const st = { q: '', stage: '', filter: '', id: openId ? Number(openId) : null, chats: [] };
+  // #/inbox/n3 = the chats of number 3; #/inbox/c5 = the chats of campaign 5; #/inbox/42 = open chat 42.
+  const byNumber = /^n\d+$/.test(openId || '') ? Number(openId.slice(1)) : '';
+  const byCampaign = /^c\d+$/.test(openId || '') ? Number(openId.slice(1)) : '';
+  const st = { q: '', stage: '', filter: '', account: byNumber, campaign: byCampaign, id: /^\d+$/.test(openId || '') ? Number(openId) : null, chats: [] };
   const list = h('div.chatlist', { role: 'list' });
   const threadCol = h('section.threadcol');
   const side = h('aside.side');
@@ -111,9 +26,14 @@ export function inbox(openId) {
     chip('Unread', { stage: '', filter: 'unread' }, st.filter === 'unread'),
     ['interested', 'negotiating', 'purchased', 'not_interested'].map((s) => chip(STAGES[s][0], { stage: s, filter: '' }, st.stage === s)));
   let qt;
+  const campaignPick = h('select', { 'aria-label': 'Campaign', onchange: (e) => { st.campaign = e.target.value; loadList(); } }, h('option', { value: '' }, 'All campaigns'));
+  GET('/api/tasks').then((ts) => campaignPick.append(...ts.filter((x) => ['auto', 'batch'].includes(x.kind)).map((x) => h('option', { value: x.id, selected: String(st.campaign) === String(x.id) }, `#${x.id} ${x.title}`)))).catch(() => {});
   const listCol = h('section.listcol', {},
     h('div.list-head', {}, h('h1', {}, 'Inbox'),
       h('input', { type: 'search', placeholder: 'Search name, number or text', 'aria-label': 'Search chats', oninput: (e) => { st.q = e.target.value; clearTimeout(qt); qt = setTimeout(loadList, 250); } }),
+      h('div.grid2', { style: 'gap:8px' },
+        h('select', { 'aria-label': 'Number', onchange: (e) => { st.account = e.target.value; loadList(); } }, [h('option', { value: '' }, 'All numbers'), ...S.accounts.map((a) => h('option', { value: a.id, selected: String(st.account) === String(a.id) }, a.name))]),
+        campaignPick),
       headChips,
       h('a.btn.sm', { href: '/api/chats/export.csv', download: '', title: 'Your customers as a spreadsheet: name, number, stage, tags, summary' }, 'Download customers (CSV)')),
     list);
@@ -127,7 +47,7 @@ export function inbox(openId) {
       h('div.tags', {}, leadPill(c.lead), c.needs_human ? h('i.dia.bad', { title: 'Needs you' }) : c.auto ? h('i.dia.hot', { title: 'Agent is handling this chat' }) : null, c.unread ? h('span.badge', {}, c.unread) : null))));
   }
   async function loadList() {
-    const p = new URLSearchParams({ q: st.q, stage: st.stage, filter: st.filter });
+    const p = new URLSearchParams({ q: st.q, stage: st.stage, filter: st.filter, account: st.account || '', campaign: st.campaign || '' });
     st.chats = await GET(`/api/chats?${p}`);
     drawList();
   }

@@ -44,7 +44,7 @@ function row(u, reload) {
   const [label, tone] = STATUS[u.status] || [u.status, ''];
   const daily = h('input', { type: 'number', min: 0, value: u.aiDaily, style: 'width:90px', 'aria-label': 'Shared AI requests per day' });
   const save = (patch, msg) => act(null, async () => { await PATCH(`/api/hub/users/${u.id}`, patch); await reload(); }, msg);
-  const open = h('button.btn.primary.sm', { disabled: u.disabled, onclick: () => act(open, async () => { await POST('/api/hub/view', { id: u.id }); location.hash = '#/overview'; location.reload(); }) }, 'Open dashboard');
+  const open = h('button.btn.primary.sm', { disabled: u.disabled, onclick: () => act(open, async () => { await POST('/api/hub/view', { id: u.id }); location.hash = '#/campaigns'; location.reload(); }) }, 'Open dashboard');
   return h('div.card', {},
     h('header', {}, h('div', {}, h('h2', {}, u.name || u.username), h('small.muted', {}, `Username: ${u.username}`)), h(`span.pill${tone ? `.${tone}` : ''}`, {}, label)),
     h('div.pad.stack', {},

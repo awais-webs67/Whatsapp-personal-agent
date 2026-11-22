@@ -18,6 +18,7 @@ import { normTags, hasAnyTag } from './tags.js';
 import { humanSend } from './pipeline.js';
 import { learnFromChats, learnFromWebsite, learnFromProfile } from './learn.js';
 import { campaignQuick, campaignBrief } from './campaign-command.js';
+import { KNOW, knowledgeOf, saveKnowledge } from './campaign-knowledge.js';
 
 const MAX_STEPS = 8;
 const DAY = 86_400_000;
@@ -227,6 +228,22 @@ const TOOLS = {
       return { campaign_id: t.id, name: t.title };
     },
   },
+  show_knowledge: {
+    doc: `show_knowledge {"id": 3, "field": "offer"} - read a campaign's knowledge (leave out field for a short view of all). Fields: ${KNOW.map(([k]) => k).join(', ')}.`,
+    run: ({ id, field }) => {
+      const k = knowledgeOf(id || activeCampaign || findTask(null, activeThread)?.id);
+      if (field) return { campaign: k.title, field, text: String(k.values[field] ?? '').slice(0, 3000) || '(empty)' };
+      return { campaign: k.title, fields: Object.fromEntries(Object.entries(k.values).map(([f, v]) => [f, v ? `${String(v).slice(0, 120)}${String(v).length > 120 ? '…' : ''}` : '(empty)'])) };
+    },
+  },
+  edit_knowledge: {
+    doc: `edit_knowledge {"id": 3, "field": "offer", "text": "...", "mode": "replace|add"} - change one campaign's own knowledge: offer = its products and prices, faqs, policies, about, brand, persona, goal, examples, tone, language, instructions, memory, format, followupStyle, links, prices ("quote" or "link"), shopLink. "add" adds lines, "replace" replaces the whole field (read it first with show_knowledge so nothing is lost). Only that campaign changes.`,
+    run: ({ id, field, text, mode }) => {
+      if (!KNOW.some(([k]) => k === field)) return { error: `Unknown field "${field}". Fields: ${KNOW.map(([k]) => k).join(', ')}` };
+      const cid = id || activeCampaign || findTask(null, activeThread)?.id;
+      return { campaign_id: cid, ...saveKnowledge(cid, { [field]: text }, 'command', { mode: mode === 'add' ? 'add' : 'replace' }) };
+    },
+  },
   list_labels: {
     doc: 'list_labels {} - the WhatsApp Business labels that really exist on each number, with how many chats have each. Use it whenever the owner asks about labels, and before naming a label.',
     run: () => ({ labels: wa.labelsList().map((l) => ({ name: l.name, number: l.account, chats: l.chats })) }),
@@ -296,18 +313,21 @@ const TOOLS = {
     run: ({ text }) => {
       const line = String(text || '').trim().slice(0, 600);
       if (!line) return { error: 'Nothing to remember' };
+      // Inside a campaign, it is that campaign's memory.
+      if (activeCampaign) { saveKnowledge(activeCampaign, { memory: `- ${line}` }, 'command', { mode: 'add' }); return { remembered: line, campaign_id: activeCampaign }; }
       const prev = getSettings().business.memory || '';
       saveSettings({ business: { memory: `${prev ? `${prev}\n` : ''}- ${line}` } });
       return { remembered: line };
     },
   },
   learn: {
-    doc: 'learn {"source": "chats|website|profile", "url": "https://..."} - train the agent: from the owner\'s past chats, from a website (url required), or from the WhatsApp business profile and catalogue.',
-    run: async ({ source, url }) => {
-      if (source === 'website') { const r = await learnFromWebsite(String(url || '')); return { pages_read: r.pages, learned: r.text.slice(0, 700) }; }
-      if (source === 'profile') { const r = await learnFromProfile(await wa.profiles()); return { learned: r.text.slice(0, 700) }; }
-      const l = await learnFromChats({});
-      return { started: true, conversations: l.chats, note: 'Runs in the background; the result appears on the Knowledge page.' };
+    doc: 'learn {"source": "chats|website|profile", "url": "https://...", "id": 3} - train one campaign (id; inside a campaign it is that one): from the owner\'s past chats, from a website (url required), or from the WhatsApp business profile and catalogue.',
+    run: async ({ source, url, id }) => {
+      const campaignId = id || activeCampaign || null; // inside a campaign it learns for that campaign
+      if (source === 'website') { const r = await learnFromWebsite(String(url || ''), { campaignId }); return { pages_read: r.pages, learned: r.text.slice(0, 700) }; }
+      if (source === 'profile') { const r = await learnFromProfile(await wa.profiles(), { campaignId }); return { learned: r.text.slice(0, 700) }; }
+      const l = await learnFromChats({ campaignId });
+      return { started: true, conversations: l.chats, note: 'Runs in the background; the result appears in the campaign\'s Knowledge tab.' };
     },
   },
   set_autopilot: {
@@ -574,7 +594,8 @@ async function gate(action, args, scheduled) {
 }
 
 let queue = Promise.resolve();
-let activeThread = null; // the conversation whose command is running (commands run one at a time)
+let activeThread = null;
+let activeCampaign = null; // the campaign whose Command tab the owner is writing in // the conversation whose command is running (commands run one at a time)
 /** Handle a command from the dashboard or from the owner's own WhatsApp chat; requests run one at a time. */
 // ---------- conversations ----------
 /** A fixed conversation for WhatsApp self-chat commands or scheduled-task runs, created on first use. */
@@ -634,6 +655,7 @@ export function handleCommand(text, { chatId = null, scheduled = false, label = 
     emit('command', { thread });
     let out;
     activeThread = scheduled ? null : thread;
+    activeCampaign = campaignId || null;
     // An answer to "Kar dun? Haan / Nahi".
     const pend = scheduled ? null : kvGet(`pending:${thread}`);
     if (pend) kvSet(`pending:${thread}`, null);

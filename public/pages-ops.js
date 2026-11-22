@@ -1,4 +1,4 @@
-import { h, set, GET, POST, PATCH, DEL, act, toast, modal, field, toggle, select, rel, num, stagePill, PROVIDER_STATUS } from './ui.js';
+import { h, set, ico, GET, POST, PATCH, DEL, act, toast, modal, field, toggle, select, rel, num, stagePill, PROVIDER_STATUS } from './ui.js';
 import { S, live } from './state.js';
 import { accountPill } from './pages-main.js';
 
@@ -101,11 +101,12 @@ export function numbers() {
         : [h('button.btn.sm', { onclick: () => cloudDialog(a) }, 'Edit connection'), s.state !== 'connected' && h('button.btn.sm.primary', { onclick: call('connect') }, 'Retry')];
       return h('div', { style: 'border-bottom:1px solid var(--line)' },
         h('div.acct', { style: 'border:0' },
-          h('div', {}, h('div.row', {}, h('h3', {}, a.name), accountPill(a)),
+          h('div', {}, h('div.row', {}, h('a.numlink', { href: `#/inbox/n${a.id}`, title: 'Open this number’s chats' }, h('h3', {}, a.name)), accountPill(a)),
             h('div.muted', {}, a.type === 'qr' ? 'WhatsApp app (QR link)' : 'Business Cloud API', s.me ? ` · +${s.me}` : '', ` · ${num(a.chats)} chats`),
             s.error ? h('div', { style: 'color:var(--danger);font-size:12.5px;margin-top:4px' }, s.error) : null),
           h('div.row.wrap', { style: 'justify-content:flex-end' },
             h('div', { style: 'width:200px' }, select(MODES, a.replyMode, (v) => act(null, () => PATCH(`/api/accounts/${a.id}`, { replyMode: v }), 'Saved'), { 'aria-label': 'Who the agent answers', title: 'Who the agent answers on this number' })),
+            h('a.btn.sm.primary', { href: `#/inbox/n${a.id}` }, ico('message-square-text', 'sm'), `Chats (${num(a.chats)})`),
             actions,
             h('button.btn.sm.ghost.danger', { onclick: (e) => confirm(`Remove ${a.name} and all its stored chats?`) && act(e.target, () => DEL(`/api/accounts/${a.id}`), 'Removed') }, 'Remove'))),
         linking ? h('div.pad', { style: 'border-top:1px solid var(--line)' }, h('div.qrbox', {},
@@ -224,8 +225,8 @@ export function models() {
       bad.length ? h('div', { style: 'margin-top:6px' }, 'If every provider fails the same way, the problem is this computer\'s internet, firewall, VPN or antivirus, not the keys.') : null));
   }
   const el = h('div.page', {},
-    h('div.head', {}, h('div', {}, h('h1', {}, 'Models'), h('p', {}, 'The agent uses the first model that is ready. When one hits its rate limit, runs out of quota or goes down, the next one takes over within the same reply, and it comes back by itself when the limit resets.')),
-      h('div.row', {}, h('button.btn', { onclick: (e) => act(e.target, checkNetwork) }, 'Check connection'), h('button.btn.primary', { onclick: () => edit(null) }, 'Add a model'))),
+    h('div.head', {}, h('div', {}, h('h1', {}, 'AI models'), h('p', {}, 'The agent uses the first model that is ready. When one hits its rate limit, runs out of quota or goes down, the next one takes over within the same reply, and it comes back by itself when the limit resets.')),
+      h('div.row', {}, h('a.btn', { href: '#/playground' }, 'Compare models'), h('button.btn', { onclick: (e) => act(e.target, checkNetwork) }, 'Check connection'), h('button.btn.primary', { onclick: () => edit(null) }, 'Add a model'))),
     h('div.stack', {}, netBox, box));
 
   const limitBar = (label, remaining, limit) => {
