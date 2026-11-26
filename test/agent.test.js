@@ -35,7 +35,7 @@ const server = http.createServer((req, res) => {
   req.on('data', (c) => (body += c));
   req.on('end', () => {
     const key = (req.headers.authorization || '').replace('Bearer ', '');
-    if (req.url.endsWith('/audio/transcriptions')) { voiceCalls.push({ key, multipart: /form-data/.test(req.headers['content-type'] || '') && body.includes('whisper-large-v3-turbo') }); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ text: 'Canva Pro ka price kya hai?' })); }
+    if (req.url.endsWith('/audio/transcriptions')) { voiceCalls.push({ key, multipart: /form-data/.test(req.headers['content-type'] || '') && /whisper|transcribe/.test(body) }); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ text: 'Canva Pro ka price kya hai?' })); }
     calls.push({ key, body: body ? JSON.parse(body) : null });
     const send = (status, json, headers = {}) => { res.writeHead(status, { 'content-type': 'application/json', ...headers }); res.end(JSON.stringify(json)); };
     if (key === 'limited') return send(429, { error: { message: 'Rate limit reached' } }, { 'retry-after': '120' });
@@ -1372,7 +1372,7 @@ test('a voice note is turned into text first, and the agent answers what was sai
     audio: { mime: 'audio/ogg; codecs=opus', fetch: async () => Buffer.from('OggS fake audio') } }]);
   const chat = () => get("SELECT * FROM chats WHERE jid = '923337770001@s.whatsapp.net'");
   await until(() => get("SELECT text FROM messages WHERE wa_id = 'voice-1'")?.text.includes('Canva Pro ka price'), 6000);
-  assert.equal(voiceCalls.at(-1).multipart, true, 'sent as audio to the Whisper model');
+  assert.equal(voiceCalls.at(-1).multipart, true, 'sent as audio to a speech-to-text model');
   const voiceAsk = () => calls.slice(before).find((c) => JSON.stringify(c.body?.messages || '').includes('[voice note]'));
   await until(voiceAsk, 6000);
   assert.match(JSON.stringify(voiceAsk().body.messages), /\[voice note\] Canva Pro ka price kya hai/, 'the model sees the words, not just [voice note]');
@@ -1858,4 +1858,12 @@ test('a chat can be deleted from the dashboard with its messages and waiting fol
   assert.equal(get('SELECT COUNT(*) n FROM chats WHERE id = ?', id).n, 0);
   assert.equal(get('SELECT COUNT(*) n FROM messages WHERE chat_id = ?', id).n, 0);
   assert.equal(get('SELECT COUNT(*) n FROM followups WHERE chat_id = ?', id).n, 0);
+});
+
+test('voice notes find a model that can hear them by themselves, and remember it', async () => {
+  const { transcribe } = await import('../src/agent/voice.js');
+  run("DELETE FROM settings WHERE key = 'voiceRoute'");
+  const text = await transcribe(Buffer.from('OggS fake audio'), 'audio/ogg');
+  assert.equal(text, 'Canva Pro ka price kya hai?');
+  assert.ok(get("SELECT value FROM settings WHERE key = 'voiceRoute'"), 'the working model is remembered');
 });

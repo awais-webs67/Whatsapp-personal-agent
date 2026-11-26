@@ -71,7 +71,7 @@ export const DEFAULT_SETTINGS = {
     gapMinSec: 60, gapMaxSec: 240,
   },
   reading: { auto: true, perTick: 4 }, // keep reading chats that changed (stage + summary), a few at a time
-  voice: { transcribe: true },          // voice notes become text (needs a Groq or OpenAI key)
+  voice: { transcribe: true },          // voice notes become text (any saved model that can hear audio; found automatically)
   images: { read: false },             // pictures are described by a vision model (costs tokens, so off by default)
   llm: { historyMessages: 12, maxTokens: 1024, timeoutSec: 20, tokenSaver: true, spread: true, knowledgeChars: 6000 },
 };

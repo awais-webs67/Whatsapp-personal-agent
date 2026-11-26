@@ -1,4 +1,4 @@
-// Voice notes and pictures. Voice notes: the audio is turned into text with a Whisper model (Groq's is free and fast; OpenAI works too),
+// Voice notes and pictures. Voice notes: the audio is turned into text by any saved model that can (see transcribe),
 // so the agent answers what the customer said instead of "[voice note]". Pictures (payment proofs, screenshots,
 // product photos) are described by a vision model. Each can be switched off in Settings to save tokens.
 // The reply waits for them briefly.
@@ -10,26 +10,70 @@ import { mediaFor } from './campaigns.js';
 const chatOf = (chatId) => get('SELECT * FROM chats WHERE id = ?', chatId);
 
 const pending = new Map(); // chatId -> Promise (transcriptions still running)
-const MODELS = { groq: 'whisper-large-v3-turbo', openai: 'whisper-1' };
+// Voice notes work with whatever models you have saved. The agent tries each one that might understand audio,
+// remembers the first that works, and goes back to searching only if that one stops working.
+//   1. a speech-to-text endpoint (/audio/transcriptions): Groq, OpenAI, Together, Mistral, most OpenAI-compatible hosts
+//   2. a chat model that listens (audio in the message): Gemini, and Gemini or GPT-4o through OpenRouter
+const STT = { groq: ['whisper-large-v3-turbo', 'whisper-large-v3'], openai: ['gpt-4o-mini-transcribe', 'whisper-1'], together: ['openai/whisper-large-v3'], mistral: ['voxtral-mini-latest'], github: [], anthropic: [] };
+const LISTEN = { gemini: ['gemini-2.5-flash', 'gemini-2.0-flash'], openrouter: ['google/gemini-2.5-flash', 'openai/gpt-4o-audio-preview'] };
+const failedAt = new Map(); // `${providerId}:${how}:${model}` -> when it last failed (skipped for 6 hours)
+const FAIL_MS = 6 * 3_600_000;
 
-/** A provider that can transcribe: a saved Groq or OpenAI key. */
-function transcriber() {
-  const row = all("SELECT * FROM providers WHERE enabled = 1 AND preset IN ('groq','openai') ORDER BY CASE preset WHEN 'groq' THEN 0 ELSE 1 END, priority")[0];
-  return row ? hydrate(row) : null;
+function candidates() {
+  const rows = all('SELECT * FROM providers WHERE enabled = 1 ORDER BY priority, id').map(hydrate).filter((p) => p.kind !== 'anthropic' && p.baseUrl);
+  const out = [];
+  for (const p of rows) {
+    for (const m of STT[p.preset] ?? (p.preset in LISTEN ? [] : ['whisper-1', 'whisper-large-v3'])) out.push({ p, how: 'stt', model: m });
+    for (const m of LISTEN[p.preset] || []) out.push({ p, how: 'listen', model: m });
+  }
+  // The one that worked last time goes first.
+  const best = getSettingsKv();
+  if (best) out.sort((a, b) => (key(b) === best) - (key(a) === best));
+  return out.filter((c) => key(c) === best || Date.now() - (failedAt.get(key(c)) || 0) > FAIL_MS);
+}
+const key = (c) => `${c.p.id}:${c.how}:${c.model}`;
+const getSettingsKv = () => get("SELECT value FROM settings WHERE key = 'voiceRoute'")?.value?.replace(/^"|"$/g, '') || null;
+const setBest = (k) => run("INSERT INTO settings (key, value) VALUES ('voiceRoute', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", JSON.stringify(k));
+
+async function viaStt(c, buffer, mime) {
+  const form = new FormData();
+  form.append('file', new Blob([buffer], { type: mime }), mime.includes('mp4') ? 'voice.m4a' : mime.includes('mpeg') ? 'voice.mp3' : 'voice.ogg');
+  form.append('model', c.model);
+  form.append('response_format', 'json');
+  const base = String(c.p.baseUrl).replace(/\/+$/, '');
+  const res = await fetch(`${base}/audio/transcriptions`, { method: 'POST', headers: { authorization: `Bearer ${c.p.apiKey}` }, body: form, signal: AbortSignal.timeout(45_000) });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json.error?.message || `transcription failed (${res.status})`);
+  return String(json.text || '').trim();
 }
 
-export async function transcribe(buffer, mime = 'audio/ogg') {
-  const p = transcriber();
-  if (!p) throw new Error('No Groq or OpenAI key saved: voice notes cannot be turned into text');
-  const form = new FormData();
-  form.append('file', new Blob([buffer], { type: mime }), mime.includes('mp4') ? 'voice.m4a' : 'voice.ogg');
-  form.append('model', MODELS[p.preset] || 'whisper-1');
-  form.append('response_format', 'json');
-  const base = String(p.baseUrl || '').replace(/\/+$/, '');
-  const res = await fetch(`${base}/audio/transcriptions`, { method: 'POST', headers: { authorization: `Bearer ${p.apiKey}` }, body: form, signal: AbortSignal.timeout(45_000) });
+async function viaListen(c, buffer, mime) {
+  const base = String(c.p.baseUrl).replace(/\/+$/, '');
+  const format = mime.includes('mpeg') || mime.includes('mp3') ? 'mp3' : mime.includes('wav') ? 'wav' : mime.includes('mp4') ? 'mp4' : 'ogg';
+  const res = await fetch(`${base}/chat/completions`, {
+    method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${c.p.apiKey}` }, signal: AbortSignal.timeout(60_000),
+    body: JSON.stringify({ model: c.model, max_tokens: 600, messages: [{ role: 'user', content: [
+      { type: 'text', text: 'Write down exactly what is said in this WhatsApp voice note, in the language and script it is spoken in (Roman Urdu if it is Urdu or Hindi). Only the words, nothing else.' },
+      { type: 'input_audio', input_audio: { data: Buffer.from(buffer).toString('base64'), format } }] }] }),
+  });
   const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(json.error?.message || `Transcription failed (${res.status})`);
-  return String(json.text || '').trim();
+  if (!res.ok) throw new Error(json.error?.message || `listening failed (${res.status})`);
+  return String(json.choices?.[0]?.message?.content || '').trim();
+}
+
+/** Turn a voice note into text with the first saved model that can. */
+export async function transcribe(buffer, mime = 'audio/ogg') {
+  const list = candidates();
+  if (!list.length) throw new Error('No saved model can turn voice notes into text yet. Add any model on the AI models page (Groq and Gemini have free keys).');
+  let last;
+  for (const c of list) {
+    try {
+      const text = c.how === 'stt' ? await viaStt(c, buffer, mime) : await viaListen(c, buffer, mime);
+      if (key(c) !== getSettingsKv()) { setBest(key(c)); log('info', 'voice', `Voice notes now use ${c.p.name} (${c.model})`); }
+      return text;
+    } catch (e) { failedAt.set(key(c), Date.now()); last = e; }
+  }
+  throw new Error(`no saved model could turn the voice note into text (${last?.message || 'unknown error'})`);
 }
 
 /** Run a job for a chat; the chat's next reply waits for it. */
@@ -109,5 +153,11 @@ export async function voiceReady(chatId, maxMs = 25_000) {
 
 export const _pending = pending;
 /** Which saved key would hear voice notes and see pictures (null = none can). */
-export const mediaStatus = () => ({ voice: transcriber()?.name || null, images: viewer()?.name || null });
-export const hasTranscriber = () => !!get("SELECT 1 FROM providers WHERE enabled = 1 AND preset IN ('groq','openai') LIMIT 1");
+/** Which model hears voice notes now (or that one will be found by itself), and which sees pictures. */
+export function mediaStatus() {
+  const best = getSettingsKv();
+  const row = best && get('SELECT name FROM providers WHERE id = ? AND enabled = 1', Number(best.split(':')[0]));
+  const any = get("SELECT 1 x FROM providers WHERE enabled = 1 AND kind != 'anthropic' LIMIT 1");
+  return { voice: row ? `${row.name} (${best.split(':').slice(2).join(':')})` : any ? 'the first of your models that can (found automatically)' : null, images: viewer()?.name || null };
+}
+export const hasTranscriber = () => !!get("SELECT 1 x FROM providers WHERE enabled = 1 AND kind != 'anthropic' LIMIT 1");
