@@ -321,6 +321,22 @@ Main tools (`TOOLS` in commander.js):
 
 ---
 
+### Email agent (`src/email/agent.js`)
+- **Address checks:** syntax, throw-away domains and the domain's mail server (MX). Invalid addresses are never sent;
+  shared inboxes (info@…) are marked risky. Runs after each import and from "Check addresses".
+- **Finding addresses:** a CSV row with only a website is kept (`status = no_email`). The agent reads the site
+  (home, /contact, /about) and picks the best address on the same domain.
+- **Research:** before the first email, the contact's website is read once (`email_contacts.research`) and one true
+  detail goes in the first line.
+- **Spam check:** `spamCheck()` flags spam words, several links, capitals, exclamation marks, emojis, long text and
+  prices. An AI email with issues is written once more; what is left is shown on the message (`spam_note`).
+- **Replies:** IMAP replies are parsed (`mailparser`) and sorted by AI into interested, question, not_now,
+  not_interested, unsubscribe, wrong_person, out_of_office or other (`email_replies`).
+  - Away and "later" replies put the next email back in line on the named day.
+  - Unsubscribe, not interested and wrong person stop the contact for good.
+  - Interested and questions get a drafted answer; the owner edits it and sends it in the same thread from the
+    Email page, which also shows a WhatsApp link when the person gave a number.
+
 ## 10. Dashboard
 
 **Sidebar:**

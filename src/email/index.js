@@ -15,6 +15,8 @@ import { extractJson } from '../agent/brain.js';
 import { parseCsv, toCsv } from '../csv.js';
 import { taskEvent } from '../agent/task-log.js';
 import { notify } from '../agent/updates.js';
+import { simpleParser } from 'mailparser';
+import { verifyList, findEmails, researchOf, spamCheck, handleReply } from './agent.js';
 
 const DAY = 86_400_000;
 const EMAIL_RE = /^[^\s@<>(),;:"]+@[^\s@<>(),;:"]+\.[a-z]{2,}$/i;
@@ -116,10 +118,13 @@ export function importContacts(list, csvText) {
   if (!name) throw Object.assign(new Error('Name the list'), { status: 400 });
   const rows = parseCsv(csvText);
   if (!rows.length) throw Object.assign(new Error('The file has no rows. The first line must be column names, e.g. email,first_name,company,website'), { status: 400 });
-  let added = 0, updated = 0, invalid = 0, suppressed = 0;
+  let added = 0, updated = 0, invalid = 0, suppressed = 0, noEmail = 0;
   for (const r of rows) {
-    const email = String(r.email || r.email_address || r.e_mail || '').trim().toLowerCase();
-    if (!EMAIL_RE.test(email)) { invalid++; continue; }
+    let email = String(r.email || r.email_address || r.e_mail || '').trim().toLowerCase();
+    const site = String(r.website || r.url || r.domain || '').trim();
+    // No address but a website: kept, and its address is looked up on the site.
+    if (!email && site) { email = `pending:${site.replace(/^https?:\/\//, '').replace(/\/.*$/, '').toLowerCase()}`; noEmail++; }
+    else if (!EMAIL_RE.test(email)) { invalid++; continue; }
     if (get("SELECT 1 x FROM email_contacts WHERE email = ? AND status IN ('unsubscribed','bounced') LIMIT 1", email)) { suppressed++; continue; }
     const first = r.first_name || r.firstname || (r.name || r.full_name || '').split(' ')[0] || null;
     const last = r.last_name || r.lastname || (r.name || r.full_name || '').split(' ').slice(1).join(' ') || null;
@@ -128,13 +133,16 @@ export function importContacts(list, csvText) {
     const vals = [first, last, r.company || r.company_name || r.organization || null, r.website || r.url || r.domain || null, r.title || r.job_title || r.position || null, r.phone || null, JSON.stringify(extra)];
     const prev = get('SELECT id FROM email_contacts WHERE list = ? AND email = ?', name, email);
     if (prev) { run('UPDATE email_contacts SET first_name = ?, last_name = ?, company = ?, website = ?, title = ?, phone = ?, extra = ? WHERE id = ?', ...vals, prev.id); updated++; }
-    else { run('INSERT INTO email_contacts (list, email, first_name, last_name, company, website, title, phone, extra, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)', name, email, ...vals, now()); added++; }
+    else { run('INSERT INTO email_contacts (list, email, first_name, last_name, company, website, title, phone, extra, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)', name, email, ...vals, email.startsWith('pending:') ? 'no_email' : 'active', now()); added++; }
   }
   emit('email', {});
-  return { list: name, rows: rows.length, added, updated, invalid, suppressed };
+  // Check every address, and look up the missing ones, in the background.
+  if (!test) (async () => { await findEmails(name); await verifyList(name); })().catch((e) => log('warn', 'email', e.message));
+  return { list: name, rows: rows.length, added, updated, invalid, suppressed, noEmail };
 }
 export const listLists = () => all(`SELECT list, COUNT(*) total, SUM(status = 'active') active, SUM(status = 'replied') replied,
-  SUM(status = 'unsubscribed') unsubscribed, SUM(status = 'bounced') bounced, MAX(created_at) updated_at FROM email_contacts GROUP BY list ORDER BY updated_at DESC`);
+  SUM(status = 'unsubscribed') unsubscribed, SUM(status = 'bounced') bounced, SUM(status = 'invalid') invalid, SUM(status = 'no_email') no_email,
+  SUM(verified = 'risky') risky, SUM(verified IS NULL AND status = 'active') unchecked, MAX(created_at) updated_at FROM email_contacts GROUP BY list ORDER BY updated_at DESC`);
 export function exportList(list) {
   const rows = all('SELECT * FROM email_contacts WHERE list = ? ORDER BY id', list);
   return toCsv(rows, [['email', 'email'], ['first_name', 'first_name'], ['last_name', 'last_name'], ['company', 'company'], ['website', 'website'], ['title', 'title'], ['phone', 'phone'], ['status', 'status']]);
@@ -208,7 +216,7 @@ export function emailStats(taskId) {
 export const emailPeople = (taskId) => all(`SELECT c.id, c.email, c.first_name, c.last_name, c.company, c.status,
     MAX(CASE WHEN s.status = 'sent' THEN s.step END) last_step, MAX(s.sent_at) last_sent, MIN(CASE WHEN s.status = 'queued' THEN s.due_at END) next_due
   FROM email_sends s JOIN email_contacts c ON c.id = s.contact_id WHERE s.task_id = ? GROUP BY c.id ORDER BY last_sent DESC NULLS LAST LIMIT 1000`, taskId);
-export const emailMessages = (taskId) => all(`SELECT s.id, s.step, s.subject, s.body, s.status, s.due_at, s.sent_at, s.error, c.email, c.first_name, c.company, a.from_email
+export const emailMessages = (taskId) => all(`SELECT s.id, s.step, s.subject, s.body, s.status, s.due_at, s.sent_at, s.error, s.spam_note, c.email, c.first_name, c.company, a.from_email
   FROM email_sends s JOIN email_contacts c ON c.id = s.contact_id LEFT JOIN email_accounts a ON a.id = s.account_id
   WHERE s.task_id = ? AND (s.status != 'queued' OR s.subject IS NOT NULL) ORDER BY COALESCE(s.sent_at, s.due_at) DESC LIMIT 500`, taskId);
 
@@ -243,12 +251,22 @@ Rules for inbox, not spam:
 - End with one easy, low-pressure question. Sign off with just the sender's first name (${(acc?.from_name || '').split(' ')[0] || 'the sender'}).
 - Write in the language the instructions are written in, unless the contact's details suggest otherwise.
 Return ONLY JSON: {"subject": "2 to 6 words, lower-case, no punctuation tricks", "body": "the email text"}`;
-  const who = `The person: ${[contact.first_name, contact.last_name].filter(Boolean).join(' ') || '(name unknown)'}${contact.title ? `, ${contact.title}` : ''}${contact.company ? ` at ${contact.company}` : ''}${contact.website ? ` (${contact.website})` : ''}${contact.extra && contact.extra !== '{}' ? `. More: ${contact.extra}` : ''}`;
-  const out = await complete({ system, messages: [{ role: 'user', content: who }], maxTokens: 700 }, { purpose: 'email' });
-  const j = extractJson(out.text) || {};
-  const body = String(j.body || '').replace(/\*\*(.+?)\*\*/g, '$1').trim();
-  if (!body) throw new Error('The model returned no email');
-  return { subject: send.step > 1 && prev ? `Re: ${prev.subject}` : String(j.subject || 'quick question').replace(/[\r\n]+/g, ' ').trim().slice(0, 90), body };
+  const site = send.step === 1 ? await researchOf(contact) : '';
+  const who = `The person: ${[contact.first_name, contact.last_name].filter(Boolean).join(' ') || '(name unknown)'}${contact.title ? `, ${contact.title}` : ''}${contact.company ? ` at ${contact.company}` : ''}${contact.website ? ` (${contact.website})` : ''}${contact.extra && contact.extra !== '{}' ? `. More: ${contact.extra}` : ''}${site && site !== '-' ? `\nWhat their website says (use ONE specific, true detail from it in the first line): ${site}` : ''}`;
+  // Written, then checked for spam signs; written once more without them if needed.
+  let mail = null;
+  let issues = [];
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const msgs = [{ role: 'user', content: who }, ...(attempt ? [{ role: 'user', content: `Write it again without these spam signs: ${issues.join('; ')}.` }] : [])];
+    const out = await complete({ system, messages: msgs, maxTokens: 700 }, { purpose: 'email' });
+    const j = extractJson(out.text) || {};
+    const body = String(j.body || '').replace(/\*\*(.+?)\*\*/g, '$1').trim();
+    if (!body) throw new Error('The model returned no email');
+    mail = { subject: send.step > 1 && prev ? `Re: ${prev.subject}` : String(j.subject || 'quick question').replace(/[\r\n]+/g, ' ').trim().slice(0, 90), body };
+    issues = spamCheck(mail.subject, mail.body);
+    if (!issues.length) break;
+  }
+  return { ...mail, spam_note: issues.length ? issues.join('; ') : null };
 }
 
 // ---------------- sending ----------------
@@ -294,7 +312,8 @@ export async function sendTick() {
       let mail;
       try {
         mail = s.subject && s.body ? { subject: s.subject, body: s.body } : await writeEmail(t, p, s, c, prev);
-        update('email_sends', s.id, mail, ['subject', 'body']);
+        if (!('spam_note' in mail)) { const issues = spamCheck(mail.subject, mail.body); mail.spam_note = issues.length ? issues.join('; ') : null; }
+        update('email_sends', s.id, mail, ['subject', 'body', 'spam_note']);
       } catch (e) {
         if (outOfModels(e)) { taskEvent(t.id, 'Every AI model is busy: emails wait and continue by themselves', { kind: 'paused', }); nextSlot.set(a.id, now() + 10 * 60_000); continue; }
         update('email_sends', s.id, { status: 'failed', error: `Could not write: ${e.message}`.slice(0, 300) }, ['status', 'error']);
@@ -363,12 +382,21 @@ export async function checkReplies() {
       const lock = await c.getMailboxLock('INBOX');
       try {
         const since = new Date((a.imap_checked_at || now() - 3 * DAY) - 3_600_000);
-        for await (const m of c.fetch({ since }, { envelope: true })) {
+        const got = [];
+        for await (const m of c.fetch({ since }, { envelope: true, source: { maxLength: 200_000 } })) {
           const from = m.envelope?.from?.[0]?.address?.toLowerCase();
           if (!from || from === a.from_email.toLowerCase()) continue;
           if (/mailer-daemon|postmaster/.test(from)) continue;
-          markReplied(from, m.envelope?.subject || '');
+          if (markReplied(from, m.envelope?.subject || '')) got.push({ from, subject: m.envelope?.subject || '', messageId: m.envelope?.messageId || null, source: m.source });
         }
+        // Understand each reply (after the mailbox is released): interested, a question, later, away, stop…
+        setTimeout(async () => {
+          for (const g of got) {
+            let text = '';
+            try { const parsed = await simpleParser(g.source); text = String(parsed.text || '').split(/\n(?:on .+ wrote:|-{2,} ?original message|from: .+\nsent:)/i)[0].trim(); } catch { /* keep empty */ }
+            await handleReply({ from: g.from, subject: g.subject, text, messageId: g.messageId, accountId: a.id }).catch((e) => log('warn', 'email', e.message));
+          }
+        }, 0);
       } finally { lock.release(); }
       await c.logout();
       update('email_accounts', a.id, { imap_checked_at: now() }, ['imap_checked_at']);
@@ -376,6 +404,25 @@ export async function checkReplies() {
       log('warn', 'email', `${a.from_email}: could not read replies (${e.message})`);
     }
   }
+}
+
+/** Send the owner's answer to a reply, in the same email thread. */
+export async function sendReply(id, text) {
+  const r = get('SELECT * FROM email_replies WHERE id = ?', Number(id));
+  if (!r) throw Object.assign(new Error('Reply not found'), { status: 404 });
+  const body = String(text ?? r.draft ?? '').trim();
+  if (!body) throw Object.assign(new Error('Write the answer first'), { status: 400 });
+  const a = get('SELECT * FROM email_accounts WHERE id = ?', r.account_id) || get('SELECT * FROM email_accounts WHERE enabled = 1 ORDER BY id LIMIT 1');
+  if (!a) throw Object.assign(new Error('No mailbox to send from'), { status: 400 });
+  await transportOf(a).sendMail({
+    from: { name: a.from_name, address: a.from_email }, to: r.from_email,
+    subject: /^re:/i.test(r.subject || '') ? r.subject : `Re: ${r.subject || ''}`.trim(), text: body,
+    ...(r.message_id && !r.message_id.includes(':') ? { inReplyTo: r.message_id, references: [r.message_id] } : {}),
+  });
+  update('email_replies', r.id, { status: 'sent', draft: body }, ['status', 'draft']);
+  if (r.task_id) taskEvent(r.task_id, `You answered ${r.from_email}`, { kind: 'sent' });
+  emit('email', {});
+  return { ok: true };
 }
 
 export function startEmail() {

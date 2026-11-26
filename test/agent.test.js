@@ -1867,3 +1867,34 @@ test('voice notes find a model that can hear them by themselves, and remember it
   assert.equal(text, 'Canva Pro ka price kya hai?');
   assert.ok(get("SELECT value FROM settings WHERE key = 'voiceRoute'"), 'the working model is remembered');
 });
+
+test('email agent: spam check, address checks, and replies understood with the right next step', async () => {
+  const ag = await import('../src/email/agent.js');
+  assert.deepEqual(ag.spamCheck('quick question', 'Hi Sara,\n\nSaw your bakery opened a second branch. Do you take orders on WhatsApp?\n\nAli'), []);
+  const bad = ag.spamCheck('FREE OFFER', 'Click here now!!! https://a.com https://b.com');
+  assert.ok(bad.length >= 3);
+  assert.equal((await ag.verifyAddress('not an email')).verified, 'invalid');
+  assert.equal((await ag.verifyAddress('x@mailinator.com')).verified, 'invalid');
+  // A reply: the model says "out of office until a date", so the sequence continues that day instead of stopping.
+  run("INSERT INTO email_contacts (list, email, first_name, status, created_at) VALUES ('t', 'away@corp.test', 'Away', 'replied', ?)", now());
+  const c = get("SELECT id FROM email_contacts WHERE email = 'away@corp.test'");
+  const task = Number(run("INSERT INTO tasks (title, instruction, kind, status, runs, ignore_quiet, created_at) VALUES ('Mail', 'x', 'email', 'active', 0, 0, ?)", now()).lastInsertRowid);
+  run("INSERT INTO email_sends (task_id, contact_id, step, status, due_at, sent_at, body, created_at) VALUES (?,?,1,'sent',?,?,'hello',?)", task, c.id, now(), now(), now());
+  run("INSERT INTO email_sends (task_id, contact_id, step, status, due_at, error, created_at) VALUES (?,?,2,'skipped',?,'They replied',?)", task, c.id, now(), now());
+  const day = new Date(Date.now() + 10 * 86_400_000).toISOString().slice(0, 10);
+  reply = JSON.stringify({ kind: 'out_of_office', summary: 'Away', resume_on: day, phone: null });
+  const r = await ag.handleReply({ from: 'away@corp.test', subject: 'Out of office', text: `I am away until ${day}.`, messageId: '<m1@corp>' });
+  assert.equal(r.kind, 'out_of_office');
+  const next = get("SELECT status, due_at FROM email_sends WHERE contact_id = ? AND step = 2", c.id);
+  assert.equal(next.status, 'queued', 'the next email is back in line');
+  assert.ok(next.due_at > Date.now() + 8 * 86_400_000);
+  assert.equal(get('SELECT status FROM email_contacts WHERE id = ?', c.id).status, 'active');
+  // Interested: an answer is drafted.
+  run("INSERT INTO email_contacts (list, email, first_name, status, created_at) VALUES ('t', 'yes@corp.test', 'Yes', 'replied', ?)", now());
+  reply = JSON.stringify({ kind: 'interested', summary: 'Wants a price', resume_on: null, phone: '923001234567' });
+  const r2 = await ag.handleReply({ from: 'yes@corp.test', subject: 'Re: hi', text: 'Sounds good, what is the price? My WhatsApp 0300 1234567', messageId: '<m2@corp>' });
+  assert.equal(r2.kind, 'interested');
+  const row = get("SELECT * FROM email_replies WHERE from_email = 'yes@corp.test'");
+  assert.equal(row.phone, '923001234567');
+  assert.ok(ag.listReplies().some((x) => x.from_email === 'yes@corp.test'));
+});

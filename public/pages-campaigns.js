@@ -276,6 +276,7 @@ function campaignPage(id, startTab) {
         h('div.cmsg-top', {}, h('b', {}, m.email), h('span.muted', {}, `Email ${m.step}${m.from_email ? ` · from ${m.from_email}` : ''}`), h(`span.pill.${m.status === 'sent' ? 'ok' : m.status === 'failed' ? 'bad' : ''}`, {}, m.status), h('time', {}, when(m.sent_at || m.due_at))),
         m.subject ? h('div', { style: 'font-weight:600;color:var(--ink)' }, m.subject) : null,
         m.body ? h('div.cmsg-text', { dir: 'auto' }, m.body) : null,
+        m.spam_note ? h('div', { style: 'font-size:12px;color:var(--warn, #a16207)' }, `Spam check: ${m.spam_note}`) : null,
         m.error ? h('div.muted', { style: 'font-size:12px' }, m.error) : null))) : h('div.cempty', {}, h('b', {}, 'No emails yet'), h('p', {}, 'Each email shows here once it is written.'))));
     }
     const tone = { sent: 'ok', approved: 'hot', pending: 'warn', failed: 'bad', skipped: '' };

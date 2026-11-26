@@ -5,6 +5,8 @@ import { live } from './state.js';
 export function emailPage() {
   const accBox = h('div.stack');
   const listBox = h('div.stack');
+  const replyBox = h('div.stack');
+  let showAll = false;
   const el = h('div.page', {},
     h('div.head', {}, h('div', {}, h('h1', {}, 'Email'), h('p', {}, 'Send cold and follow-up emails from your own mailbox. Each email is written for one person and sent at a person’s pace, with warm-up, office hours, unsubscribe and stop-on-reply built in.')),
       h('a.btn.primary', { href: '#/campaigns' }, ico('megaphone', 'sm'), 'Email campaigns')),
@@ -14,6 +16,8 @@ export function emailPage() {
       ['clock', 'Office hours', 'Random gaps, weekdays, your time zone'],
       ['reply', 'Stops on reply', 'Replies, bounces and unsubscribes end the sequence'],
     ].map(([i, t, d]) => h('div', {}, ico(i), h('b', {}, t), h('span', {}, d)))),
+    h('div.card', {}, h('header', {}, h('div', {}, h('h2', {}, 'Replies'), h('p.muted', { style: 'margin:3px 0 0;font-size:12.5px' }, 'The agent reads each reply, says what kind it is, and drafts an answer. Away and “later” replies continue the sequence on the right day by themselves.')),
+      h('label.row', { style: 'font-size:12.5px;gap:6px' }, h('input', { type: 'checkbox', onchange: (e) => { showAll = e.target.checked; loadReplies(); } }), 'Show answered too')), replyBox),
     h('div.card', {}, h('header', {}, h('h2', {}, 'Sending mailboxes'), h('button.btn.sm.primary', { onclick: () => accountForm() }, '+ Add mailbox')), accBox),
     h('div.card', {}, h('header', {}, h('h2', {}, 'Contact lists'), h('button.btn.sm.primary', { onclick: () => importList() }, ico('upload', 'sm'), 'Import CSV')), listBox));
 
@@ -31,9 +35,9 @@ export function emailPage() {
         h('button.btn.sm.ghost.danger', { onclick: (e) => confirm(`Remove ${a.from_email}? Its queued emails are cancelled.`) && act(e.target, async () => { await DEL(`/api/email/accounts/${a.id}`); load(); }) }, 'Remove'))))
       : h('div.cempty', { style: 'border:0' }, h('b', {}, 'No mailbox yet'), h('p', {}, 'Add the email address you send from. For cold email, a separate domain (like yourbrand-mail.com) keeps your main domain safe.')));
     set(listBox, lists.length ? h('div.rtable', {}, h('table', {},
-      h('thead', {}, h('tr', {}, ['List', 'Contacts', 'Active', 'Replied', 'Unsubscribed', 'Bounced', ''].map((x) => h('th', {}, x)))),
-      h('tbody', {}, lists.map((l) => h('tr', {}, h('td', {}, h('b', {}, l.list)), h('td.n', {}, num(l.total)), h('td.n', {}, num(l.active)), h('td.n', {}, num(l.replied)), h('td.n', {}, num(l.unsubscribed)), h('td.n', {}, num(l.bounced)),
-        h('td.n', {}, h('a.btn.sm', { href: `/api/email/lists/${encodeURIComponent(l.list)}/export.csv`, download: '' }, 'Export'), ' ',
+      h('thead', {}, h('tr', {}, ['List', 'Contacts', 'Active', 'Replied', 'Unsubscribed', 'Bounced', 'Not valid', 'Need email', ''].map((x) => h('th', {}, x)))),
+      h('tbody', {}, lists.map((l) => h('tr', {}, h('td', {}, h('b', {}, l.list), l.unchecked ? h('div.muted', { style: 'font-size:11.5px' }, `${num(l.unchecked)} not checked yet`) : l.risky ? h('div.muted', { style: 'font-size:11.5px' }, `${num(l.risky)} risky (still sent)`) : null), h('td.n', {}, num(l.total)), h('td.n', {}, num(l.active)), h('td.n', {}, num(l.replied)), h('td.n', {}, num(l.unsubscribed)), h('td.n', {}, num(l.bounced)), h('td.n', {}, num(l.invalid || 0)), h('td.n', {}, num(l.no_email || 0)),
+        h('td.n', {}, h('button.btn.sm', { title: 'Check every address, and look up missing ones on their websites', onclick: (e) => act(e.target, async () => { const r = await POST(`/api/email/lists/${encodeURIComponent(l.list)}/verify`); toast(`${r.checked} checked, ${r.invalid} not valid${r.looked ? `, ${r.found} of ${r.looked} found on websites` : ''}`); load(); }) }, 'Check addresses'), ' ', h('a.btn.sm', { href: `/api/email/lists/${encodeURIComponent(l.list)}/export.csv`, download: '' }, 'Export'), ' ',
           h('button.btn.sm.ghost.danger', { onclick: (e) => confirm(`Delete the active contacts of "${l.list}"? People who unsubscribed or bounced are kept so they are never emailed again.`) && act(e.target, async () => { await DEL(`/api/email/lists/${encodeURIComponent(l.list)}`); load(); }) }, 'Delete')))))))
       : h('div.cempty', { style: 'border:0' }, h('b', {}, 'No contacts yet'), h('p', {}, 'Import a CSV with an email column. First name, last name, company, website and title are used to write each email.')));
   }
@@ -79,7 +83,7 @@ export function emailPage() {
   function importList() {
     const name = h('input', { type: 'text', placeholder: 'For example: the market and the month' });
     const file = h('input', { type: 'file', accept: '.csv,text/csv' });
-    modal('Import contacts', [field('List name', name), field('CSV file', file, 'Columns: email (needed), first_name, last_name, company, website, title. Other columns are kept and used for writing.'),
+    modal('Import contacts', [field('List name', name), field('CSV file', file, 'Columns: email, first_name, last_name, company, website, title. A row with only a website is fine: the agent finds the address on the site. Other columns are kept and used for writing.'),
       h('div.note', {}, 'Only import people it is fair to email: business addresses relevant to what you offer. Anyone who ever unsubscribed or bounced is skipped automatically.')],
     (close) => [h('button.btn', { onclick: close }, 'Cancel'), h('button.btn.primary', { onclick: (e) => act(e.target, async () => {
       if (!file.files[0]) throw new Error('Choose a CSV file');
@@ -87,12 +91,31 @@ export function emailPage() {
       const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(j.error || `Import failed (${res.status})`);
       close(); load();
-      toast(`${j.added} added, ${j.updated} updated${j.invalid ? `, ${j.invalid} not valid` : ''}${j.suppressed ? `, ${j.suppressed} skipped (unsubscribed or bounced before)` : ''}.`);
+      toast(`${j.added} added, ${j.updated} updated${j.invalid ? `, ${j.invalid} not valid` : ''}${j.suppressed ? `, ${j.suppressed} skipped (unsubscribed or bounced before)` : ''}${j.noEmail ? `, ${j.noEmail} without an address: looking on their websites` : ''}. Addresses are being checked.`);
     }) }, 'Import')]);
   }
 
-  live.on('email', load);
+  const KIND = { interested: ['Interested', 'ok'], question: ['Question', 'hot'], not_now: ['Later', 'warn'], out_of_office: ['Away', ''], not_interested: ['Not interested', ''], unsubscribe: ['Unsubscribed', 'bad'], wrong_person: ['Wrong person', ''], other: ['Reply', ''] };
+  async function loadReplies() {
+    const rows = await GET(`/api/email/replies${showAll ? '?all=1' : ''}`).catch(() => []);
+    set(replyBox, rows.length ? rows.map((r) => {
+      const [label, tone] = KIND[r.kind] || ['Reading…', ''];
+      const draft = h('textarea', { rows: 5, dir: 'auto', value: r.draft || '', placeholder: r.kind ? 'Write your answer' : 'The agent is reading this reply…' });
+      return h(`div.ereply${r.status !== 'new' ? '.done' : ''}`, {},
+        h('div.ereply-top', {}, h('b', {}, [r.first_name, r.last_name].filter(Boolean).join(' ') || r.from_email), h('span.muted', {}, [r.company, [r.first_name, r.last_name].some(Boolean) ? r.from_email : null, r.campaign].filter(Boolean).join(' · ')), h(`span.pill.${tone}`, {}, label), h('time.muted', {}, /^\d/.test(rel(r.created_at)) ? `${rel(r.created_at)} ago` : 'just now')),
+        r.summary ? h('div', { style: 'color:var(--ink)' }, r.summary) : null,
+        h('details', {}, h('summary.muted', { style: 'cursor:pointer;font-size:12.5px' }, 'Their email'), h('div.cmsg-text', { dir: 'auto', style: 'margin-top:6px' }, r.text || '(no text)')),
+        r.resume_at ? h('div.muted', { style: 'font-size:12.5px' }, `Next email on ${new Date(r.resume_at).toLocaleDateString()}`) : null,
+        r.status === 'new' && ['interested', 'question', 'other', null].includes(r.kind) ? [draft, h('div.row.wrap', {},
+          h('button.btn.sm.primary', { onclick: (e) => act(e.target, async () => { await POST(`/api/email/replies/${r.id}/send`, { text: draft.value }); loadReplies(); }, 'Answer sent') }, ico('send', 'sm'), 'Send answer'),
+          h('button.btn.sm', { onclick: (e) => act(e.target, async () => { await PATCH(`/api/email/replies/${r.id}`, { draft: draft.value }); }, 'Draft saved') }, 'Save draft'),
+          h('button.btn.sm.ghost', { onclick: (e) => act(e.target, async () => { await PATCH(`/api/email/replies/${r.id}`, { status: 'done' }); loadReplies(); }) }, 'Mark done'),
+          r.phone ? h('a.btn.sm', { href: `https://wa.me/${r.phone}`, target: '_blank', rel: 'noopener' }, ico('message-circle', 'sm'), `WhatsApp ${r.phone}`) : null)] : null);
+    }) : h('div.cempty', { style: 'border:0' }, h('b', {}, showAll ? 'No replies yet' : 'Nothing to answer'), h('p', {}, 'Replies arrive here when a mailbox has IMAP set up. Each is read, sorted and given a drafted answer.')));
+  }
+  live.on('email', () => { load(); loadReplies(); });
   load();
+  loadReplies();
   return el;
 }
 

@@ -173,6 +173,17 @@ CREATE TABLE IF NOT EXISTS email_contacts (
   UNIQUE(list, email)
 );
 CREATE INDEX IF NOT EXISTS email_contacts_email ON email_contacts(email);
+-- Replies to email campaigns: what they said, what kind of answer it is, and the drafted answer.
+CREATE TABLE IF NOT EXISTS email_replies (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  contact_id INTEGER, task_id INTEGER, account_id INTEGER,
+  from_email TEXT NOT NULL, subject TEXT, message_id TEXT, text TEXT,
+  kind TEXT,                                  -- interested | question | not_now | not_interested | unsubscribe | wrong_person | out_of_office | other
+  summary TEXT, phone TEXT, resume_at INTEGER,
+  draft TEXT, status TEXT NOT NULL DEFAULT 'new',   -- new | sent | done
+  created_at INTEGER NOT NULL,
+  UNIQUE(from_email, message_id)
+);
 CREATE TABLE IF NOT EXISTS email_sends (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   task_id INTEGER NOT NULL, contact_id INTEGER NOT NULL, account_id INTEGER,
@@ -213,7 +224,7 @@ CREATE TABLE IF NOT EXISTS commands (
 );
 `);
 // Additive migrations for databases created by earlier versions.
-for (const sql of ['ALTER TABLE accounts ADD COLUMN self_jid TEXT', "ALTER TABLE providers ADD COLUMN use_for TEXT NOT NULL DEFAULT 'all'", 'ALTER TABLE followups ADD COLUMN task_id INTEGER', 'ALTER TABLE tasks ADD COLUMN ignore_quiet INTEGER NOT NULL DEFAULT 0', 'ALTER TABLE commands ADD COLUMN thread_id INTEGER', 'ALTER TABLE tasks ADD COLUMN thread_id INTEGER', 'ALTER TABLE chats ADD COLUMN tags TEXT', 'ALTER TABLE tasks ADD COLUMN params TEXT', 'ALTER TABLE chats ADD COLUMN campaign_id INTEGER', 'ALTER TABLE chats ADD COLUMN ad_id TEXT', 'ALTER TABLE chats ADD COLUMN ad_title TEXT', 'ALTER TABLE chats ADD COLUMN profile TEXT', 'ALTER TABLE tasks ADD COLUMN parent_id INTEGER', 'ALTER TABLE messages ADD COLUMN reply_to TEXT', 'ALTER TABLE messages ADD COLUMN reply_text TEXT', 'ALTER TABLE wa_label_chats ADD COLUMN alt TEXT']) {
+for (const sql of ['ALTER TABLE accounts ADD COLUMN self_jid TEXT', "ALTER TABLE providers ADD COLUMN use_for TEXT NOT NULL DEFAULT 'all'", 'ALTER TABLE followups ADD COLUMN task_id INTEGER', 'ALTER TABLE tasks ADD COLUMN ignore_quiet INTEGER NOT NULL DEFAULT 0', 'ALTER TABLE commands ADD COLUMN thread_id INTEGER', 'ALTER TABLE tasks ADD COLUMN thread_id INTEGER', 'ALTER TABLE chats ADD COLUMN tags TEXT', 'ALTER TABLE tasks ADD COLUMN params TEXT', 'ALTER TABLE chats ADD COLUMN campaign_id INTEGER', 'ALTER TABLE chats ADD COLUMN ad_id TEXT', 'ALTER TABLE chats ADD COLUMN ad_title TEXT', 'ALTER TABLE chats ADD COLUMN profile TEXT', 'ALTER TABLE tasks ADD COLUMN parent_id INTEGER', 'ALTER TABLE messages ADD COLUMN reply_to TEXT', 'ALTER TABLE messages ADD COLUMN reply_text TEXT', 'ALTER TABLE wa_label_chats ADD COLUMN alt TEXT', 'ALTER TABLE email_contacts ADD COLUMN verified TEXT', 'ALTER TABLE email_contacts ADD COLUMN verify_note TEXT', 'ALTER TABLE email_contacts ADD COLUMN research TEXT', 'ALTER TABLE email_sends ADD COLUMN spam_note TEXT']) {
   try { db.exec(sql); } catch { /* column already exists */ }
 }
 

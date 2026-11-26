@@ -781,3 +781,9 @@ a.numlink:hover h3 { color: var(--orange-text, var(--orange)); text-decoration: 
 .ctask-gh { font-size: 13px; font-weight: 600; color: var(--slate); padding: 4px 2px; cursor: default; }
 details.ctask-group > summary { cursor: pointer; }
 @media (max-width: 760px) { .ctask-body { padding-left: 16px; } .ctask-sum { padding: 12px; } }
+.ereply { display: grid; gap: 8px; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+.ereply:last-child { border-bottom: 0; }
+.ereply.done { opacity: .7; }
+.ereply-top { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.ereply-top b { color: var(--ink); }
+.ereply-top time { margin-left: auto; font-size: 12px; }

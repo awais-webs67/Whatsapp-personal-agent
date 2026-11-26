@@ -27,6 +27,7 @@ import { mediaStatus } from './agent/voice.js';
 import { previewMembers, addMembers } from './agent/members.js';
 import { knowledgeOf, saveKnowledge, copyKnowledge, KNOW } from './agent/campaign-knowledge.js';
 import * as email from './email/index.js';
+import * as emailAgent from './email/agent.js';
 import { setEmailStats } from './agent/tasks.js';
 import { handleCommand, startCommander, listThreads, newThread, campaignThread } from './agent/commander.js';
 import { listTasks, createTask, controlTask, startTasks, taskView } from './agent/tasks.js';
@@ -535,6 +536,19 @@ app.get('/api/email/lists/:list/export.csv', wrap((req, res) => {
   res.send(email.exportList(req.params.list));
 }));
 app.delete('/api/email/lists/:list', wrap((req) => email.deleteList(req.params.list)));
+// The email agent: check a list's addresses (and find missing ones on websites), and the replies with drafted answers.
+app.post('/api/email/lists/:list/verify', wrap(async (req) => { const found = await emailAgent.findEmails(req.params.list); return { ...found, ...(await emailAgent.verifyList(req.params.list)) }; }));
+app.get('/api/email/replies', wrap((req) => emailAgent.listReplies(req.query.all ? 'all' : 'open')));
+app.patch('/api/email/replies/:id', wrap((req) => {
+  const r = need(get('SELECT * FROM email_replies WHERE id = ?', Number(req.params.id)), 'Reply');
+  const patch = {};
+  if (typeof req.body.draft === 'string') patch.draft = req.body.draft.slice(0, 5000);
+  if (['new', 'done'].includes(req.body.status)) patch.status = req.body.status;
+  if (Object.keys(patch).length) update('email_replies', r.id, patch, Object.keys(patch));
+  emit('email', {});
+  return { ok: true };
+}));
+app.post('/api/email/replies/:id/send', wrap((req) => email.sendReply(Number(req.params.id), req.body?.text)));
 app.post('/api/campaigns/email', wrap((req) => { const r = email.createEmailCampaign(req.body || {}, createTask); const id = r?.id || r?.taskId; if (id) startKnowledge(id, req.body?.knowledgeFrom); return r; }));
 
 app.get('/api/campaigns/fields', wrap(() => AUTO_FIELDS));

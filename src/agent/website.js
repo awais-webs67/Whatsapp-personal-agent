@@ -182,3 +182,4 @@ export async function readSite(raw, { onProgress = () => {} } = {}) {
 export function formatProducts(products) {
   return products.map((p) => `- ${p.name}${p.price ? ` — ${p.price}` : ''}${p.stock ? ` (${p.stock})` : ''}${p.description ? ` — ${p.description}` : ''} — ${p.url}`).join('\n');
 }
+export const fetchPage = (url, opts) => get(url, opts);
